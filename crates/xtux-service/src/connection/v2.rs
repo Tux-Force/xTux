@@ -24,7 +24,9 @@ impl xtux_games::Progress for EventProgress {
     fn message(&self, text: &str) {
         let _ = self.outbox.send(ServerMessage::Event {
             id: self.id,
-            event: Event::Message { text: text.to_string() },
+            event: Event::Message {
+                text: text.to_string(),
+            },
         });
     }
 
@@ -49,7 +51,9 @@ impl xtux_games::Progress for EventProgress {
     fn file_finished(&self, name: &str) {
         let _ = self.outbox.send(ServerMessage::Event {
             id: self.id,
-            event: Event::FileFinished { name: name.to_string() },
+            event: Event::FileFinished {
+                name: name.to_string(),
+            },
         });
     }
 }
@@ -172,7 +176,10 @@ impl Job {
         if let Ok(mut r) = self.running.lock() {
             r.remove(&self.id);
         }
-        let _ = self.outbox.send(ServerMessage::Response { id: self.id, result });
+        let _ = self.outbox.send(ServerMessage::Response {
+            id: self.id,
+            result,
+        });
     }
 
     async fn handle(&self, request: Request) -> Result<Response, ErrorBody> {
@@ -217,11 +224,16 @@ impl Job {
                 let cancel = self.cancel.clone();
                 let stopper = tokio::spawn(async move {
                     cancel.cancelled().await;
-                    let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGINT);
+                    let _ = nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(pid as i32),
+                        nix::sys::signal::Signal::SIGINT,
+                    );
                 });
                 let status = game.wait().await.map_err(error_body);
                 stopper.abort();
-                Ok(Response::GameExited { code: status?.code() })
+                Ok(Response::GameExited {
+                    code: status?.code(),
+                })
             }
             Request::PrefixInit {
                 wine,
@@ -248,17 +260,28 @@ impl Job {
                 market,
             } => {
                 let source = match source {
-                    xtux_protocol::InstallSource::File(path) => xtux_games::install::Source::File(path),
+                    xtux_protocol::InstallSource::File(path) => {
+                        xtux_games::install::Source::File(path)
+                    }
                     xtux_protocol::InstallSource::Url(url) => xtux_games::install::Source::Url(url),
-                    xtux_protocol::InstallSource::ContentId(id) => xtux_games::install::Source::ContentId(id),
+                    xtux_protocol::InstallSource::ContentId(id) => {
+                        xtux_games::install::Source::ContentId(id)
+                    }
                 };
                 let mut options = xtux_games::install::InstallOptions::new(destination.clone());
                 options.try_skip_ntfs = try_skip_ntfs;
                 options.parallel = parallel.max(1);
                 options.market = market;
-                xtux_games::install::install(&self.client, &self.tokens, source, &options, &progress, &self.cancel)
-                    .await
-                    .map_err(error_body)?;
+                xtux_games::install::install(
+                    &self.client,
+                    &self.tokens,
+                    source,
+                    &options,
+                    &progress,
+                    &self.cancel,
+                )
+                .await
+                .map_err(error_body)?;
                 Ok(Response::Installed { destination })
             }
             Request::SignIn { env } => {
@@ -271,7 +294,12 @@ impl Job {
                     .stdin(std::process::Stdio::null())
                     .kill_on_drop(true)
                     .spawn()
-                    .map_err(|e| ErrorBody::new(ErrorKind::Failed, format!("cannot start the sign-in helper: {e}")))?;
+                    .map_err(|e| {
+                        ErrorBody::new(
+                            ErrorKind::Failed,
+                            format!("cannot start the sign-in helper: {e}"),
+                        )
+                    })?;
                 let status = tokio::select! {
                     status = helper.wait() => status.map_err(|e| ErrorBody::new(ErrorKind::Failed, e.to_string()))?,
                     _ = self.cancel.cancelled() => {
@@ -280,7 +308,10 @@ impl Job {
                     }
                 };
                 if !status.success() {
-                    return Err(ErrorBody::new(ErrorKind::SignedOut, format!("sign-in did not complete ({status})")));
+                    return Err(ErrorBody::new(
+                        ErrorKind::SignedOut,
+                        format!("sign-in did not complete ({status})"),
+                    ));
                 }
                 let user = self.tokens.get_user().ok().map(|u| u.username);
                 Ok(Response::Status {
@@ -289,7 +320,9 @@ impl Job {
                     user,
                 })
             }
-            Request::Cancel { .. } => Err(ErrorBody::new(ErrorKind::InvalidRequest, "nested cancel")),
+            Request::Cancel { .. } => {
+                Err(ErrorBody::new(ErrorKind::InvalidRequest, "nested cancel"))
+            }
         }
     }
 }

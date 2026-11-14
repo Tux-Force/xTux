@@ -27,10 +27,10 @@ use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use base64::Engine;
 use xodus::api::xbox::signing;
 use xodus::api::xbox::title::{self, ResolvedEndpoint};
 use xodus::auth::{TitleSession, XstsToken};
@@ -200,14 +200,15 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
     }
 
     match (request.method.as_str(), request.path.as_str()) {
-        ("POST", "/store/license-token") => match license_token(client, tokens, &request.body).await
-        {
-            Ok(token) => respond(&mut stream, "200 OK", &token).await,
-            Err(err) => {
-                tracing::warn!("license token request failed: {err}");
-                respond(&mut stream, "502 Bad Gateway", &err).await
+        ("POST", "/store/license-token") => {
+            match license_token(client, tokens, &request.body).await {
+                Ok(token) => respond(&mut stream, "200 OK", &token).await,
+                Err(err) => {
+                    tracing::warn!("license token request failed: {err}");
+                    respond(&mut stream, "502 Bad Gateway", &err).await
+                }
             }
-        },
+        }
         ("POST", "/xbl/token") => match xbl_token(state.clone(), &request.body).await {
             Ok(Some((header, signature))) => {
                 respond(&mut stream, "200 OK", &format!("{header}\n{signature}")).await
@@ -250,7 +251,9 @@ async fn license_token(
         return Err("missing parent product id".to_string());
     }
 
-    let store = get_store_tokens(client, tokens).await.map_err(|e| e.to_string())?;
+    let store = get_store_tokens(client, tokens)
+        .await
+        .map_err(|e| e.to_string())?;
     xodus::licensing::content::get_license_token(
         client,
         store.device,
@@ -343,7 +346,9 @@ fn candidate_endpoints(url: &str, table: &TitleMgtResponse) -> Vec<ResolvedEndpo
         })
         .collect();
     }
-    title::resolve_relying_party(url, table).into_iter().collect()
+    title::resolve_relying_party(url, table)
+        .into_iter()
+        .collect()
 }
 
 /// A title table entry for the URL that names a relying party.
@@ -383,7 +388,11 @@ fn parse_xbl_request(body: &str) -> Result<XblRequest, String> {
             .map_err(|_| "request body is not valid base64".to_string())?
     };
     Ok(XblRequest {
-        method: if method.is_empty() { "GET".to_string() } else { method },
+        method: if method.is_empty() {
+            "GET".to_string()
+        } else {
+            method
+        },
         url,
         force_refresh,
         title_id,
@@ -423,9 +432,10 @@ async fn ensure_session(state: &State, client_id: &str, title_id: u32) -> Result
     let mut sessions = state.sessions.lock().await;
     if !sessions.get(&key).is_some_and(TitleSession::is_valid) {
         tracing::info!("establishing Xbox Live session for title {title_id}");
-        let session = TitleSession::establish(&state.client, &state.tokens, client_id, i64::from(title_id))
-            .await
-            .map_err(|err| format!("Xbox Live sign-in for title {title_id} failed: {err}"))?;
+        let session =
+            TitleSession::establish(&state.client, &state.tokens, client_id, i64::from(title_id))
+                .await
+                .map_err(|err| format!("Xbox Live sign-in for title {title_id} failed: {err}"))?;
         sessions.insert(key.clone(), session);
     }
     Ok(key)
@@ -524,7 +534,11 @@ fn authorization(token: &XstsToken) -> Result<String, String> {
     Ok(format!("XBL3.0 x={uhs};{}", token.token))
 }
 
-async fn user_only_header(state: &Arc<State>, rp: String, force_refresh: bool) -> Result<String, String> {
+async fn user_only_header(
+    state: &Arc<State>,
+    rp: String,
+    force_refresh: bool,
+) -> Result<String, String> {
     if !force_refresh {
         if let Some((header, at)) = state.xsts.lock().await.get(&rp) {
             if at.elapsed() < XSTS_LIFETIME {
