@@ -4,7 +4,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use xodus::tokens::TokenManager;
 
-use crate::license::get_license;
+use xtux_games::license::get_license;
 
 pub async fn run(
     client: &reqwest::Client,

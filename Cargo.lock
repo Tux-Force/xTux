@@ -7203,7 +7203,6 @@ dependencies = [
  "reqwest 0.13.4",
  "rustix",
  "serde_json",
- "sha1",
  "tao",
  "tempfile",
  "tokio",
@@ -7211,6 +7210,23 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wry",
+ "xodus",
+ "xtux-games",
+]
+
+[[package]]
+name = "xtux-games"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "reqwest 0.13.4",
+ "serde_json",
+ "sha1",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
  "xodus",
 ]
 

@@ -17,7 +17,7 @@ use tokio::process::Command;
 use xodus::models::secrets::Token;
 use xodus::tokens::TokenManager;
 
-use crate::license::get_license;
+use xtux_games::license::get_license;
 
 #[cfg(target_os = "linux")]
 fn make_temp_file(_folder: &str) -> std::io::Result<std::fs::File> {
@@ -304,9 +304,9 @@ pub async fn run(
 
     // Use the DXVK/vkd3d-proton DLLs that `prefix init` installed, unless the user set overrides.
     if std::env::var_os("WINEDLLOVERRIDES").is_none() {
-        if let Some(overrides) = super::prefix::resolve_prefix(None)
+        if let Some(overrides) = xtux_games::prefix::resolve_prefix(None)
             .as_deref()
-            .and_then(super::prefix::recorded_overrides)
+            .and_then(xtux_games::prefix::recorded_overrides)
         {
             identity_env.push(("WINEDLLOVERRIDES", overrides));
         }
@@ -329,7 +329,7 @@ pub async fn run(
     }
 
     // Answers GDK calls that need the Microsoft services, see bridge.rs.
-    match super::bridge::start(client.clone(), tokens.clone()).await {
+    match xtux_games::bridge::start(client.clone(), tokens.clone()).await {
         Ok(bridge) => {
             identity_env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
             identity_env.push(("XODUS_BRIDGE_SECRET", bridge.secret));

@@ -8,10 +8,11 @@
 //! - records what was done in `xtux-prefix.json`, which `run` reads to set the DLL overrides.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use serde_json::json;
 use tokio::process::Command;
+
+use crate::Progress;
 
 pub const STATE_FILE: &str = "xtux-prefix.json";
 
@@ -22,11 +23,11 @@ const VKD3D_DLLS: &[&str] = &["d3d12.dll", "d3d12core.dll"];
 const CERTIFICATES: &[(&str, &[u8])] = &[
     (
         "Microsoft TLS RSA Root G2",
-        include_bytes!("../../assets/certs/microsoft-tls-rsa-root-g2.crt"),
+        include_bytes!("../assets/certs/microsoft-tls-rsa-root-g2.crt"),
     ),
     (
         "Microsoft TLS ECC Root G2",
-        include_bytes!("../../assets/certs/microsoft-tls-ecc-root-g2.crt"),
+        include_bytes!("../assets/certs/microsoft-tls-ecc-root-g2.crt"),
     ),
 ];
 
@@ -55,22 +56,17 @@ pub fn recorded_overrides(prefix: &Path) -> Option<String> {
     state["dll_overrides"].as_str().map(str::to_string)
 }
 
-pub async fn init(client: &reqwest::Client, options: InitOptions) -> ExitCode {
-    match run_init(client, options).await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("prefix init failed: {err}");
-            ExitCode::FAILURE
-        }
-    }
+/// Creates or updates a prefix; returns the prefix path.
+pub async fn init(client: &reqwest::Client, options: InitOptions, progress: &dyn Progress) -> crate::Result<PathBuf> {
+    Ok(run_init(client, options, progress).await?)
 }
 
-async fn run_init(client: &reqwest::Client, options: InitOptions) -> Result<(), String> {
+async fn run_init(client: &reqwest::Client, options: InitOptions, progress: &dyn Progress) -> Result<PathBuf, String> {
     let prefix = resolve_prefix(options.prefix.as_deref()).ok_or("cannot determine the prefix, pass --prefix")?;
-    println!("Prefix: {}", prefix.display());
+    progress.message(&format!("Prefix: {}", prefix.display()));
 
     if !prefix.join("drive_c").is_dir() {
-        println!("Creating the prefix with wineboot ...");
+        progress.message("Creating the prefix with wineboot");
         wine(&options.wine, &prefix, &["wineboot", "-u"]).await?;
         wait_wineserver(&options.wine, &prefix).await;
     }
@@ -95,9 +91,9 @@ async fn run_init(client: &reqwest::Client, options: InitOptions) -> Result<(), 
                 )
             }
             None => {
-                let (dxvk_version, dxvk) = fetch_release(client, "doitsujin/dxvk", ".tar.gz", work.path()).await?;
+                let (dxvk_version, dxvk) = fetch_release(client, "doitsujin/dxvk", ".tar.gz", work.path(), progress).await?;
                 let (vkd3d_version, vkd3d) =
-                    fetch_release(client, "HansKristian-Work/vkd3d-proton", ".tar.zst", work.path()).await?;
+                    fetch_release(client, "HansKristian-Work/vkd3d-proton", ".tar.zst", work.path(), progress).await?;
                 (find_dir(&dxvk, "x64")?, find_dir(&vkd3d, "x64")?, dxvk_version, vkd3d_version)
             }
         };
@@ -105,7 +101,7 @@ async fn run_init(client: &reqwest::Client, options: InitOptions) -> Result<(), 
         let backup = prefix.join("xtux-builtin-backup");
         install_dlls(&dxvk_dir, &system32, &backup, DXVK_DLLS)?;
         install_dlls(&vkd3d_dir, &system32, &backup, VKD3D_DLLS)?;
-        println!("Installed DXVK {dxvk_version} and vkd3d-proton {vkd3d_version}");
+        progress.message(&format!("Installed DXVK {dxvk_version} and vkd3d-proton {vkd3d_version}"));
         overridden.extend(DXVK_DLLS.iter().chain(VKD3D_DLLS));
         state["dxvk"] = json!(dxvk_version);
         state["vkd3d_proton"] = json!(vkd3d_version);
@@ -113,7 +109,7 @@ async fn run_init(client: &reqwest::Client, options: InitOptions) -> Result<(), 
 
     import_certificates(&options.wine, &prefix).await?;
     state["certificates"] = json!(CERTIFICATES.iter().map(|(name, _)| *name).collect::<Vec<_>>());
-    println!("Added {} root certificates", CERTIFICATES.len());
+    progress.message(&format!("Added {} root certificates", CERTIFICATES.len()));
 
     if !overridden.is_empty() {
         let names: Vec<&str> = overridden.iter().map(|d| d.trim_end_matches(".dll")).collect();
@@ -121,8 +117,7 @@ async fn run_init(client: &reqwest::Client, options: InitOptions) -> Result<(), 
     }
     let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
     std::fs::write(prefix.join(STATE_FILE), text).map_err(|e| e.to_string())?;
-    println!("Done. `xtux-cli run` uses this prefix setup when WINEPREFIX points here.");
-    Ok(())
+    Ok(prefix)
 }
 
 async fn wine(wine: &str, prefix: &Path, args: &[&str]) -> Result<(), String> {
@@ -156,6 +151,7 @@ async fn fetch_release(
     repo: &str,
     suffix: &str,
     work: &Path,
+    progress: &dyn Progress,
 ) -> Result<(String, PathBuf), String> {
     let release: serde_json::Value = client
         .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
@@ -180,7 +176,7 @@ async fn fetch_release(
     let name = asset["name"].as_str().unwrap_or("release");
     let url = asset["browser_download_url"].as_str().ok_or("asset without download url")?;
 
-    println!("Downloading {name} ...");
+    progress.message(&format!("Downloading {name}"));
     let bytes = client
         .get(url)
         .header("User-Agent", "xtux")

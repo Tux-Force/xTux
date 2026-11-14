@@ -14,7 +14,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
 use xodus::tokens::TokenManager;
 
-use crate::license::get_license;
+use xtux_games::license::get_license;
 use crate::package::{get_content_id, get_packages};
 
 struct Job {

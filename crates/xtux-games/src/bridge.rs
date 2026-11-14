@@ -87,7 +87,7 @@ pub async fn start(client: reqwest::Client, tokens: TokenManager) -> std::io::Re
             let state = state.clone();
             tokio::spawn(async move {
                 if let Err(err) = handle(stream, &state).await {
-                    eprintln!("xodus bridge: request failed: {err}");
+                    tracing::warn!("request failed: {err}");
                 }
             });
         }
@@ -204,7 +204,7 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
         {
             Ok(token) => respond(&mut stream, "200 OK", &token).await,
             Err(err) => {
-                eprintln!("xodus bridge: license token request failed: {err}");
+                tracing::warn!("license token request failed: {err}");
                 respond(&mut stream, "502 Bad Gateway", &err).await
             }
         },
@@ -214,7 +214,7 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
             }
             Ok(None) => respond(&mut stream, "204 No Content", "").await,
             Err(err) => {
-                eprintln!("xodus bridge: Xbox Live token request failed: {err}");
+                tracing::warn!("Xbox Live token request failed: {err}");
                 respond(&mut stream, "502 Bad Gateway", &err).await
             }
         },
@@ -250,7 +250,7 @@ async fn license_token(
         return Err("missing parent product id".to_string());
     }
 
-    let store = get_store_tokens(client, tokens).await?;
+    let store = get_store_tokens(client, tokens).await.map_err(|e| e.to_string())?;
     xodus::licensing::content::get_license_token(
         client,
         store.device,
@@ -306,7 +306,7 @@ async fn endpoint_table(
         let table = match fetch_endpoints(&state.client, title_id, authorization).await {
             Ok(table) => table,
             Err(err) if title_id != 0 => {
-                eprintln!("xodus bridge: no endpoints for title {title_id}: {err}");
+                tracing::warn!("no endpoints for title {title_id}: {err}");
                 match endpoints.get(&0) {
                     Some(default) => default.clone(),
                     None => fetch_endpoints(&state.client, 0, None).await?,
@@ -405,11 +405,11 @@ async fn xbl_token(state: Arc<State>, body: &str) -> Result<Option<(String, Stri
         let rp = endpoint.relying_party;
         match user_only_header(&state, rp.clone(), request.force_refresh).await {
             Ok(header) => {
-                eprintln!("xodus bridge: user token for {} via {rp}", request.url);
+                tracing::info!("user token for {} via {rp}", request.url);
                 return Ok(Some((header, String::new())));
             }
             Err(err) => {
-                eprintln!("xodus bridge: relying party {rp} failed: {err}");
+                tracing::warn!("relying party {rp} failed: {err}");
                 last_err = Some(err);
             }
         }
@@ -422,7 +422,7 @@ async fn ensure_session(state: &State, client_id: &str, title_id: u32) -> Result
     let key = format!("{client_id}:{title_id}");
     let mut sessions = state.sessions.lock().await;
     if !sessions.get(&key).is_some_and(TitleSession::is_valid) {
-        eprintln!("xodus bridge: establishing Xbox Live session for title {title_id}");
+        tracing::info!("establishing Xbox Live session for title {title_id}");
         let session = TitleSession::establish(&state.client, &state.tokens, client_id, i64::from(title_id))
             .await
             .map_err(|err| format!("Xbox Live sign-in for title {title_id} failed: {err}"))?;
@@ -486,7 +486,7 @@ async fn title_bound_token(
             match title_token(state, &session_key, &rp, request.force_refresh).await {
                 Ok(result) => result,
                 Err(err) => {
-                    eprintln!("xodus bridge: {err}");
+                    tracing::warn!("{err}");
                     last_err = Some(err);
                     continue;
                 }
@@ -506,8 +506,8 @@ async fn title_bound_token(
             .map_err(|err| format!("request signing failed: {err}"))?,
             None => String::new(),
         };
-        eprintln!(
-            "xodus bridge: title token for {} via {rp}{}",
+        tracing::info!(
+            "title token for {} via {rp}{}",
             request.url,
             if signature.is_empty() { "" } else { ", signed" }
         );

@@ -7,7 +7,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 use xodus::tokens::TokenManager;
 
 mod commands;
-mod license;
 mod package;
 mod webview;
 
@@ -159,7 +158,9 @@ struct CliArgs {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let filter = tracing_subscriber::EnvFilter::from_env("XODUS_LOG");
+    // Show library progress (game bridge, links) unless XODUS_LOG chooses something else.
+    let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info"));
     let registry =
         tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_filter(filter));
 
@@ -273,9 +274,9 @@ async fn main() -> ExitCode {
                     skip_graphics,
                 },
         } => {
-            commands::prefix::init(
+            commands::prefix_init(
                 &client,
-                commands::prefix::InitOptions {
+                xtux_games::prefix::InitOptions {
                     wine,
                     prefix,
                     from_proton,
@@ -291,7 +292,7 @@ async fn main() -> ExitCode {
             exe,
             market,
         } => {
-            let source = match commands::link::resolve_source(&source) {
+            let source = match xtux_games::link::resolve_source(&source) {
                 Ok(source) => source,
                 Err(err) => {
                     eprintln!("{err}");

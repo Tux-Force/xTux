@@ -6,6 +6,7 @@ default-run = "xtux-cli"
 
 [dependencies]
 xodus = { path = "../xodus" }
+xtux-games = { path = "../xtux-games" }
 msixvc = { path = "../msixvc" }
 eappx = { git = "https://github.com/tuxuser/eappx-rs" }
 base64 = { workspace = true }
@@ -19,7 +20,6 @@ wry = "0.56.1"
 async-trait = "0.1.92"
 clap = { version = "4.6.6", features = ["derive"] }
 serde_json = "1.0.151"
-sha1 = "0.10"
 chrono = { workspace = true }
 inquire = "0.9.4"
 futures-util = "0.3.34"
