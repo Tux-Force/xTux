@@ -55,6 +55,30 @@ impl XstsResponse {
             .first()
             .map(|claim| claim.uhs.as_str())
     }
+
+    /// Xbox user id (XUID) claim.
+    pub fn xuid(&self) -> Option<&str> {
+        self.display_claims
+            .xui
+            .first()
+            .and_then(|claim| claim.xid.as_deref())
+    }
+
+    /// Classic gamertag claim.
+    pub fn gamertag(&self) -> Option<&str> {
+        self.display_claims
+            .xui
+            .first()
+            .and_then(|claim| claim.gtg.as_deref())
+    }
+
+    /// Age group claim, for example "Adult".
+    pub fn age_group(&self) -> Option<&str> {
+        self.display_claims
+            .xui
+            .first()
+            .and_then(|claim| claim.agg.as_deref())
+    }
 }
 
 #[derive(Debug, Serialize)]
