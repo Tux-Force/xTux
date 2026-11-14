@@ -1,47 +1,57 @@
-<p align="center"><img width="128" src="assets/Icon/Icon.ico" /></p>
-<h1 align="center">Xodus</h1>
-<p align="center">The great gaming migration to Linux</p>
-<p align="center">
-    <a href="https://discord.gg/ZG774FK4tq">
-        <img src="https://img.shields.io/discord/1123890623586504714?logo=discord&style=for-the-badge&color=red&label=Game+Launchers+Reverse+Engineering" alt="Discord" />
-    </a>
-</p>
+<h1 align="center">xTux</h1>
+<p align="center">Play the PC games you own or subscribe to on Linux — with real licenses, no cracks.</p>
+<p align="center"><a href="https://github.com/Tux-Force">Tux-Force</a> · soft fork of <a href="https://github.com/xodus-gaming/xodus">Xodus</a></p>
 
 > [!CAUTION]
-> This is an unofficial project - use at your own risk. It is not affiliated with, endorsed by, or sponsored by Microsoft or XBOX; all trademarks, product names, and company names or logos mentioned herein are the property of their respective owners.
-> This is the *only official* repository of Xodus. We are not affiliated with any other projects using our name or repository.
+> This is an unofficial community project - use at your own risk. It is not affiliated with, endorsed by, or sponsored
+> by Microsoft or XBOX; all trademarks, product names, and company names or logos mentioned herein are the property
+> of their respective owners.
 
-## Current state of the project
+## What is xTux?
 
-The project can now login, download packages and obtain licenses for games.
+xTux is the core of [Tux-Force](https://github.com/Tux-Force): it signs you in with your Microsoft account, fetches
+licenses from the Microsoft licensing service, downloads or reuses game packages and starts GDK games in Wine.
+Only games your account is entitled to run; there is no license bypass.
 
-These parts are still quite scattered around.
+xTux is a **soft fork of [Xodus](https://github.com/xodus-gaming/xodus)** by the xodus-gaming community. Everything
+here builds on their work. We stay close to upstream, merge it regularly and send fixes back as pull requests.
+xTux exists to move faster on the pieces a complete Linux experience needs, and because Tux-Force explicitly welcomes
+AI-assisted development (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main/CONTRIBUTING.md)).
 
-- [x] Device login
-- [x] User login
-- [x] XBOX authorization
-- [x] MSIXVC download
-- [x] On-demand .exe decryption [#50](https://github.com/xodus-gaming/xodus/issues/50)
-- [ ] MSIXVC2 support [#53](https://github.com/xodus-gaming/xodus/issues/53)
+### What xTux adds on top of Xodus
 
-## FAQ
+- **Shared installs:** `xodus-cli run` and `xodus-cli link` start games straight from an installation made by the
+  Windows Xbox app (dual boot, NTFS), no second download.
+- **Bridge for GDK services:** `run` starts a loopback service with a per-run secret that answers what the game's
+  xgameruntime needs from Microsoft without handing account tokens to the game:
+  - store license tokens (`XStoreQueryLicenseToken`),
+  - title-bound, signed Xbox Live tokens (device, title and user token, as on Windows), with relying parties from the
+    title's own endpoint table.
+- **Game start fixes:** software video decoders for intro videos, identity and license state for xgameruntime.
+- **Merged upstream pull requests** that are not in Xodus `main` yet (#216, #237, #242, #243, #217, #212, #197, #215).
 
-**Q: What is Xodus**  
-Xodus aims to bring XBOX PC games to Linux and possibly Mac devices.
+The matching runtime and Wine changes live in [Tux-Force/xgameruntime](https://github.com/Tux-Force/xgameruntime)
+and [Tux-Force/wine](https://github.com/Tux-Force/wine).
 
-**Q: When can I play my Minecraft Bedrock?**  
-While Xodus is quickly maturing, there is still a lot of work to support it from Wine standpoint to provide necessary XBOX Services to games.  
-_TL;DR_ soon<sup>tm</sup>
+## Current state
 
-**Q: How to get involved?**  
-Start by joining our Discord or review any open GitHub issues .
+| Game | State |
+|---|---|
+| Farming Simulator 25 | Plays: menus, saves, ModHub, Xbox Live (achievements, presence, real-time) and clean exit |
+| Microsoft Flight Simulator 2024 | Signs in and reaches its services, then fails on its own backend (under investigation) |
 
-**Q: What games will be supported?**  
-We hope to manage to support most of the catalog, the limitation is the game has to be GDK and in MSIXVC format.  
-So far `Gears of War 4` is a prominent unsupported title for the time being.
+Binaries and crates still carry the Xodus names (`xodus-cli`, `xodus-service`) to keep merging upstream easy.
 
-**Q: Will XBOX Backward Compatibility on PC work?**  
-While Xodus is capable of downloading and running those titles. It's possible these games will work only after additional patches to wine, dxvk or vkd3d-proton.
+## Quick start
+
+```bash
+# sign in once
+xodus-cli login
+# run a game installed by the Windows Xbox app, or a folder downloaded with xodus-cli
+WINEPREFIX=~/Games/xtux-prefix xodus-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
+```
+
+Games that need D3D12 feature levels beyond Wine's built-in vkd3d need vkd3d-proton and DXVK in the prefix.
 
 ## Building
 
@@ -119,5 +129,7 @@ Options:
 ```
 
 ## Special Thanks
+
+- The [Xodus](https://github.com/xodus-gaming/xodus) team and contributors, on whose work xTux is built
 
 - [XvdTool.Streaming](https://github.com/LukeFZ/XvdTool.Streaming) and [CikExtractor](https://github.com/LukeFZ/CikExtractor) by LukeFZ
