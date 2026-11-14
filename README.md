@@ -21,9 +21,9 @@ licenses from the Microsoft licensing service, downloads or reuses game packages
 Only games your account is entitled to run; there is no license bypass.
 
 xTux is a **soft fork of [Xodus](https://github.com/xodus-gaming/xodus)** by the xodus-gaming community. Everything
-here builds on their work. We stay close to upstream, merge it regularly and send fixes back as pull requests.
-xTux exists to move faster on the pieces a complete Linux experience needs, and because Tux-Force explicitly welcomes
-AI-assisted development (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main/CONTRIBUTING.md)).
+here builds on their work. We pull in new upstream code when it is useful; otherwise xTux develops independently
+to move faster on everything a complete Linux experience needs. Tux-Force is built with AI and welcomes AI-assisted
+contributions (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main/CONTRIBUTING.md)).
 
 ### What xTux adds on top of Xodus
 
