@@ -271,6 +271,15 @@ pub async fn run(
         }
     }
 
+    // Answers GDK calls that need the Microsoft services, see bridge.rs.
+    match super::bridge::start(client.clone(), tokens.clone()).await {
+        Ok(bridge) => {
+            identity_env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
+            identity_env.push(("XODUS_BRIDGE_SECRET", bridge.secret));
+        }
+        Err(err) => eprintln!("Could not start the xodus bridge: {err}"),
+    }
+
     let mut wn = Command::new(wine)
         .arg(nt_entry)
         .envs(identity_env)
