@@ -150,8 +150,33 @@ fn load_raw_smbios() -> io::Result<Vec<u8>> {
     raw_smbios_from_device()
 }
 
+/// Why the next password prompt appears; printed on the terminal and, without one (xtux-service), shown as a desktop
+/// notification because the polkit dialog only names the command.
+#[cfg(target_os = "linux")]
+const SMBIOS_PROMPT: &str = "xTux registers this PC with Microsoft once, like Windows does when it first signs in. \
+     For that it reads the system information of the firmware (manufacturer, model, serial number, UUID from \
+     /sys/firmware/dmi), which only root may read, so the system asks for your password. Cancelling is fine: the \
+     registration then goes ahead without these values. XTUX_SKIP_SMBIOS=1 skips the question.";
+
 #[cfg(target_os = "linux")]
 fn load_raw_smbios() -> io::Result<Vec<u8>> {
+    use std::io::IsTerminal;
+
+    if std::env::var("XTUX_SKIP_SMBIOS").is_ok_and(|v| v == "1") {
+        return Err(io::Error::other("skipped by XTUX_SKIP_SMBIOS"));
+    }
+    tracing::warn!("{SMBIOS_PROMPT}");
+    if !std::io::stderr().is_terminal() {
+        let _ = Command::new("notify-send")
+            .args([
+                "--app-name=xTux",
+                "xTux asks for your password",
+                SMBIOS_PROMPT,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     let cmd = Command::new("pkexec")
         .args(["cat", "/sys/firmware/dmi/entries/1-0/raw"])
         .stdout(Stdio::piped())
@@ -161,6 +186,7 @@ fn load_raw_smbios() -> io::Result<Vec<u8>> {
     if output.status.success() {
         Ok(output.stdout)
     } else {
+        tracing::warn!("no firmware system information, registering the PC without it");
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "unable to probe SMBIOS data",
