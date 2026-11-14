@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-dark-bg.png" />
+    <img src="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-light-bg.png" alt="Tux-Force" width="420" />
+  </picture>
+</p>
+
 <h1 align="center">xTux</h1>
 <p align="center">Play the PC games you own or subscribe to on Linux — with real licenses, no cracks.</p>
 <p align="center"><a href="https://github.com/Tux-Force">Tux-Force</a> · soft fork of <a href="https://github.com/xodus-gaming/xodus">Xodus</a></p>
