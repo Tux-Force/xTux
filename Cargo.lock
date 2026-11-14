@@ -7220,13 +7220,16 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "msixvc",
  "reqwest 0.13.4",
+ "rustix",
  "serde_json",
  "sha1",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "uuid",
  "xodus",
 ]
 

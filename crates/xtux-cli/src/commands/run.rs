@@ -1,117 +1,12 @@
-use std::collections::HashMap;
-use std::os::fd::{AsFd, IntoRawFd};
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use msixvc::layout::PAGE_SIZE;
-use msixvc::xvd::{SegmentFile, XvdFile};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
-#[cfg(target_os = "linux")]
-use rustix::fs::{MemfdFlags, memfd_create};
-use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-#[cfg(not(target_os = "linux"))]
-use tempfile::{tempdir, tempfile, tempfile_in};
-use tokio::fs::{File, OpenOptions};
-use tokio::process::Command;
-use xodus::models::secrets::Token;
 use xodus::tokens::TokenManager;
+use xtux_games::run::{LaunchOptions, launch};
 
-use xtux_games::license::get_license;
-
-#[cfg(target_os = "linux")]
-fn make_temp_file(_folder: &str) -> std::io::Result<std::fs::File> {
-    let fd = memfd_create("xodus", MemfdFlags::CLOEXEC).map_err(std::io::Error::from)?;
-    Ok(std::fs::File::from(fd))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn make_temp_file(folder: &str) -> std::io::Result<std::fs::File> {
-    if folder.is_empty() {
-        tempfile()
-    } else {
-        tempfile_in(folder)
-    }
-}
-
-#[cfg(target_os = "macos")]
-async fn prepare(lfiles: &HashMap<String, SegmentFile>) -> (impl AsyncFnOnce(), String) {
-    let disk_size: u64 = lfiles
-        .iter()
-        .filter(|f| f.1.keep_encrypted)
-        .map(|f| f.1.length + 4 * PAGE_SIZE as u64)
-        .reduce(|o, s| o + s)
-        .unwrap();
-
-    let device_s = String::from_utf8(
-        Command::new("/usr/bin/hdiutil")
-            .arg("attach")
-            .arg("-nomount")
-            .arg(format!("ram://{}", disk_size.div_ceil(256)))
-            .output()
-            .await
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-
-    let device = device_s.trim();
-
-    let vol = uuid::Uuid::new_v4().to_string();
-
-    let fmt = Command::new("/sbin/newfs_hfs")
-        .arg("-v")
-        .arg(vol)
-        .arg(device)
-        .status()
-        .await
-        .unwrap();
-    assert!(fmt.success());
-
-    let mount_dir_obj = tempdir().unwrap();
-    let mount_dir = mount_dir_obj.path().to_str().unwrap();
-
-    let mnt = Command::new("/sbin/mount")
-        .arg("-t")
-        .arg("hfs")
-        .arg("-o")
-        .arg("nobrowse")
-        .arg("-v")
-        .arg(device)
-        .arg(mount_dir)
-        .status()
-        .await
-        .unwrap();
-    assert!(mnt.success());
-    let mount_dir_cl = mount_dir.to_string();
-    let device_cl = device.to_string();
-    (
-        async move || {
-            let mnt = Command::new("/sbin/umount")
-                .arg("-f")
-                .arg(mount_dir_cl)
-                .status()
-                .await
-                .unwrap();
-            assert!(mnt.success());
-
-            let mnt = Command::new("/usr/bin/hdiutil")
-                .arg("detach")
-                .arg("-force")
-                .arg(&device_cl)
-                .status()
-                .await
-                .unwrap();
-            assert!(mnt.success());
-        },
-        mount_dir.to_owned(),
-    )
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn prepare(_lfiles: &HashMap<String, SegmentFile>) -> (impl AsyncFnOnce(), String) {
-    (async || {}, "".to_owned())
-}
+use super::Print;
 
 pub async fn run(
     client: &reqwest::Client,
@@ -121,244 +16,33 @@ pub async fn run(
     exe: Option<String>,
     market: Option<String>,
 ) -> ExitCode {
-    let mut lfiles: HashMap<String, SegmentFile> = HashMap::new();
-
-    let out: &Path = Path::new(&source);
-    let out_absolute = match std::fs::canonicalize(out) {
-        Ok(path) => path,
-        Err(err) => {
-            eprintln!("Failed to resolve {:?}: {err}", out);
-            return ExitCode::FAILURE;
-        }
+    let options = LaunchOptions {
+        source: PathBuf::from(source),
+        wine,
+        exe,
+        market,
     };
-    let final_path = out.join(".xodus-streaming.msixvc");
-
-    let mut file = match OpenOptions::new().read(true).open(&final_path).await {
-        Ok(file) => file,
+    let game = match launch(client, tokens, options, &Print).await {
+        Ok(game) => game,
         Err(err) => {
-            eprintln!("Failed to open {:?}: {err}", final_path);
+            eprintln!("{err}");
             return ExitCode::FAILURE;
         }
     };
 
-    let xvd = match XvdFile::parse(&mut file).await {
-        Ok(xvd) => xvd,
+    // Ctrl+C asks the game to quit like on Windows instead of killing it.
+    let pid = game.pid;
+    if let Err(err) = ctrlc::set_handler(move || {
+        let _ = kill(Pid::from_raw(pid as i32), Signal::SIGINT);
+    }) {
+        eprintln!("could not install the Ctrl+C handler: {err}");
+    }
+
+    match game.wait().await {
+        Ok(status) => ExitCode::from(status.code().map(|c| c as u8).unwrap_or(0)),
         Err(err) => {
-            eprintln!("Failed to parse XVD header of {:?}: {err}", final_path);
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let files = match xvd.parse_user_package_files(&mut file).await {
-        Ok(files) => files,
-        Err(err) => {
-            eprintln!("Failed to parse user package files: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    for (k, v) in &files {
-        if k == "SegmentMetadata.bin" {
-            let sfiles = match xvd.parse_segment_metadata(&mut file, v).await {
-                Ok(sfiles) => sfiles,
-                Err(err) => {
-                    eprintln!("Failed to parse segment metadata: {err}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            lfiles = sfiles;
+            eprintln!("{err}");
+            ExitCode::FAILURE
         }
     }
-
-    // Classic files
-    if lfiles.is_empty() {
-        let sfiles = match xvd
-            .parse_ntfs_segment_metadata(&mut file, !lfiles.is_empty())
-            .await
-        {
-            Ok(sfiles) => sfiles,
-            Err(err) => {
-                eprintln!("Failed to parse NTFS segment metadata: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-        for (n, sfile) in &sfiles {
-            if sfile.length.div_ceil(PAGE_SIZE as u64) as usize != sfile.data_hashs.len() {
-                println!("{}: {} {}", n, sfile.offset, sfile.length);
-            }
-        }
-        lfiles.extend(sfiles);
-    }
-
-    let license = get_license(
-        client,
-        tokens,
-        xvd.content_id().to_string(),
-        market.unwrap_or("neutral".to_string()),
-    )
-    .await;
-    if let Err(err) = license {
-        eprintln!("{}", err);
-        return ExitCode::FAILURE;
-    }
-    let (key, game_splicense) = license.unwrap();
-    if game_splicense.content_keys.len() != 1 {
-        eprintln!(
-            "unexpected number of content keys {}",
-            game_splicense.content_keys.len()
-        );
-        return ExitCode::FAILURE;
-    }
-    let Some((_, content_key)) = game_splicense.content_keys.into_iter().next() else {
-        return ExitCode::FAILURE;
-    };
-
-    let full_key = match content_key.unpack(&key) {
-        Ok(full_key) => full_key,
-        Err(err) => {
-            eprintln!("Failed to unpack content key: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let mut fds = vec![];
-
-    let (cleanup, mount_dir) = prepare(&lfiles).await;
-
-    for file in &lfiles {
-        if !file.1.keep_encrypted {
-            continue;
-        }
-        let mut game_exe = File::from_std(make_temp_file(&mount_dir).unwrap());
-
-        let source_path = out.join(file.0.replace("\\", "/"));
-
-        let mut raw = tokio::fs::read(&source_path).await.unwrap();
-        // Installs made by the Windows Xbox app store the file at its logical size, while the
-        // decryption works on whole pages. Only the last, partial block is lost this way.
-        let padded = (file.1.length as usize).div_ceil(PAGE_SIZE) * PAGE_SIZE;
-        if raw.len() < padded {
-            raw.resize(padded, 0);
-        }
-        let mut i = std::io::Cursor::new(raw);
-
-        xvd.mount_mem_fd(&mut i, &mut game_exe, file.1, *full_key, |_, _| {})
-            .await
-            .unwrap();
-
-        let stdf = game_exe.into_std().await;
-
-        let mut flags = fcntl_getfd(stdf.as_fd()).unwrap();
-        flags.remove(FdFlags::CLOEXEC);
-        fcntl_setfd(stdf.as_fd(), flags).unwrap();
-
-        fds.push((file.0, stdf.into_raw_fd()));
-    }
-
-    let mut env_value = String::new();
-    let nt_prefix = out_absolute.to_string_lossy().replace("/", "\\");
-    let nt_prefix = nt_prefix.trim_end_matches('\\');
-
-    let mut nt_entry = None;
-
-    for fd in fds {
-        if !env_value.is_empty() {
-            env_value.push('|');
-        }
-
-        let nt_suffix = fd.0.trim_start_matches('\\');
-        let nt_path = format!("\\??\\Z:{}\\{}", nt_prefix, nt_suffix);
-        if let Some(exe) = &exe {
-            if exe == fd.0 {
-                nt_entry = Some(nt_path)
-            }
-        } else if nt_entry.is_none() {
-            nt_entry = Some(nt_path)
-        }
-
-        env_value.push_str(&format!("{}:\\??\\Z:{}\\{}", fd.1, nt_prefix, nt_suffix))
-    }
-
-    let Some(nt_entry) = nt_entry else {
-        eprintln!("Could not find .exe");
-        return ExitCode::FAILURE;
-    };
-
-    // Identity of the signed in user, handed to the game's XUser implementation.
-    let mut identity_env: Vec<(&str, String)> = Vec::new();
-    if let (Ok(Token::Legacy(dev_token)), Ok(Token::Legacy(legacy))) =
-        (tokens.get_device_sts_token(), tokens.get_user_sts_token())
-    {
-        let xsts =
-            xodus::api::xbox::run(client, dev_token, legacy, "http://xboxlive.com").await;
-        // Tokens for Xbox Live services are handed out per request through the bridge.
-        if let Some(xuid) = xsts.xuid() {
-            identity_env.push(("XODUS_XUID", xuid.to_string()));
-        }
-        if let Some(gamertag) = xsts.gamertag() {
-            identity_env.push(("XODUS_GAMERTAG", gamertag.to_string()));
-        }
-        if let Some(age_group) = xsts.age_group() {
-            identity_env.push(("XODUS_AGE_GROUP", age_group.to_string()));
-        }
-    }
-
-    // Use the DXVK/vkd3d-proton DLLs that `prefix init` installed, unless the user set overrides.
-    if std::env::var_os("WINEDLLOVERRIDES").is_none() {
-        if let Some(overrides) = xtux_games::prefix::resolve_prefix(None)
-            .as_deref()
-            .and_then(xtux_games::prefix::recorded_overrides)
-        {
-            identity_env.push(("WINEDLLOVERRIDES", overrides));
-        }
-    }
-
-    // Hardware video decoders hand out frames in GPU memory (CUDA, Vulkan), which Wine's media
-    // pipeline cannot take; games then wait forever for their intro videos (MSFS 2024). Prefer
-    // the software decoders unless the user chose ranks themselves.
-    if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_none() {
-        identity_env.push((
-            "GST_PLUGIN_FEATURE_RANK",
-            [
-                "nvh264dec", "nvh265dec", "nvav1dec", "nvvp8dec", "nvvp9dec", "nvjpegdec",
-                "nvmpegvideodec", "nvmpeg2videodec", "nvmpeg4videodec", "vulkanh264dec",
-                "vulkanh265dec", "vulkanav1dec",
-            ]
-            .map(|d| format!("{d}:NONE"))
-            .join(","),
-        ));
-    }
-
-    // Answers GDK calls that need the Microsoft services, see bridge.rs.
-    match xtux_games::bridge::start(client.clone(), tokens.clone()).await {
-        Ok(bridge) => {
-            identity_env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
-            identity_env.push(("XODUS_BRIDGE_SECRET", bridge.secret));
-        }
-        Err(err) => eprintln!("Could not start the xodus bridge: {err}"),
-    }
-
-    let mut wn = Command::new(wine)
-        .arg(nt_entry)
-        .envs(identity_env)
-        .env("WINE_DLL_FILE_MAP", env_value)
-        .env("XODUS_PACKAGE_ID", xvd.content_id().simple().to_string())
-        // Only reached after the license was obtained from the Microsoft licensing service.
-        .env("XODUS_LICENSE_VERIFIED", "1")
-        .spawn()
-        .unwrap();
-
-    let pid = wn.id().unwrap();
-
-    ctrlc::set_handler(move || {
-        if pid > 0 {
-            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGINT);
-        }
-    })
-    .expect("failed to install Ctrl+C handler");
-
-    let status = wn.wait().await.unwrap();
-
-    cleanup().await;
-
-    ExitCode::from(status.code().map(|c| c as u8).unwrap_or(0))
 }

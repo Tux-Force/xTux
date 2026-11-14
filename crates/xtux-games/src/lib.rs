@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod license;
+pub mod package;
 pub mod progress;
 
 #[cfg(unix)]
@@ -12,6 +13,8 @@ pub mod bridge;
 pub mod link;
 #[cfg(unix)]
 pub mod prefix;
+#[cfg(unix)]
+pub mod run;
 
 pub use error::{Error, Result};
 pub use progress::{Progress, Silent};
