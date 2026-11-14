@@ -158,7 +158,10 @@ impl Job {
     async fn run(self, request: Request) {
         // Launches and installs handle cancellation themselves (quit the game, remove partial files); other
         // requests just stop.
-        let result = if matches!(request, Request::Launch { .. } | Request::Install { .. }) {
+        let result = if matches!(
+            request,
+            Request::Launch { .. } | Request::Install { .. } | Request::SignIn { .. }
+        ) {
             self.handle(request).await
         } else {
             tokio::select! {
@@ -258,7 +261,47 @@ impl Job {
                     .map_err(error_body)?;
                 Ok(Response::Installed { destination })
             }
+            Request::SignIn { env } => {
+                xtux_games::Progress::message(&progress, "Opening the Microsoft sign-in window");
+                let mut helper = tokio::process::Command::new(sign_in_helper())
+                    .arg("login")
+                    .envs(env)
+                    .env("XTUX_NO_BANNER", "1")
+                    .env("XTUX_DIRECT", "1")
+                    .stdin(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .map_err(|e| ErrorBody::new(ErrorKind::Failed, format!("cannot start the sign-in helper: {e}")))?;
+                let status = tokio::select! {
+                    status = helper.wait() => status.map_err(|e| ErrorBody::new(ErrorKind::Failed, e.to_string()))?,
+                    _ = self.cancel.cancelled() => {
+                        let _ = helper.kill().await;
+                        return Err(ErrorBody::new(ErrorKind::Cancelled, "sign-in cancelled"));
+                    }
+                };
+                if !status.success() {
+                    return Err(ErrorBody::new(ErrorKind::SignedOut, format!("sign-in did not complete ({status})")));
+                }
+                let user = self.tokens.get_user().ok().map(|u| u.username);
+                Ok(Response::Status {
+                    version: xtux_protocol::VERSION,
+                    signed_in: user.is_some(),
+                    user,
+                })
+            }
             Request::Cancel { .. } => Err(ErrorBody::new(ErrorKind::InvalidRequest, "nested cancel")),
         }
     }
+}
+
+/// The sign-in helper: `XTUX_CLI`, `xtux-cli` next to the daemon, or `xtux-cli` from `PATH`.
+fn sign_in_helper() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("XTUX_CLI") {
+        return path.into();
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("xtux-cli")))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| "xtux-cli".into())
 }

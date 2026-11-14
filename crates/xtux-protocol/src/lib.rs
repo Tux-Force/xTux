@@ -81,6 +81,12 @@ pub enum Request {
         parallel: usize,
         market: Option<String>,
     },
+    /// Signs a user in: the daemon opens the Microsoft sign-in window in a helper process (`xtux-cli login`)
+    /// with this environment (it needs the client's display) and answers with the new status.
+    SignIn {
+        #[serde(default)]
+        env: Vec<(String, String)>,
+    },
     /// Stops the request with this id.
     Cancel { target: u64 },
 }
