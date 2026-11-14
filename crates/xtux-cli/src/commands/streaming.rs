@@ -13,7 +13,7 @@ use xtux_games::install::{self, InstallOptions, Source};
 use crate::package::get_content_id;
 
 const TEMPLATE: &str =
-    "{msg:30!} {bytes:>12}/{total_bytes:>12} {bytes_per_sec:>12} [{bar:40.cyan/blue}] {percent:>3}%";
+    "{msg:30!} {bytes:>12}/{total_bytes:>12} {bytes_per_sec:>12} [{bar:40.green/black}] {percent:>3}%";
 
 pub async fn run(
     client: &reqwest::Client,
@@ -121,7 +121,7 @@ async fn run_daemon(
 fn style() -> ProgressStyle {
     ProgressStyle::with_template(TEMPLATE)
         .unwrap_or_else(|_| ProgressStyle::default_bar())
-        .progress_chars("#>-")
+        .progress_chars("█▓░")
 }
 
 /// One overall bar plus one bar per file that is being downloaded.

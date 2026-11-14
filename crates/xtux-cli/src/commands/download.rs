@@ -66,9 +66,9 @@ pub async fn run(
         }
 
         let bar = Bar(ProgressBar::new(u64::try_from(file.file_size).unwrap_or(0)).with_style(
-            ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) ({eta})")
+            ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.green/black}] {bytes}/{total_bytes} ({bytes_per_sec}) ({eta})")
                 .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("#>-"),
+                .progress_chars("█▓░"),
         ));
         if let Err(err) = download_package_file(client, &file, Path::new("."), &bar, &cancel).await {
             bar.0.abandon();

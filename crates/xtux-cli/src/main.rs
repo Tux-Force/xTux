@@ -6,6 +6,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use xodus::tokens::TokenManager;
 
+mod banner;
 mod commands;
 mod package;
 mod webview;
@@ -203,6 +204,14 @@ async fn main() -> ExitCode {
         xodus::tokens::device::ensure_device_credentials(&client, &tokens).await;
     }
 
+    // The mascot greets long running commands.
+    #[cfg(unix)]
+    if matches!(
+        args.command,
+        SubCommand::Login | SubCommand::Streaming { .. } | SubCommand::Prefix { .. } | SubCommand::Run { .. }
+    ) {
+        banner::show();
+    }
     let code = match args.command {
         SubCommand::Download {
             product,
