@@ -43,16 +43,7 @@ pub async fn authenticate_xbox_user(
     client: &reqwest::Client,
     rps_ticket: String,
 ) -> reqwest::Result<XstsResponse> {
-    let mut resp = post_user_authenticate(client, rps_ticket.clone()).await?;
-
-    // Local workaround for xodus-gaming/xodus#238: some accounts receive
-    // delegation-compact tickets in five-part JWE form that Xbox rejects with
-    // HTTP 400 under the `d=` prefix. Retry once with the `t=` prefix.
-    if resp.status() == reqwest::StatusCode::BAD_REQUEST {
-        if let Some(rest) = rps_ticket.strip_prefix("d=") {
-            resp = post_user_authenticate(client, format!("t={rest}")).await?;
-        }
-    }
+    let resp = post_user_authenticate(client, rps_ticket).await?;
 
     resp.error_for_status()?.json().await
 }
