@@ -127,6 +127,8 @@ pub struct XstsRequest {
 #[serde(rename_all = "PascalCase")]
 pub struct TitleMgtResponse {
     pub end_points: Vec<TitleMgtEndPoint>,
+    /// Missing from title specific tables, which only list the title's own services.
+    #[serde(default)]
     pub signature_policies: Vec<TitleMgtSignaturePolicy>,
 }
 

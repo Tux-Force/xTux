@@ -274,9 +274,10 @@ async fn fetch_endpoints(
             .await
             .map_err(|err| err.to_string());
     }
+    // Title tables only list the title's own services; `?type=1` is rejected for them (414).
     let mut request = client
         .get(format!(
-            "https://title.mgt.xboxlive.com/titles/{title_id}/endpoints?type=1"
+            "https://title.mgt.xboxlive.com/titles/{title_id}/endpoints"
         ))
         .header("x-xbl-contract-version", "1");
     if let Some(authorization) = authorization {
@@ -321,30 +322,36 @@ async fn endpoint_table(
 /// Relying parties to try for a URL: the endpoint table entry, or for unknown `xsts.<service>`
 /// hosts (games name their own relying party that way) the usual spellings of it.
 fn candidate_endpoints(url: &str, table: &TitleMgtResponse) -> Vec<ResolvedEndpoint> {
-    if let Some(resolved) = title::resolve_relying_party(url, table) {
-        return vec![resolved];
-    }
-    let Some(host) = reqwest::Url::parse(url)
+    let host = reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
-    else {
-        return Vec::new();
-    };
-    if !host.starts_with("xsts.") {
-        return Vec::new();
+        .unwrap_or_default();
+    // resolve_relying_party falls back to the default relying party when nothing matches;
+    // for xsts.<service> hosts the service's own relying party is wanted instead.
+    let listed = title::get_endpoint(url, table).is_some();
+    if !listed && host.starts_with("xsts.") {
+        return [
+            format!("https://{host}"),
+            format!("https://{host}/"),
+            format!("http://{host}/"),
+            format!("rp://{host}/"),
+        ]
+        .into_iter()
+        .map(|relying_party| ResolvedEndpoint {
+            relying_party,
+            signature_policy: None,
+        })
+        .collect();
     }
-    [
-        format!("https://{host}"),
-        format!("https://{host}/"),
-        format!("http://{host}/"),
-        format!("rp://{host}/"),
-    ]
-    .into_iter()
-    .map(|relying_party| ResolvedEndpoint {
-        relying_party,
-        signature_policy: None,
-    })
-    .collect()
+    title::resolve_relying_party(url, table).into_iter().collect()
+}
+
+/// A title table entry for the URL that names a relying party.
+fn title_endpoint(url: &str, table: &TitleMgtResponse) -> Option<ResolvedEndpoint> {
+    let mut filtered = table.clone();
+    filtered.end_points.retain(|e| e.relying_party.is_some());
+    title::get_endpoint(url, &filtered)?;
+    title::resolve_relying_party(url, &filtered)
 }
 
 struct XblRequest {
@@ -463,10 +470,17 @@ async fn title_bound_token(
     let (default_token, _) =
         title_token(state, &session_key, title::DEFAULT_RELYING_PARTY, false).await?;
     let default_auth = authorization(&default_token)?;
-    let table = endpoint_table(state, request.title_id, Some(&default_auth)).await?;
+    let title_table = endpoint_table(state, request.title_id, Some(&default_auth)).await?;
+    let default_table = endpoint_table(state, 0, None).await?;
+
+    // The title's own services win; its catch-all entries carry no relying party.
+    let candidates = match title_endpoint(&request.url, &title_table) {
+        Some(endpoint) => vec![endpoint],
+        None => candidate_endpoints(&request.url, &default_table),
+    };
 
     let mut last_err = None;
-    for endpoint in candidate_endpoints(&request.url, &table) {
+    for endpoint in candidates {
         let rp = endpoint.relying_party.clone();
         let (token, proof_key) =
             match title_token(state, &session_key, &rp, request.force_refresh).await {
