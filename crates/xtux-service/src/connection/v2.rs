@@ -198,6 +198,23 @@ impl Job {
                     user,
                 })
             }
+            Request::Library => {
+                let settings = xtux_games::settings::Settings::load().map_err(error_body)?;
+                let games = xtux_games::library::scan(&settings.library_dirs)
+                    .into_iter()
+                    .map(|g| xtux_protocol::GameInfo {
+                        name: g.name,
+                        path: g.path,
+                        kind: match g.kind {
+                            xtux_games::library::GameKind::Installed => "installed".into(),
+                            xtux_games::library::GameKind::Windows => "windows".into(),
+                        },
+                        title_id: g.title_id,
+                        store_id: g.store_id,
+                    })
+                    .collect();
+                Ok(Response::Library { games })
+            }
             Request::Launch {
                 source,
                 wine,

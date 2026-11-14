@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub use client::{Canceller, Client};
+pub use client::{Canceller, Client, ClientError};
 
 /// `"XTX2"` read as a little endian `u32`.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"XTX2");
@@ -56,6 +56,8 @@ pub enum Request {
     Ping,
     /// Daemon version and who is signed in.
     Status,
+    /// Games in the library folders of the user's settings.
+    Library,
     /// Starts a game; answered when the game has exited, with `GameStarted`/`GameExited` events in between.
     Launch {
         source: PathBuf,
@@ -91,6 +93,17 @@ pub enum Request {
     Cancel {
         target: u64,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GameInfo {
+    pub name: String,
+    /// Game folder, the `source` of a launch.
+    pub path: PathBuf,
+    /// `installed` (by xTux) or `windows` (installed by the Windows Xbox app).
+    pub kind: String,
+    pub title_id: Option<String>,
+    pub store_id: Option<String>,
 }
 
 /// What to install from.
@@ -135,6 +148,9 @@ pub enum Response {
     },
     Installed {
         destination: PathBuf,
+    },
+    Library {
+        games: Vec<GameInfo>,
     },
     Cancelled,
 }
