@@ -71,6 +71,16 @@ enum SubCommand {
         market: Option<String>,
     },
     #[cfg(unix)]
+    #[command(
+        about = "Link a game installed by the Windows Xbox app so it can be run from Linux without copying"
+    )]
+    Link {
+        /// Game folder of the Xbox app, for example XboxGames/Atomfall
+        game_dir: String,
+        /// Folder for the links, defaults to ~/.local/share/xodus/links/<game>
+        dest: Option<String>,
+    },
+    #[cfg(unix)]
     #[command(about = "Run a Game with xodus wine")]
     Run {
         source: String,
@@ -227,12 +237,23 @@ async fn main() -> ExitCode {
             .await
         }
         #[cfg(unix)]
+        SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
+        #[cfg(unix)]
         SubCommand::Run {
             source,
             wine,
             exe,
             market,
-        } => commands::run::run(&client, &tokens, source, wine, exe, market).await,
+        } => {
+            let source = match commands::link::resolve_source(&source) {
+                Ok(source) => source,
+                Err(err) => {
+                    eprintln!("{err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            commands::run::run(&client, &tokens, source, wine, exe, market).await
+        }
         SubCommand::Clep { action } => match action {
             ClepAction::Generate {
                 smbios,

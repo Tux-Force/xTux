@@ -14,6 +14,7 @@ use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use tempfile::{tempdir, tempfile, tempfile_in};
 use tokio::fs::{File, OpenOptions};
 use tokio::process::Command;
+use xodus::models::secrets::Token;
 use xodus::tokens::TokenManager;
 
 use crate::license::get_license;
@@ -193,7 +194,14 @@ pub async fn run(
 
         let source_path = out.join(file.0.replace("\\", "/"));
 
-        let mut i = File::open(&source_path).await.unwrap();
+        let mut raw = tokio::fs::read(&source_path).await.unwrap();
+        // Installs made by the Windows Xbox app store the file at its logical size, while the
+        // decryption works on whole pages. Only the last, partial block is lost this way.
+        let padded = (file.1.length as usize).div_ceil(PAGE_SIZE) * PAGE_SIZE;
+        if raw.len() < padded {
+            raw.resize(padded, 0);
+        }
+        let mut i = std::io::Cursor::new(raw);
 
         xvd.mount_mem_fd(&mut i, &mut game_exe, file.1, *full_key, |_, _| {})
             .await
@@ -237,9 +245,39 @@ pub async fn run(
         return ExitCode::FAILURE;
     };
 
+    // Identity of the signed in user, handed to the game's XUser implementation.
+    let mut identity_env: Vec<(&str, String)> = Vec::new();
+    if let (Ok(Token::Legacy(dev_token)), Ok(Token::Legacy(legacy))) =
+        (tokens.get_device_sts_token(), tokens.get_user_sts_token())
+    {
+        let xsts =
+            xodus::api::xbox::run(client, dev_token, legacy, "http://xboxlive.com").await;
+        // Authorization header for Xbox Live services (valid for the lifetime of the XSTS token).
+        // Opt-in for now: with a real token LS25 freezes after a while, see XODUS_XBL.
+        if std::env::var("XODUS_XBL").is_ok_and(|v| v == "1") {
+            identity_env.push((
+                "XODUS_XBL_AUTH",
+                xodus::api::xbox::get_xsts_auth_header(xsts.clone()),
+            ));
+        }
+        if let Some(xuid) = xsts.xuid() {
+            identity_env.push(("XODUS_XUID", xuid.to_string()));
+        }
+        if let Some(gamertag) = xsts.gamertag() {
+            identity_env.push(("XODUS_GAMERTAG", gamertag.to_string()));
+        }
+        if let Some(age_group) = xsts.age_group() {
+            identity_env.push(("XODUS_AGE_GROUP", age_group.to_string()));
+        }
+    }
+
     let mut wn = Command::new(wine)
         .arg(nt_entry)
+        .envs(identity_env)
         .env("WINE_DLL_FILE_MAP", env_value)
+        .env("XODUS_PACKAGE_ID", xvd.content_id().simple().to_string())
+        // Only reached after the license was obtained from the Microsoft licensing service.
+        .env("XODUS_LICENSE_VERIFIED", "1")
         .spawn()
         .unwrap();
 
