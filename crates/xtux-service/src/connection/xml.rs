@@ -533,7 +533,7 @@ mod test {
             },
         };
         SimpleContext::new(
-            device_token,
+            Some(device_token),
             Arc::new(TokenManager::with_memory()),
             Arc::new(SharedState::default()),
         )
