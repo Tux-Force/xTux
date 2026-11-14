@@ -69,7 +69,7 @@ fn frame(blink: bool) -> Vec<String> {
         String::new(),
         format!("\x1b[1m{}xTux{RESET}  {}by Tux-Force{RESET}", fg(LIME), fg(EMERALD)),
         format!("{}The PC games you own or subscribe to, on Linux.{RESET}", fg(MIST)),
-        format!("{}Real licenses, no cracks.  v{}{RESET}", fg(MIST), env!("CARGO_PKG_VERSION")),
+        format!("{}v{}{RESET}", fg(MIST), env!("CARGO_PKG_VERSION")),
     ];
     (0..px.len().div_ceil(2))
         .map(|line| {
