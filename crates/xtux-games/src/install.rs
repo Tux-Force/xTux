@@ -118,17 +118,21 @@ pub async fn install(
             let len = file
                 .metadata()
                 .await
-                .map_err(|e| Error::msg(format!("could not read metadata for {}: {e}", path.display())))?
+                .map_err(|e| {
+                    Error::msg(format!(
+                        "could not read metadata for {}: {e}",
+                        path.display()
+                    ))
+                })?
                 .len();
             counter.set_total(len);
             let from = Origin::File(&path);
             install_from(client, tokens, options, file, len, from, &counter, cancel).await
         }
-        Source::Url(url) => {
-            install_http(client, tokens, options, &url, &counter, cancel).await
-        }
+        Source::Url(url) => install_http(client, tokens, options, &url, &counter, cancel).await,
         Source::ContentId(content_id) => {
-            let url = cancel::until_cancelled(cancel, find_msixvc_url(client, tokens, content_id)).await?;
+            let url = cancel::until_cancelled(cancel, find_msixvc_url(client, tokens, content_id))
+                .await?;
             install_http(client, tokens, options, &url, &counter, cancel).await
         }
     }
@@ -159,7 +163,17 @@ async fn install_http(
     .await?;
     let len = http_file.len();
     counter.set_total(len);
-    install_from(client, tokens, options, http_file, len, Origin::Http(url), counter, cancel).await
+    install_from(
+        client,
+        tokens,
+        options,
+        http_file,
+        len,
+        Origin::Http(url),
+        counter,
+        cancel,
+    )
+    .await
 }
 
 /// Where the file contents are read from once the metadata is parsed.
@@ -205,7 +219,10 @@ where
     .await?;
     let lfiles = read_local_metadata(&final_path).await;
 
-    let market = options.market.clone().unwrap_or_else(|| "neutral".to_owned());
+    let market = options
+        .market
+        .clone()
+        .unwrap_or_else(|| "neutral".to_owned());
     let (key, game_splicense) = cancel::until_cancelled(
         cancel,
         get_license(client, tokens, remote_xvd.content_id().to_string(), market),
@@ -230,15 +247,17 @@ where
     let mut jobs = Vec::new();
     let mut total_size: u64 = 0;
     for (name, remote) in &rfiles {
-        let unchanged = lfiles
-            .get(name)
-            .is_some_and(|local| remote.data_hashs == local.data_hashs && !remote.data_hashs.is_empty());
+        let unchanged = lfiles.get(name).is_some_and(|local| {
+            remote.data_hashs == local.data_hashs && !remote.data_hashs.is_empty()
+        });
         if unchanged {
             continue;
         }
         let target = safe_join(out, name)?;
         if target == cache_path || target == final_path {
-            return Err(Error::msg(format!("refusing to overwrite {name:?} from the package")));
+            return Err(Error::msg(format!(
+                "refusing to overwrite {name:?} from the package"
+            )));
         }
         total_size = total_size
             .checked_add(remote.length)
@@ -256,7 +275,10 @@ where
     }
 
     let available_free_space = available_space(out).map_err(|e| {
-        Error::msg(format!("failed to determine available space for {}: {e}", out.display()))
+        Error::msg(format!(
+            "failed to determine available space for {}: {e}",
+            out.display()
+        ))
     })?;
     if available_free_space < total_size {
         return Err(Error::msg(format!(
@@ -287,7 +309,11 @@ where
     // downloads the files it did not finish again.
     std::fs::remove_file(&final_path).ok();
     std::fs::rename(&cache_path, &final_path).map_err(|e| {
-        Error::msg(format!("could not move {} to {}: {e}", cache_path.display(), final_path.display()))
+        Error::msg(format!(
+            "could not move {} to {}: {e}",
+            cache_path.display(),
+            final_path.display()
+        ))
     })?;
     Ok(())
 }
@@ -350,7 +376,10 @@ async fn read_local_metadata(final_path: &Path) -> HashMap<String, SegmentFile> 
 
     // Errors of msixvc are not `Send`, turn them into strings before the next await.
     let mut lfiles = HashMap::new();
-    let files = xvd.parse_user_package_files(&mut file).await.map_err(|e| e.to_string());
+    let files = xvd
+        .parse_user_package_files(&mut file)
+        .await
+        .map_err(|e| e.to_string());
     match files {
         Ok(files) => {
             if let Some(segment_metadata) = files.get("SegmentMetadata.bin") {
@@ -366,7 +395,10 @@ async fn read_local_metadata(final_path: &Path) -> HashMap<String, SegmentFile> 
         }
         Err(err) => tracing::warn!("ignoring the local package files: {err}"),
     }
-    if let Ok(sfiles) = xvd.parse_ntfs_segment_metadata(&mut file, !lfiles.is_empty()).await {
+    if let Ok(sfiles) = xvd
+        .parse_ntfs_segment_metadata(&mut file, !lfiles.is_empty())
+        .await
+    {
         lfiles.extend(sfiles);
     }
     lfiles
@@ -380,7 +412,8 @@ async fn download_job(
     full_key: [u8; 32],
     counter: &Counter<'_>,
 ) -> Result<()> {
-    let write_err = |e: std::io::Error| Error::msg(format!("could not write {}: {e}", job.target.display()));
+    let write_err =
+        |e: std::io::Error| Error::msg(format!("could not write {}: {e}", job.target.display()));
     if let Some(folder) = job.target.parent() {
         std::fs::create_dir_all(folder).map_err(write_err)?;
     }
@@ -483,7 +516,14 @@ mod tests {
         cancel: &CancellationToken,
     ) {
         fn is_send<T: Send>(_: T) {}
-        is_send(install(client, tokens, Source::Url(String::new()), options, progress, cancel));
+        is_send(install(
+            client,
+            tokens,
+            Source::Url(String::new()),
+            options,
+            progress,
+            cancel,
+        ));
         is_send(crate::download::download_package_file(
             client,
             file,
@@ -495,7 +535,10 @@ mod tests {
 
     #[test]
     fn parses_sources() {
-        assert_eq!(Source::parse("file:///tmp/a.msixvc"), Source::File(PathBuf::from("/tmp/a.msixvc")));
+        assert_eq!(
+            Source::parse("file:///tmp/a.msixvc"),
+            Source::File(PathBuf::from("/tmp/a.msixvc"))
+        );
         assert_eq!(
             Source::parse("https://assets1.xboxlive.com/x.msixvc"),
             Source::Url("https://assets1.xboxlive.com/x.msixvc".into())
@@ -506,4 +549,3 @@ mod tests {
         );
     }
 }
-

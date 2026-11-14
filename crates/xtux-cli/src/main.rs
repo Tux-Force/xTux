@@ -91,7 +91,9 @@ enum SubCommand {
         market: Option<String>,
     },
     #[cfg(unix)]
-    #[command(about = "Prepare a Wine prefix for GDK games (DXVK, vkd3d-proton, root certificates)")]
+    #[command(
+        about = "Prepare a Wine prefix for GDK games (DXVK, vkd3d-proton, root certificates)"
+    )]
     Prefix {
         #[command(subcommand)]
         action: PrefixAction,
@@ -208,7 +210,10 @@ async fn main() -> ExitCode {
     #[cfg(unix)]
     if matches!(
         args.command,
-        SubCommand::Login | SubCommand::Streaming { .. } | SubCommand::Prefix { .. } | SubCommand::Run { .. }
+        SubCommand::Login
+            | SubCommand::Streaming { .. }
+            | SubCommand::Prefix { .. }
+            | SubCommand::Run { .. }
     ) {
         banner::show();
     }

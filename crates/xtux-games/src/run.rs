@@ -13,10 +13,10 @@ use msixvc::xvd::{SegmentFile, XvdFile};
 #[cfg(target_os = "linux")]
 use rustix::fs::{MemfdFlags, memfd_create};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-#[cfg(not(target_os = "linux"))]
-use tempfile::{tempfile, tempfile_in};
 #[cfg(target_os = "macos")]
 use tempfile::tempdir;
+#[cfg(not(target_os = "linux"))]
+use tempfile::{tempfile, tempfile_in};
 use tokio::fs::{File, OpenOptions};
 use tokio::process::{Child, Command};
 use xodus::models::secrets::Token;
@@ -102,7 +102,14 @@ async fn prepare(lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Stri
     let device = String::from_utf8_lossy(&out.stdout).trim().to_string();
 
     let vol = uuid::Uuid::new_v4().to_string();
-    checked(Command::new("/sbin/newfs_hfs").arg("-v").arg(vol).arg(&device), "newfs_hfs").await?;
+    checked(
+        Command::new("/sbin/newfs_hfs")
+            .arg("-v")
+            .arg(vol)
+            .arg(&device),
+        "newfs_hfs",
+    )
+    .await?;
 
     let mount_dir_obj = tempdir()?;
     let mount_dir = mount_dir_obj.path().to_string_lossy().to_string();
@@ -118,8 +125,17 @@ async fn prepare(lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Stri
     let mount_dir_cl = mount_dir.clone();
     let cleanup: Cleanup = Box::pin(async move {
         let _keep = mount_dir_obj;
-        let _ = Command::new("/sbin/umount").arg("-f").arg(&mount_dir_cl).status().await;
-        let _ = Command::new("/usr/bin/hdiutil").arg("detach").arg("-force").arg(&device).status().await;
+        let _ = Command::new("/sbin/umount")
+            .arg("-f")
+            .arg(&mount_dir_cl)
+            .status()
+            .await;
+        let _ = Command::new("/usr/bin/hdiutil")
+            .arg("detach")
+            .arg("-force")
+            .arg(&device)
+            .status()
+            .await;
     });
     Ok((cleanup, mount_dir))
 }
@@ -131,7 +147,8 @@ async fn prepare(_lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Str
 
 /// Environment that steers Wine and its libraries for GDK games, unless the user set it.
 fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> {
-    let is_set = |name: &str| extra.iter().any(|(k, _)| k == name) || std::env::var_os(name).is_some();
+    let is_set =
+        |name: &str| extra.iter().any(|(k, _)| k == name) || std::env::var_os(name).is_some();
     let prefix = extra
         .iter()
         .find(|(k, _)| k == "WINEPREFIX")
@@ -141,7 +158,10 @@ fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> 
 
     // Use the DXVK/vkd3d-proton DLLs that `prefix init` installed.
     if !is_set("WINEDLLOVERRIDES") {
-        if let Some(overrides) = prefix.as_deref().and_then(crate::prefix::recorded_overrides) {
+        if let Some(overrides) = prefix
+            .as_deref()
+            .and_then(crate::prefix::recorded_overrides)
+        {
             env.push(("WINEDLLOVERRIDES", overrides));
         }
     }
@@ -152,8 +172,18 @@ fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> 
         env.push((
             "GST_PLUGIN_FEATURE_RANK",
             [
-                "nvh264dec", "nvh265dec", "nvav1dec", "nvvp8dec", "nvvp9dec", "nvjpegdec", "nvmpegvideodec",
-                "nvmpeg2videodec", "nvmpeg4videodec", "vulkanh264dec", "vulkanh265dec", "vulkanav1dec",
+                "nvh264dec",
+                "nvh265dec",
+                "nvav1dec",
+                "nvvp8dec",
+                "nvvp9dec",
+                "nvjpegdec",
+                "nvmpegvideodec",
+                "nvmpeg2videodec",
+                "nvmpeg4videodec",
+                "vulkanh264dec",
+                "vulkanh265dec",
+                "vulkanav1dec",
             ]
             .map(|d| format!("{d}:NONE"))
             .join(","),
@@ -163,7 +193,10 @@ fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> 
 }
 
 /// Identity of the signed in user, handed to the game's XUser implementation.
-async fn identity_env(client: &reqwest::Client, tokens: &TokenManager) -> Vec<(&'static str, String)> {
+async fn identity_env(
+    client: &reqwest::Client,
+    tokens: &TokenManager,
+) -> Vec<(&'static str, String)> {
     let mut env = Vec::new();
     let (Ok(Token::Legacy(dev_token)), Ok(Token::Legacy(legacy))) =
         (tokens.get_device_sts_token(), tokens.get_user_sts_token())
@@ -206,9 +239,12 @@ pub async fn launch(
         .open(&final_path)
         .await
         .map_err(|e| Error::msg(format!("failed to open {}: {e}", final_path.display())))?;
-    let xvd = XvdFile::parse(&mut file)
-        .await
-        .map_err(|e| Error::msg(format!("failed to parse the XVD header of {}: {e}", final_path.display())))?;
+    let xvd = XvdFile::parse(&mut file).await.map_err(|e| {
+        Error::msg(format!(
+            "failed to parse the XVD header of {}: {e}",
+            final_path.display()
+        ))
+    })?;
 
     let files = xvd
         .parse_user_package_files(&mut file)
@@ -242,7 +278,10 @@ pub async fn launch(
         client,
         tokens,
         xvd.content_id().to_string(),
-        options.market.clone().unwrap_or_else(|| "neutral".to_string()),
+        options
+            .market
+            .clone()
+            .unwrap_or_else(|| "neutral".to_string()),
     )
     .await?;
     if game_splicense.content_keys.len() != 1 {
@@ -335,5 +374,9 @@ pub async fn launch(
         .map_err(|e| Error::msg(format!("could not start {}: {e}", options.wine)))?;
     let pid = child.id().ok_or("the game exited immediately")?;
 
-    Ok(RunningGame { pid, child, cleanup })
+    Ok(RunningGame {
+        pid,
+        child,
+        cleanup,
+    })
 }

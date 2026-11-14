@@ -58,7 +58,10 @@ pub async fn run(
     for file in files {
         if dry_run {
             let Some(first_url) = file.download_urls().into_iter().next() else {
-                eprintln!("{}: the server returned no CDN for this file", file.file_name);
+                eprintln!(
+                    "{}: the server returned no CDN for this file",
+                    file.file_name
+                );
                 return ExitCode::FAILURE;
             };
             println!("{first_url}");
@@ -70,7 +73,8 @@ pub async fn run(
                 .unwrap_or_else(|_| ProgressStyle::default_bar())
                 .progress_chars("█▓░"),
         ));
-        if let Err(err) = download_package_file(client, &file, Path::new("."), &bar, &cancel).await {
+        if let Err(err) = download_package_file(client, &file, Path::new("."), &bar, &cancel).await
+        {
             bar.0.abandon();
             eprintln!("{}: {err}", file.file_name);
             return ExitCode::FAILURE;

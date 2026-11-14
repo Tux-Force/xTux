@@ -76,7 +76,9 @@ pub async fn find_content_id(
         .content_id
         .clone()
         .map(ContentLookup::Found)
-        .ok_or_else(|| Error::msg("ContentId not found, if you believe this is an error, please report it"))
+        .ok_or_else(|| {
+            Error::msg("ContentId not found, if you believe this is an error, please report it")
+        })
 }
 
 /// The base package of a content id, as offered to the signed in user.
@@ -91,20 +93,28 @@ pub async fn get_packages(
         return Err(Error::SignedOut("no usable device or user token".into()));
     };
 
-    let xsts_token = xodus::api::xbox::xsts_user_only(client, dev_token, legacy, "http://update.xboxlive.com")
-        .await
-        .map_err(|e| Error::msg(format!("could not get an update token: {e}")))?;
+    let xsts_token =
+        xodus::api::xbox::xsts_user_only(client, dev_token, legacy, "http://update.xboxlive.com")
+            .await
+            .map_err(|e| Error::msg(format!("could not get an update token: {e}")))?;
 
     let response = client
-        .get(format!("{XBOX_LIVE_PACKAGES_PC}/GetBasePackage/{content_id}"))
+        .get(format!(
+            "{XBOX_LIVE_PACKAGES_PC}/GetBasePackage/{content_id}"
+        ))
         .header("x-xbl-contract-version", "3")
-        .header("Authorization", xodus::api::xbox::get_xsts_auth_header(xsts_token))
+        .header(
+            "Authorization",
+            xodus::api::xbox::get_xsts_auth_header(xsts_token),
+        )
         .send()
         .await?;
     let res: PackageResponse = response.json().await?;
 
     let PackageResponse::Found(package) = res else {
-        return Err(Error::NotEntitled("package was not found, is it owned by the user?".into()));
+        return Err(Error::NotEntitled(
+            "package was not found, is it owned by the user?".into(),
+        ));
     };
     Ok(package)
 }

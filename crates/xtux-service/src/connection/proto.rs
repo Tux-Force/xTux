@@ -5,5 +5,7 @@ pub async fn handle(
     _context: &mut SimpleContext,
 ) -> tokio::io::Result<()> {
     // Reserved; protocol v2 uses its own magic (see xtux-protocol).
-    Err(tokio::io::Error::other("the protobuf path is not implemented"))
+    Err(tokio::io::Error::other(
+        "the protobuf path is not implemented",
+    ))
 }

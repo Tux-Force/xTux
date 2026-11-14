@@ -23,5 +23,9 @@ pub(crate) async fn until_cancelled<T>(
 
 /// Returns [`Error::Cancelled`] when `cancel` has fired.
 pub(crate) fn check(cancel: &CancellationToken) -> Result<()> {
-    if cancel.is_cancelled() { Err(Error::Cancelled) } else { Ok(()) }
+    if cancel.is_cancelled() {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
+    }
 }
