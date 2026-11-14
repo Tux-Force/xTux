@@ -57,12 +57,21 @@ pub fn recorded_overrides(prefix: &Path) -> Option<String> {
 }
 
 /// Creates or updates a prefix; returns the prefix path.
-pub async fn init(client: &reqwest::Client, options: InitOptions, progress: &dyn Progress) -> crate::Result<PathBuf> {
+pub async fn init(
+    client: &reqwest::Client,
+    options: InitOptions,
+    progress: &dyn Progress,
+) -> crate::Result<PathBuf> {
     Ok(run_init(client, options, progress).await?)
 }
 
-async fn run_init(client: &reqwest::Client, options: InitOptions, progress: &dyn Progress) -> Result<PathBuf, String> {
-    let prefix = resolve_prefix(options.prefix.as_deref()).ok_or("cannot determine the prefix, pass --prefix")?;
+async fn run_init(
+    client: &reqwest::Client,
+    options: InitOptions,
+    progress: &dyn Progress,
+) -> Result<PathBuf, String> {
+    let prefix = resolve_prefix(options.prefix.as_deref())
+        .ok_or("cannot determine the prefix, pass --prefix")?;
     progress.message(&format!("Prefix: {}", prefix.display()));
 
     if !prefix.join("drive_c").is_dir() {
@@ -72,7 +81,10 @@ async fn run_init(client: &reqwest::Client, options: InitOptions, progress: &dyn
     }
     let system32 = prefix.join("drive_c/windows/system32");
     if !system32.is_dir() {
-        return Err(format!("{} does not exist, is this a 64-bit prefix?", system32.display()));
+        return Err(format!(
+            "{} does not exist, is this a 64-bit prefix?",
+            system32.display()
+        ));
     }
 
     let mut state = json!({ "certificates": [] });
@@ -91,28 +103,51 @@ async fn run_init(client: &reqwest::Client, options: InitOptions, progress: &dyn
                 )
             }
             None => {
-                let (dxvk_version, dxvk) = fetch_release(client, "doitsujin/dxvk", ".tar.gz", work.path(), progress).await?;
-                let (vkd3d_version, vkd3d) =
-                    fetch_release(client, "HansKristian-Work/vkd3d-proton", ".tar.zst", work.path(), progress).await?;
-                (find_dir(&dxvk, "x64")?, find_dir(&vkd3d, "x64")?, dxvk_version, vkd3d_version)
+                let (dxvk_version, dxvk) =
+                    fetch_release(client, "doitsujin/dxvk", ".tar.gz", work.path(), progress)
+                        .await?;
+                let (vkd3d_version, vkd3d) = fetch_release(
+                    client,
+                    "HansKristian-Work/vkd3d-proton",
+                    ".tar.zst",
+                    work.path(),
+                    progress,
+                )
+                .await?;
+                (
+                    find_dir(&dxvk, "x64")?,
+                    find_dir(&vkd3d, "x64")?,
+                    dxvk_version,
+                    vkd3d_version,
+                )
             }
         };
 
         let backup = prefix.join("xtux-builtin-backup");
         install_dlls(&dxvk_dir, &system32, &backup, DXVK_DLLS)?;
         install_dlls(&vkd3d_dir, &system32, &backup, VKD3D_DLLS)?;
-        progress.message(&format!("Installed DXVK {dxvk_version} and vkd3d-proton {vkd3d_version}"));
+        progress.message(&format!(
+            "Installed DXVK {dxvk_version} and vkd3d-proton {vkd3d_version}"
+        ));
         overridden.extend(DXVK_DLLS.iter().chain(VKD3D_DLLS));
         state["dxvk"] = json!(dxvk_version);
         state["vkd3d_proton"] = json!(vkd3d_version);
     }
 
     import_certificates(&options.wine, &prefix).await?;
-    state["certificates"] = json!(CERTIFICATES.iter().map(|(name, _)| *name).collect::<Vec<_>>());
+    state["certificates"] = json!(
+        CERTIFICATES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+    );
     progress.message(&format!("Added {} root certificates", CERTIFICATES.len()));
 
     if !overridden.is_empty() {
-        let names: Vec<&str> = overridden.iter().map(|d| d.trim_end_matches(".dll")).collect();
+        let names: Vec<&str> = overridden
+            .iter()
+            .map(|d| d.trim_end_matches(".dll"))
+            .collect();
         state["dll_overrides"] = json!(format!("{}=n,b", names.join(",")));
     }
     let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
@@ -137,12 +172,18 @@ async fn wine(wine: &str, prefix: &Path, args: &[&str]) -> Result<(), String> {
 
 /// Waits until the prefix's wineserver has written the registry to disk.
 async fn wait_wineserver(wine: &str, prefix: &Path) {
-    let server = Path::new(wine).parent().map(|d| d.join("server/wineserver"));
+    let server = Path::new(wine)
+        .parent()
+        .map(|d| d.join("server/wineserver"));
     let server = match server {
         Some(s) if s.exists() => s,
         _ => PathBuf::from("wineserver"),
     };
-    let _ = Command::new(server).arg("-w").env("WINEPREFIX", prefix).status().await;
+    let _ = Command::new(server)
+        .arg("-w")
+        .env("WINEPREFIX", prefix)
+        .status()
+        .await;
 }
 
 /// Downloads the latest release asset of `repo` ending in `suffix` and unpacks it into `work`.
@@ -154,7 +195,9 @@ async fn fetch_release(
     progress: &dyn Progress,
 ) -> Result<(String, PathBuf), String> {
     let release: serde_json::Value = client
-        .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
+        .get(format!(
+            "https://api.github.com/repos/{repo}/releases/latest"
+        ))
         .header("User-Agent", "xtux")
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -164,17 +207,24 @@ async fn fetch_release(
         .json()
         .await
         .map_err(|e| format!("{repo}: {e}"))?;
-    let version = release["tag_name"].as_str().unwrap_or("unknown").to_string();
+    let version = release["tag_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
     let asset = release["assets"]
         .as_array()
         .and_then(|assets| {
             assets.iter().find(|a| {
-                a["name"].as_str().is_some_and(|n| n.ends_with(suffix) && !n.contains("native"))
+                a["name"]
+                    .as_str()
+                    .is_some_and(|n| n.ends_with(suffix) && !n.contains("native"))
             })
         })
         .ok_or_else(|| format!("{repo} {version}: no {suffix} asset"))?;
     let name = asset["name"].as_str().unwrap_or("release");
-    let url = asset["browser_download_url"].as_str().ok_or("asset without download url")?;
+    let url = asset["browser_download_url"]
+        .as_str()
+        .ok_or("asset without download url")?;
 
     progress.message(&format!("Downloading {name}"));
     let bytes = client
@@ -211,7 +261,10 @@ async fn fetch_release(
 fn find_dir(root: &Path, name: &str) -> Result<PathBuf, String> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
             let path = entry.path();
             if path.is_dir() {
                 if path.file_name().is_some_and(|n| n == name) {
@@ -273,7 +326,10 @@ async fn import_certificates(wine_path: &str, prefix: &Path) -> Result<(), Strin
 /// Certificate thumbprint as Windows names its registry key.
 fn sha1_hex(data: &[u8]) -> String {
     use sha1::{Digest, Sha1};
-    Sha1::digest(data).iter().map(|b| format!("{b:02X}")).collect()
+    Sha1::digest(data)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect()
 }
 
 #[cfg(test)]

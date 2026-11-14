@@ -88,7 +88,9 @@ pub enum Request {
         env: Vec<(String, String)>,
     },
     /// Stops the request with this id.
-    Cancel { target: u64 },
+    Cancel {
+        target: u64,
+    },
 }
 
 /// What to install from.
@@ -106,8 +108,14 @@ pub enum InstallSource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    Response { id: u64, result: Result<Response, ErrorBody> },
-    Event { id: u64, event: Event },
+    Response {
+        id: u64,
+        result: Result<Response, ErrorBody>,
+    },
+    Event {
+        id: u64,
+        event: Event,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,21 +127,40 @@ pub enum Response {
         signed_in: bool,
         user: Option<String>,
     },
-    GameExited { code: Option<i32> },
-    PrefixReady { prefix: PathBuf },
-    Installed { destination: PathBuf },
+    GameExited {
+        code: Option<i32>,
+    },
+    PrefixReady {
+        prefix: PathBuf,
+    },
+    Installed {
+        destination: PathBuf,
+    },
     Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    Message { text: String },
-    Bytes { done: u64, total: Option<u64> },
-    GameStarted { pid: u32 },
+    Message {
+        text: String,
+    },
+    Bytes {
+        done: u64,
+        total: Option<u64>,
+    },
+    GameStarted {
+        pid: u32,
+    },
     /// Byte progress of one file being downloaded.
-    File { name: String, done: u64, total: u64 },
-    FileFinished { name: String },
+    File {
+        name: String,
+        done: u64,
+        total: u64,
+    },
+    FileFinished {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, thiserror::Error)]

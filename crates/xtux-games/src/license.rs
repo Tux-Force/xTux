@@ -33,7 +33,9 @@ pub async fn get_license(
     )
     .await
     .map_err(|err| match err {
-        xodus::licensing::content::LicenseContentError::NotEntitled { description } => Error::NotEntitled(description),
+        xodus::licensing::content::LicenseContentError::NotEntitled { description } => {
+            Error::NotEntitled(description)
+        }
         other => Error::msg(other),
     })?;
 

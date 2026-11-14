@@ -25,7 +25,10 @@ pub async fn download_package_file(
     cancel::check(cancel)?;
     let target = safe_join(dest_dir, &file.file_name)?;
     if target.parent() != Some(dest_dir) {
-        return Err(Error::msg(format!("{:?} is not a plain file name", file.file_name)));
+        return Err(Error::msg(format!(
+            "{:?} is not a plain file name",
+            file.file_name
+        )));
     }
     let expected = u64::try_from(file.file_size).ok().filter(|size| *size > 0);
 
@@ -52,7 +55,10 @@ pub async fn download_package_file(
             if let Err(remove_err) = tokio::fs::remove_file(&target).await
                 && remove_err.kind() != std::io::ErrorKind::NotFound
             {
-                tracing::warn!("could not remove the partial file {}: {remove_err}", target.display());
+                tracing::warn!(
+                    "could not remove the partial file {}: {remove_err}",
+                    target.display()
+                );
             }
             Err(err)
         }
@@ -62,10 +68,19 @@ pub async fn download_package_file(
 /// Requests the first URL that answers with a success status.
 async fn first_response(client: &reqwest::Client, urls: &[String]) -> Result<reqwest::Response> {
     for url in urls {
-        match client.get(url).send().await.and_then(|r| r.error_for_status()) {
+        match client
+            .get(url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+        {
             Ok(response) => return Ok(response),
             // Log the host only: CDN URLs can carry signed query parameters.
-            Err(err) => tracing::warn!("{}: {}; trying the next CDN", url_host(url), err.without_url()),
+            Err(err) => tracing::warn!(
+                "{}: {}; trying the next CDN",
+                url_host(url),
+                err.without_url()
+            ),
         }
     }
     Err(Error::msg("Failed to request the download from any CDN"))
@@ -168,7 +183,10 @@ mod tests {
             safe_join(base, "Content\\bin/game.exe").unwrap(),
             Path::new("/games/x/Content/bin/game.exe")
         );
-        assert_eq!(safe_join(base, "./a//b").unwrap(), Path::new("/games/x/a/b"));
+        assert_eq!(
+            safe_join(base, "./a//b").unwrap(),
+            Path::new("/games/x/a/b")
+        );
     }
 
     #[test]
@@ -191,7 +209,10 @@ mod tests {
     fn absolute_and_unc_stay_inside_base() {
         // Leading separators are dropped, so the result always stays inside the base.
         let base = Path::new("/games/x");
-        assert_eq!(safe_join(base, "/etc/passwd").unwrap(), Path::new("/games/x/etc/passwd"));
+        assert_eq!(
+            safe_join(base, "/etc/passwd").unwrap(),
+            Path::new("/games/x/etc/passwd")
+        );
         assert_eq!(
             safe_join(base, "\\\\server\\share\\x").unwrap(),
             Path::new("/games/x/server/share/x")
