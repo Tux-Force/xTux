@@ -52,13 +52,13 @@ pub fn inspect(path: &Path) -> Option<Game> {
     if !path.is_dir() {
         return None;
     }
-    let (kind, content) = if path.join(crate::run::PACKAGE_FILE).exists() {
-        (GameKind::Installed, path.to_path_buf())
-    } else if crate::link::is_windows_install(path) {
-        (GameKind::Windows, path.join("Content"))
+    let layout = crate::layout::detect(path)?;
+    let kind = if layout.windows_app {
+        GameKind::Windows
     } else {
-        return None;
+        GameKind::Installed
     };
+    let content = layout.root;
     let config = read_config(&content);
     let folder_name = path.file_name()?.to_string_lossy().into_owned();
     let name = config

@@ -306,13 +306,7 @@ async fn main() -> ExitCode {
             exe,
             market,
         } => {
-            let source = match xtux_games::link::resolve_source(&source) {
-                Ok(source) => source,
-                Err(err) => {
-                    eprintln!("{err}");
-                    return ExitCode::FAILURE;
-                }
-            };
+            // Windows Xbox app installs and xTux installs are read in place (xtux_games::layout).
             commands::run::run(&client, &tokens, source, wine, exe, market).await
         }
         SubCommand::Clep { action } => match action {

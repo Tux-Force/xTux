@@ -6,6 +6,7 @@ mod cancel;
 pub mod download;
 pub mod error;
 pub mod install;
+pub mod layout;
 pub mod library;
 pub mod license;
 pub mod package;
