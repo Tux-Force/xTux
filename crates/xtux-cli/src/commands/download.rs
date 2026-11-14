@@ -1,12 +1,16 @@
+//! `xtux-cli download`: lets the user pick package files and downloads them with
+//! [`xtux_games::download`].
+
+use std::path::Path;
 use std::process::ExitCode;
 
-use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::MultiSelect;
 use inquire::validator::Validation;
-use tokio::io::AsyncWriteExt;
 use xodus::models::packagespc::PackageFile;
 use xodus::tokens::TokenManager;
+use xtux_games::CancellationToken;
+use xtux_games::download::download_package_file;
 
 use crate::package::{get_content_id, get_packages};
 
@@ -17,24 +21,20 @@ pub async fn run(
     market: Option<String>,
     dry_run: bool,
 ) -> ExitCode {
-    let content_id_task = get_content_id(client, product, market).await;
-    let Ok(content_id) = content_id_task else {
-        let Err(err) = content_id_task else {
-            eprintln!("Unknown Error");
+    let content_id = match get_content_id(client, product, market).await {
+        Ok(content_id) => content_id,
+        Err(err) => {
+            eprintln!("{err}");
             return ExitCode::FAILURE;
-        };
-        eprintln!("{}", err);
-        return ExitCode::FAILURE;
+        }
     };
 
-    let package_result = get_packages(client, tokens, content_id.clone()).await;
-    let Ok(package) = package_result else {
-        let Err(err) = package_result else {
-            eprintln!("Unknown Error");
+    let package = match get_packages(client, tokens, content_id.clone()).await {
+        Ok(package) => package,
+        Err(err) => {
+            eprintln!("{err}");
             return ExitCode::FAILURE;
-        };
-        eprintln!("{}", err);
-        return ExitCode::FAILURE;
+        }
     };
 
     let Ok(files) = MultiSelect::new("Select files to download", package.package_files)
@@ -54,64 +54,47 @@ pub async fn run(
         return ExitCode::FAILURE;
     };
     println!();
+    let cancel = CancellationToken::new();
     for file in files {
-        let urls = file.download_urls();
-        let Some(first_url) = urls.first() else {
-            eprintln!(
-                "{}: the server returned no CDN for this file",
-                file.file_name
-            );
-            return ExitCode::FAILURE;
-        };
         if dry_run {
-            println!("{}", first_url);
+            let Some(first_url) = file.download_urls().into_iter().next() else {
+                eprintln!("{}: the server returned no CDN for this file", file.file_name);
+                return ExitCode::FAILURE;
+            };
+            println!("{first_url}");
             continue;
         }
 
-        let progress_bar = ProgressBar::new(file.file_size as u64).with_style(
-            ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) ({eta})").unwrap()
-            .progress_chars("#>-")
-        );
-
-        // Try each CDN in turn; only fail once all of them have.
-        let mut response = None;
-        for url in &urls {
-            match client
-                .get(url)
-                .send()
-                .await
-                .and_then(|r| r.error_for_status())
-            {
-                Ok(r) => {
-                    response = Some(r);
-                    break;
-                }
-                Err(err) => tracing::warn!("{url}: {err}; trying the next CDN"),
-            }
-        }
-        let Some(res) = response else {
-            eprintln!("Failed to request the download from any CDN");
+        let bar = Bar(ProgressBar::new(u64::try_from(file.file_size).unwrap_or(0)).with_style(
+            ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) ({eta})")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("#>-"),
+        ));
+        if let Err(err) = download_package_file(client, &file, Path::new("."), &bar, &cancel).await {
+            bar.0.abandon();
+            eprintln!("{}: {err}", file.file_name);
             return ExitCode::FAILURE;
-        };
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(file.file_name)
-            .await
-            .unwrap();
-        let mut stream = res.bytes_stream();
-
-        while let Some(chunk) = stream.next().await {
-            let chk = chunk.expect("Failed to stream file");
-            file.write_all(&chk).await.expect("Failed to write to file");
-            progress_bar.inc(chk.len() as u64);
         }
-
-        progress_bar.finish();
+        bar.0.finish();
     }
 
     println!("ContentID: {content_id}");
 
     ExitCode::SUCCESS
+}
+
+/// Drives one indicatif bar from the library's byte progress.
+struct Bar(ProgressBar);
+
+impl xtux_games::Progress for Bar {
+    fn message(&self, text: &str) {
+        self.0.set_message(text.to_owned());
+    }
+
+    fn bytes(&self, done: u64, total: Option<u64>) {
+        if let Some(total) = total {
+            self.0.set_length(total);
+        }
+        self.0.set_position(done);
+    }
 }

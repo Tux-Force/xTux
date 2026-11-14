@@ -2,7 +2,10 @@
 //!
 //! Nothing here prints or prompts: functions return [`Error`] and report progress through [`Progress`].
 
+mod cancel;
+pub mod download;
 pub mod error;
+pub mod install;
 pub mod license;
 pub mod package;
 pub mod progress;
@@ -18,3 +21,4 @@ pub mod run;
 
 pub use error::{Error, Result};
 pub use progress::{Progress, Silent};
+pub use tokio_util::sync::CancellationToken;

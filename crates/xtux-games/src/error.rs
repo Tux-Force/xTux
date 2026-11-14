@@ -13,6 +13,9 @@ pub enum Error {
     /// No user or device is signed in, or its tokens are unusable.
     #[error("not signed in: {0}")]
     SignedOut(String),
+    /// The operation was cancelled through its cancellation token.
+    #[error("cancelled")]
+    Cancelled,
     #[error("{0}")]
     Message(String),
 }
