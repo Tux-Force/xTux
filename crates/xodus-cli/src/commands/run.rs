@@ -252,14 +252,7 @@ pub async fn run(
     {
         let xsts =
             xodus::api::xbox::run(client, dev_token, legacy, "http://xboxlive.com").await;
-        // Authorization header for Xbox Live services (valid for the lifetime of the XSTS token).
-        // Opt-in for now: with a real token LS25 freezes after a while, see XODUS_XBL.
-        if std::env::var("XODUS_XBL").is_ok_and(|v| v == "1") {
-            identity_env.push((
-                "XODUS_XBL_AUTH",
-                xodus::api::xbox::get_xsts_auth_header(xsts.clone()),
-            ));
-        }
+        // Tokens for Xbox Live services are handed out per request through the bridge.
         if let Some(xuid) = xsts.xuid() {
             identity_env.push(("XODUS_XUID", xuid.to_string()));
         }

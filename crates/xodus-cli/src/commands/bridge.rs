@@ -11,16 +11,40 @@
 //! `POST /store/license-token`
 //!   body: line 1 parent product id, line 2 hex encoded custom developer string,
 //!   following lines the product ids. Answers the license token.
+//!
+//! `POST /xbl/token`
+//!   body: line 1 HTTP method, line 2 URL, line 3 `1` to force a refresh, line 4 the title id
+//!   (decimal, optional) for title specific endpoints.
+//!   Answers the Authorization header value for the URL's relying party, or 204 when the URL
+//!   does not need an Xbox Live token.
 
+use std::collections::HashMap;
 use std::io::Read;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+use xodus::models::secrets::Token;
+use xodus::models::xbox::TitleMgtResponse;
 use xodus::tokens::TokenManager;
 
 use crate::license::get_store_tokens;
 
 const MAX_REQUEST: usize = 64 * 1024;
+/// XSTS tokens are valid for many hours; refresh well before that.
+const XSTS_LIFETIME: Duration = Duration::from_secs(60 * 60);
+
+struct State {
+    client: reqwest::Client,
+    tokens: TokenManager,
+    secret: String,
+    /// Endpoint lists per title id (0 for the default list).
+    endpoints: Mutex<HashMap<u32, TitleMgtResponse>>,
+    /// Authorization headers per relying party.
+    xsts: Mutex<HashMap<String, (String, Instant)>>,
+}
 
 pub struct Bridge {
     pub port: u16,
@@ -33,17 +57,21 @@ pub async fn start(client: reqwest::Client, tokens: TokenManager) -> std::io::Re
     let port = listener.local_addr()?.port();
     let secret = random_secret()?;
 
-    let expected = secret.clone();
+    let state = Arc::new(State {
+        client,
+        tokens,
+        secret: secret.clone(),
+        endpoints: Mutex::new(HashMap::new()),
+        xsts: Mutex::new(HashMap::new()),
+    });
     tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 continue;
             };
-            let client = client.clone();
-            let tokens = tokens.clone();
-            let expected = expected.clone();
+            let state = state.clone();
             tokio::spawn(async move {
-                if let Err(err) = handle(stream, &client, &tokens, &expected).await {
+                if let Err(err) = handle(stream, &state).await {
                     eprintln!("xodus bridge: request failed: {err}");
                 }
             });
@@ -143,12 +171,8 @@ async fn respond(stream: &mut TcpStream, status: &str, body: &str) -> std::io::R
     stream.shutdown().await
 }
 
-async fn handle(
-    mut stream: TcpStream,
-    client: &reqwest::Client,
-    tokens: &TokenManager,
-    expected: &str,
-) -> std::io::Result<()> {
+async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()> {
+    let (client, tokens, expected) = (&state.client, &state.tokens, state.secret.as_str());
     let Some(request) = read_request(&mut stream).await? else {
         return respond(&mut stream, "400 Bad Request", "malformed request").await;
     };
@@ -166,6 +190,14 @@ async fn handle(
             Ok(token) => respond(&mut stream, "200 OK", &token).await,
             Err(err) => {
                 eprintln!("xodus bridge: license token request failed: {err}");
+                respond(&mut stream, "502 Bad Gateway", &err).await
+            }
+        },
+        ("POST", "/xbl/token") => match xbl_token(state.clone(), &request.body).await {
+            Ok(Some(header)) => respond(&mut stream, "200 OK", &header).await,
+            Ok(None) => respond(&mut stream, "204 No Content", "").await,
+            Err(err) => {
+                eprintln!("xodus bridge: Xbox Live token request failed: {err}");
                 respond(&mut stream, "502 Bad Gateway", &err).await
             }
         },
@@ -213,4 +245,126 @@ async fn license_token(
     )
     .await
     .map_err(|err| err.to_string())
+}
+
+async fn fetch_endpoints(client: &reqwest::Client, title_id: u32) -> Result<TitleMgtResponse, String> {
+    if title_id == 0 {
+        return xodus::api::xbox::title::get_title_management(client)
+            .await
+            .map_err(|err| err.to_string());
+    }
+    client
+        .get(format!(
+            "https://title.mgt.xboxlive.com/titles/{title_id}/endpoints?type=1"
+        ))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|err| err.to_string())?
+        .json()
+        .await
+        .map_err(|err| err.to_string())
+}
+
+/// Finds the relying party for a URL from the Xbox Live title endpoint list.
+async fn relying_party(state: &State, url: &str, title_id: u32) -> Result<Option<String>, String> {
+    // WebSocket URLs use the endpoints of the matching HTTP scheme.
+    let url = if let Some(rest) = url.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = url.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        url.to_string()
+    };
+
+    let mut endpoints = state.endpoints.lock().await;
+    if !endpoints.contains_key(&title_id) {
+        let response = match fetch_endpoints(&state.client, title_id).await {
+            Ok(response) => response,
+            // Fall back to the default list if the title has none.
+            Err(err) if title_id != 0 => {
+                eprintln!("xodus bridge: no endpoints for title {title_id}: {err}");
+                fetch_endpoints(&state.client, 0).await?
+            }
+            Err(err) => return Err(err),
+        };
+        endpoints.insert(title_id, response);
+    }
+    let endpoints = &endpoints[&title_id];
+    Ok(xodus::api::xbox::title::get_endpoint(&url, endpoints).and_then(|e| e.relying_party.clone()))
+}
+
+async fn xbl_token(state: Arc<State>, body: &str) -> Result<Option<String>, String> {
+    let mut lines = body.lines();
+    let _method = lines.next().unwrap_or_default();
+    let url = lines.next().unwrap_or_default().trim().to_string();
+    let force_refresh = lines.next().is_some_and(|l| l.trim() == "1");
+    let title_id: u32 = lines.next().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+    if url.is_empty() {
+        return Err("missing url".to_string());
+    }
+
+    let rps = match relying_party(&state, &url, title_id).await? {
+        Some(rp) => vec![rp],
+        // Title specific services that are missing from the endpoint list: games name their own
+        // XSTS relying party directly, e.g. https://xsts.<service>. Try the usual spellings.
+        None => match reqwest::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)) {
+            Some(host) if host.starts_with("xsts.") => vec![
+                format!("https://{host}"),
+                format!("https://{host}/"),
+                format!("http://{host}/"),
+                format!("rp://{host}/"),
+            ],
+            _ => return Ok(None),
+        },
+    };
+
+    let mut last_err = String::new();
+    for rp in rps {
+        match xsts_header(&state, rp.clone(), force_refresh).await {
+            Ok(header) => {
+                eprintln!("xodus bridge: token for {url} via relying party {rp}");
+                return Ok(Some(header));
+            }
+            Err(err) => {
+                eprintln!("xodus bridge: relying party {rp} failed: {err}");
+                last_err = err;
+            }
+        }
+    }
+    Err(last_err)
+}
+
+async fn xsts_header(state: &Arc<State>, rp: String, force_refresh: bool) -> Result<String, String> {
+    if !force_refresh {
+        if let Some((header, at)) = state.xsts.lock().await.get(&rp) {
+            if at.elapsed() < XSTS_LIFETIME {
+                return Ok(header.clone());
+            }
+        }
+    }
+
+    let (Ok(Token::Legacy(dev_token)), Ok(Token::Legacy(user_token))) = (
+        state.tokens.get_device_sts_token(),
+        state.tokens.get_user_sts_token(),
+    ) else {
+        return Err("no device or user token, log in first".to_string());
+    };
+
+    // The XSTS helper panics on errors; keep that inside its own task.
+    let client = state.client.clone();
+    let task_rp = rp.clone();
+    let xsts = tokio::spawn(async move {
+        xodus::api::xbox::run(&client, dev_token, user_token, &task_rp).await
+    })
+    .await
+    .map_err(|_| format!("could not get an XSTS token for {rp}"))?;
+
+    let header = xodus::api::xbox::get_xsts_auth_header(xsts);
+    state
+        .xsts
+        .lock()
+        .await
+        .insert(rp, (header.clone(), Instant::now()));
+    Ok(header)
 }
