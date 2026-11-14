@@ -54,11 +54,15 @@ Binaries and crates still carry the Xodus names (`xodus-cli`, `xodus-service`) t
 ```bash
 # sign in once
 xodus-cli login
+# prepare a prefix: DXVK, vkd3d-proton and the Microsoft root certificates games expect
+xodus-cli prefix init /path/to/tux-force-wine/wine --prefix ~/Games/xtux-prefix
 # run a game installed by the Windows Xbox app, or a folder downloaded with xodus-cli
 WINEPREFIX=~/Games/xtux-prefix xodus-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
 ```
 
-Games that need D3D12 feature levels beyond Wine's built-in vkd3d need vkd3d-proton and DXVK in the prefix.
+`prefix init` downloads DXVK and vkd3d-proton from their GitHub releases (or takes them from a local Proton build with
+`--from-proton`), keeps Wine's own DLLs in `xtux-builtin-backup/` and records the setup in `xtux-prefix.json`, from
+which `run` takes the DLL overrides.
 
 ## Building
 

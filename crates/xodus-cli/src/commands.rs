@@ -10,6 +10,8 @@ pub mod link;
 pub mod login;
 pub mod logout;
 #[cfg(unix)]
+pub mod prefix;
+#[cfg(unix)]
 pub mod run;
 pub mod splicense;
 pub mod streaming;

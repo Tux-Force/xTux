@@ -302,6 +302,16 @@ pub async fn run(
         }
     }
 
+    // Use the DXVK/vkd3d-proton DLLs that `prefix init` installed, unless the user set overrides.
+    if std::env::var_os("WINEDLLOVERRIDES").is_none() {
+        if let Some(overrides) = super::prefix::resolve_prefix(None)
+            .as_deref()
+            .and_then(super::prefix::recorded_overrides)
+        {
+            identity_env.push(("WINEDLLOVERRIDES", overrides));
+        }
+    }
+
     // Hardware video decoders hand out frames in GPU memory (CUDA, Vulkan), which Wine's media
     // pipeline cannot take; games then wait forever for their intro videos (MSFS 2024). Prefer
     // the software decoders unless the user chose ranks themselves.

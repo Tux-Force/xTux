@@ -7192,6 +7192,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rustix",
  "serde_json",
+ "sha1",
  "tao",
  "tempfile",
  "tokio",

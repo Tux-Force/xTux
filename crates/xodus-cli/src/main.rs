@@ -90,6 +90,12 @@ enum SubCommand {
         #[arg(short, long)]
         market: Option<String>,
     },
+    #[cfg(unix)]
+    #[command(about = "Prepare a Wine prefix for GDK games (DXVK, vkd3d-proton, root certificates)")]
+    Prefix {
+        #[command(subcommand)]
+        action: PrefixAction,
+    },
     #[command(about = "Generate or decrypt base64-encoded CLEP challenge data")]
     Clep {
         #[command(subcommand)]
@@ -98,6 +104,25 @@ enum SubCommand {
     #[command(about = "Decode SPLicenseBlock")]
     SpLicense {
         block: String,
+    },
+}
+
+#[cfg(unix)]
+#[derive(Subcommand)]
+enum PrefixAction {
+    #[command(about = "Create or update a prefix: DXVK, vkd3d-proton, Microsoft root certificates")]
+    Init {
+        /// Wine binary to use, for example the Tux-Force build
+        wine: String,
+        /// Prefix path, defaults to WINEPREFIX or ~/Games/xtux-prefix
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Copy DXVK and vkd3d-proton from a local Proton build instead of downloading them
+        #[arg(long)]
+        from_proton: Option<String>,
+        /// Leave Wine's own Direct3D DLLs in place
+        #[arg(long, default_value_t = false)]
+        skip_graphics: bool,
     },
 }
 
@@ -238,6 +263,27 @@ async fn main() -> ExitCode {
         }
         #[cfg(unix)]
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
+        #[cfg(unix)]
+        SubCommand::Prefix {
+            action:
+                PrefixAction::Init {
+                    wine,
+                    prefix,
+                    from_proton,
+                    skip_graphics,
+                },
+        } => {
+            commands::prefix::init(
+                &client,
+                commands::prefix::InitOptions {
+                    wine,
+                    prefix,
+                    from_proton,
+                    skip_graphics,
+                },
+            )
+            .await
+        }
         #[cfg(unix)]
         SubCommand::Run {
             source,
