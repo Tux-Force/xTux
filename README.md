@@ -27,8 +27,9 @@ contributions (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main
 
 ### What xTux adds on top of Xodus
 
-- **Shared installs:** `xtux-cli run` and `xtux-cli link` start games straight from an installation made by the
-  Windows Xbox app (dual boot, NTFS), no second download.
+- **One install format:** xTux reads and writes the layout of the Windows Xbox app (`Content/` plus the package
+  header named by its content id), so `xtux-cli run` starts games straight from a Windows installation (dual boot,
+  NTFS) without a second download. `xtux-cli migrate <folder>` moves an older Xodus install into that layout.
 - **Bridge for GDK services:** `run` starts a loopback service with a per-run secret that answers what the game's
   xgameruntime needs from Microsoft without handing account tokens to the game:
   - store license tokens (`XStoreQueryLicenseToken`),
@@ -59,7 +60,13 @@ xtux-cli login
 xtux-cli prefix init /path/to/tux-force-wine/wine --prefix ~/Games/xtux-prefix
 # run a game installed by the Windows Xbox app, or a folder downloaded with xtux-cli
 WINEPREFIX=~/Games/xtux-prefix xtux-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
+# or by name, with Wine, prefix and market from ~/.config/xtux/settings.toml
+xtux-cli list
+xtux-cli run "Farming Simulator 25 (PC)"
 ```
+
+Shell completion (game names for `run`): add `source <(COMPLETE=zsh xtux-cli)` to `~/.zshrc`, or
+`source <(COMPLETE=bash xtux-cli)` to `~/.bashrc`.
 
 `run` and `prefix init` go through the daemon `xtux-service`, which `xtux-cli` starts on demand and which exits
 after five idle minutes (`XTUX_IDLE_TIMEOUT` in seconds, `0` keeps it running). Its log, including the game bridge, is

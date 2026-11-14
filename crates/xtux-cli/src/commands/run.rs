@@ -18,9 +18,10 @@ pub async fn run(
     wine: String,
     exe: Option<String>,
     market: Option<String>,
+    extra_env: Vec<(String, String)>,
 ) -> ExitCode {
     if direct_mode() {
-        return run_direct(client, tokens, source, wine, exe, market).await;
+        return run_direct(client, tokens, source, wine, exe, market, extra_env).await;
     }
 
     // The daemon has its own working directory and environment: send absolute paths and ours.
@@ -37,7 +38,7 @@ pub async fn run(
         wine,
         exe,
         market,
-        env: std::env::vars().collect(),
+        env: std::env::vars().chain(extra_env).collect(),
     };
 
     let mut daemon = match Client::connect_or_spawn().await {
@@ -99,13 +100,14 @@ async fn run_direct(
     wine: String,
     exe: Option<String>,
     market: Option<String>,
+    extra_env: Vec<(String, String)>,
 ) -> ExitCode {
     let options = LaunchOptions {
         source: PathBuf::from(source),
         wine,
         exe,
         market,
-        env: Vec::new(),
+        env: extra_env,
     };
     let game = match launch(client, tokens, options, &Print).await {
         Ok(game) => game,

@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -83,12 +83,28 @@ enum SubCommand {
     #[cfg(unix)]
     #[command(about = "Run a game with the Tux-Force Wine build")]
     Run {
+        /// Game name (see `xtux-cli list`) or game folder
+        #[arg(add = clap_complete::ArgValueCompleter::new(commands::list::complete_game))]
         source: String,
-        wine: String,
+        /// Wine binary, defaults to the one in the settings
+        wine: Option<String>,
         #[arg(short, long)]
         exe: Option<String>,
         #[arg(short, long)]
         market: Option<String>,
+    },
+    #[cfg(unix)]
+    #[command(about = "List the installed games of the library folders")]
+    List {
+        /// Print only the game folders
+        #[arg(long, default_value_t = false)]
+        paths: bool,
+    },
+    #[cfg(unix)]
+    #[command(about = "Move an install from the old Xodus layout into the Windows Xbox app layout")]
+    Migrate {
+        /// Game folder with a .xodus-streaming.msixvc
+        game_dir: String,
     },
     #[cfg(unix)]
     #[command(
@@ -159,8 +175,24 @@ struct CliArgs {
     command: SubCommand,
 }
 
+/// Commands that only read local files and never need the keychain.
+fn local_only(command: &SubCommand) -> bool {
+    #[cfg(unix)]
+    if matches!(
+        command,
+        SubCommand::List { .. } | SubCommand::Migrate { .. }
+    ) {
+        return true;
+    }
+    let _ = command;
+    false
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Answers shell completion requests (`source <(COMPLETE=zsh xtux-cli)`) and exits.
+    clap_complete::CompleteEnv::with_factory(CliArgs::command).complete();
+
     // Show library progress (game bridge, links) unless XODUS_LOG chooses something else.
     let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info"));
@@ -201,7 +233,7 @@ async fn main() -> ExitCode {
     let needs_device_credentials = !matches!(
         args.command,
         SubCommand::Clep { .. } | SubCommand::SpLicense { .. } | SubCommand::Logout { .. }
-    );
+    ) && !local_only(&args.command);
     if needs_device_credentials {
         xodus::tokens::device::ensure_device_credentials(&client, &tokens).await;
     }
@@ -279,6 +311,24 @@ async fn main() -> ExitCode {
         #[cfg(unix)]
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
         #[cfg(unix)]
+        SubCommand::List { paths } => commands::list::run(paths),
+        #[cfg(unix)]
+        SubCommand::Migrate { game_dir } => {
+            match xtux_games::layout::migrate_xodus(std::path::Path::new(&game_dir)).await {
+                Ok(package) => {
+                    println!(
+                        "Moved to the Windows layout; package header: {}",
+                        package.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("{err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(unix)]
         SubCommand::Prefix {
             action:
                 PrefixAction::Init {
@@ -307,7 +357,36 @@ async fn main() -> ExitCode {
             market,
         } => {
             // Windows Xbox app installs and xTux installs are read in place (xtux_games::layout).
-            commands::run::run(&client, &tokens, source, wine, exe, market).await
+            let settings = xtux_games::settings::Settings::load().unwrap_or_default();
+            let source = match commands::list::resolve(&source) {
+                Ok(source) => source,
+                Err(err) => {
+                    eprintln!("{err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let Some(wine) = wine.or(settings.wine) else {
+                eprintln!("No Wine binary given and none set in the settings");
+                return ExitCode::FAILURE;
+            };
+            let mut env = Vec::new();
+            if let (None, Some(prefix)) = (std::env::var_os("WINEPREFIX"), settings.prefix) {
+                env.push((
+                    "WINEPREFIX".to_string(),
+                    prefix.to_string_lossy().into_owned(),
+                ));
+            }
+            let market = market.or(settings.market);
+            commands::run::run(
+                &client,
+                &tokens,
+                source.to_string_lossy().into_owned(),
+                wine,
+                exe,
+                market,
+                env,
+            )
+            .await
         }
         SubCommand::Clep { action } => match action {
             ClepAction::Generate {

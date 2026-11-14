@@ -109,3 +109,44 @@ mod tests {
         assert!(detect(root.path()).is_none());
     }
 }
+
+/// Moves an install from the Xodus layout into the Windows layout, in place: game files into `Content/`, the
+/// package header to its content id. Returns the new header path. Only renames, so it stays on the same drive.
+pub async fn migrate_xodus(dir: &Path) -> crate::Result<PathBuf> {
+    use crate::Error;
+
+    let layout =
+        detect(dir).ok_or_else(|| Error::msg(format!("{} is not a game folder", dir.display())))?;
+    if layout.root != dir || layout.package != dir.join(XODUS_PACKAGE) {
+        return Err(Error::msg(format!(
+            "{} already uses the Windows layout",
+            dir.display()
+        )));
+    }
+    let mut file = tokio::fs::File::open(&layout.package).await?;
+    let xvd = msixvc::xvd::XvdFile::parse(&mut file)
+        .await
+        .map_err(|e| Error::msg(format!("cannot read the package header: {e}")))?;
+    let id = xvd.content_id().hyphenated().to_string().to_uppercase();
+
+    let content = dir.join(CONTENT_DIR);
+    if content.exists() {
+        return Err(Error::msg(format!("{} exists already", content.display())));
+    }
+    std::fs::create_dir(&content)?;
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // The header, the streaming cache and the new folder stay where they are.
+        if name_str == XODUS_PACKAGE
+            || name_str.starts_with(".xodus-streaming")
+            || name_str == CONTENT_DIR
+        {
+            continue;
+        }
+        std::fs::rename(entry.path(), content.join(&name))?;
+    }
+    let package = dir.join(&id);
+    std::fs::rename(&layout.package, &package)?;
+    Ok(package)
+}
