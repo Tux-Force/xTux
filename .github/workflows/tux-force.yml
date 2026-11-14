@@ -1,5 +1,6 @@
 # Tux-Force (xTux) CI: build the workspace on Linux x86_64, run the tests
 # and publish xtux-cli and xtux-service as downloadable artifacts.
+# Pushes to main also create a GitHub release v<version of xtux-cli> once.
 #
 # The upstream "Rust check" workflow (rust.yml) is left untouched; it only
 # runs on pushes to main and on pull requests (clippy + tests).
@@ -8,7 +9,7 @@ name: Tux-Force build
 
 on:
   push:
-    branches: [tux-force]
+    branches: [develop, main]
   pull_request:
   workflow_dispatch:
 
@@ -80,3 +81,35 @@ jobs:
           name: xtux-linux-x86_64
           path: dist/
           if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtux-linux-x86_64
+          path: dist
+
+      - name: Create the release if this version has none yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/xtux-cli/Cargo.toml | head -1)
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag exists already; bump the version in crates/xtux-cli/Cargo.toml for a new one."
+            exit 0
+          fi
+          chmod +x dist/xtux-cli dist/xtux-service
+          archive="xtux-$version-linux-x86_64.tar.gz"
+          tar -C dist -czf "$archive" xtux-cli xtux-service SHA256SUMS
+          sha256sum "$archive" > "$archive.sha256"
+          gh release create "$tag" "$archive" "$archive.sha256" \
+            --target "$GITHUB_SHA" --title "xTux $version" --generate-notes
