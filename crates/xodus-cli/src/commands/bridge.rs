@@ -14,9 +14,13 @@
 //!
 //! `POST /xbl/token`
 //!   body: line 1 HTTP method, line 2 URL, line 3 `1` to force a refresh, line 4 the title id
-//!   (decimal, optional) for title specific endpoints.
-//!   Answers the Authorization header value for the URL's relying party, or 204 when the URL
-//!   does not need an Xbox Live token.
+//!   (decimal, 0 if unknown), line 5 the title's MSA app id (may be empty), line 6 the request
+//!   body in base64 (may be empty).
+//!   Answers two lines, the Authorization header value and the Signature header value (empty
+//!   when the endpoint is not signed), or 204 when the URL does not need an Xbox Live token.
+//!   With an MSA app id the token comes from a title-bound session (device, title and user
+//!   token, like on Windows) and signed endpoints get a signature; without one it is a
+//!   user-only token.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -26,13 +30,18 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use base64::Engine;
+use xodus::api::xbox::signing;
+use xodus::api::xbox::title::{self, ResolvedEndpoint};
+use xodus::auth::{TitleSession, XstsToken};
 use xodus::models::secrets::Token;
 use xodus::models::xbox::TitleMgtResponse;
+use xodus::models::xgameruntime::xuser::UserIdentity;
 use xodus::tokens::TokenManager;
 
 use crate::license::get_store_tokens;
 
-const MAX_REQUEST: usize = 64 * 1024;
+const MAX_REQUEST: usize = 1024 * 1024;
 /// XSTS tokens are valid for many hours; refresh well before that.
 const XSTS_LIFETIME: Duration = Duration::from_secs(60 * 60);
 
@@ -42,8 +51,12 @@ struct State {
     secret: String,
     /// Endpoint lists per title id (0 for the default list).
     endpoints: Mutex<HashMap<u32, TitleMgtResponse>>,
-    /// Authorization headers per relying party.
+    /// User-only Authorization headers per relying party.
     xsts: Mutex<HashMap<String, (String, Instant)>>,
+    /// Title-bound sessions per `client_id:title_id`.
+    sessions: Mutex<HashMap<String, TitleSession>>,
+    /// Title-bound XSTS tokens per `client_id:title_id:relying_party`.
+    title_xsts: Mutex<HashMap<String, XstsToken>>,
 }
 
 pub struct Bridge {
@@ -63,6 +76,8 @@ pub async fn start(client: reqwest::Client, tokens: TokenManager) -> std::io::Re
         secret: secret.clone(),
         endpoints: Mutex::new(HashMap::new()),
         xsts: Mutex::new(HashMap::new()),
+        sessions: Mutex::new(HashMap::new()),
+        title_xsts: Mutex::new(HashMap::new()),
     });
     tokio::spawn(async move {
         loop {
@@ -194,7 +209,9 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
             }
         },
         ("POST", "/xbl/token") => match xbl_token(state.clone(), &request.body).await {
-            Ok(Some(header)) => respond(&mut stream, "200 OK", &header).await,
+            Ok(Some((header, signature))) => {
+                respond(&mut stream, "200 OK", &format!("{header}\n{signature}")).await
+            }
             Ok(None) => respond(&mut stream, "204 No Content", "").await,
             Err(err) => {
                 eprintln!("xodus bridge: Xbox Live token request failed: {err}");
@@ -247,16 +264,25 @@ async fn license_token(
     .map_err(|err| err.to_string())
 }
 
-async fn fetch_endpoints(client: &reqwest::Client, title_id: u32) -> Result<TitleMgtResponse, String> {
+async fn fetch_endpoints(
+    client: &reqwest::Client,
+    title_id: u32,
+    authorization: Option<&str>,
+) -> Result<TitleMgtResponse, String> {
     if title_id == 0 {
-        return xodus::api::xbox::title::get_title_management(client)
+        return title::get_title_management(client)
             .await
             .map_err(|err| err.to_string());
     }
-    client
+    let mut request = client
         .get(format!(
             "https://title.mgt.xboxlive.com/titles/{title_id}/endpoints?type=1"
         ))
+        .header("x-xbl-contract-version", "1");
+    if let Some(authorization) = authorization {
+        request = request.header("Authorization", authorization);
+    }
+    request
         .send()
         .await
         .and_then(|r| r.error_for_status())
@@ -266,76 +292,225 @@ async fn fetch_endpoints(client: &reqwest::Client, title_id: u32) -> Result<Titl
         .map_err(|err| err.to_string())
 }
 
-/// Finds the relying party for a URL from the Xbox Live title endpoint list.
-async fn relying_party(state: &State, url: &str, title_id: u32) -> Result<Option<String>, String> {
-    // WebSocket URLs use the endpoints of the matching HTTP scheme.
-    let url = if let Some(rest) = url.strip_prefix("wss://") {
-        format!("https://{rest}")
-    } else if let Some(rest) = url.strip_prefix("ws://") {
-        format!("http://{rest}")
-    } else {
-        url.to_string()
-    };
-
+/// The endpoint table of a title, or the default one (title id 0). Title tables are only
+/// served to title-bound tokens, so they need `authorization`; failures fall back to the
+/// default table and are not retried.
+async fn endpoint_table(
+    state: &State,
+    title_id: u32,
+    authorization: Option<&str>,
+) -> Result<TitleMgtResponse, String> {
     let mut endpoints = state.endpoints.lock().await;
     if !endpoints.contains_key(&title_id) {
-        let response = match fetch_endpoints(&state.client, title_id).await {
-            Ok(response) => response,
-            // Fall back to the default list if the title has none.
+        let table = match fetch_endpoints(&state.client, title_id, authorization).await {
+            Ok(table) => table,
             Err(err) if title_id != 0 => {
                 eprintln!("xodus bridge: no endpoints for title {title_id}: {err}");
-                fetch_endpoints(&state.client, 0).await?
+                match endpoints.get(&0) {
+                    Some(default) => default.clone(),
+                    None => fetch_endpoints(&state.client, 0, None).await?,
+                }
             }
             Err(err) => return Err(err),
         };
-        endpoints.insert(title_id, response);
+        endpoints.insert(title_id, table);
     }
-    let endpoints = &endpoints[&title_id];
-    Ok(xodus::api::xbox::title::get_endpoint(&url, endpoints).and_then(|e| e.relying_party.clone()))
+    Ok(endpoints[&title_id].clone())
 }
 
-async fn xbl_token(state: Arc<State>, body: &str) -> Result<Option<String>, String> {
-    let mut lines = body.lines();
-    let _method = lines.next().unwrap_or_default();
-    let url = lines.next().unwrap_or_default().trim().to_string();
-    let force_refresh = lines.next().is_some_and(|l| l.trim() == "1");
-    let title_id: u32 = lines.next().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+/// Relying parties to try for a URL: the endpoint table entry, or for unknown `xsts.<service>`
+/// hosts (games name their own relying party that way) the usual spellings of it.
+fn candidate_endpoints(url: &str, table: &TitleMgtResponse) -> Vec<ResolvedEndpoint> {
+    if let Some(resolved) = title::resolve_relying_party(url, table) {
+        return vec![resolved];
+    }
+    let Some(host) = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+    else {
+        return Vec::new();
+    };
+    if !host.starts_with("xsts.") {
+        return Vec::new();
+    }
+    [
+        format!("https://{host}"),
+        format!("https://{host}/"),
+        format!("http://{host}/"),
+        format!("rp://{host}/"),
+    ]
+    .into_iter()
+    .map(|relying_party| ResolvedEndpoint {
+        relying_party,
+        signature_policy: None,
+    })
+    .collect()
+}
+
+struct XblRequest {
+    method: String,
+    url: String,
+    force_refresh: bool,
+    title_id: u32,
+    client_id: String,
+    body: Vec<u8>,
+}
+
+fn parse_xbl_request(body: &str) -> Result<XblRequest, String> {
+    let mut lines = body.split('\n');
+    let mut next = || lines.next().unwrap_or_default().trim().to_string();
+    let method = next().to_ascii_uppercase();
+    let url = next();
+    let force_refresh = next() == "1";
+    let title_id = next().parse().unwrap_or(0);
+    let client_id = next();
+    let encoded = next();
     if url.is_empty() {
         return Err("missing url".to_string());
     }
-
-    let rps = match relying_party(&state, &url, title_id).await? {
-        Some(rp) => vec![rp],
-        // Title specific services that are missing from the endpoint list: games name their own
-        // XSTS relying party directly, e.g. https://xsts.<service>. Try the usual spellings.
-        None => match reqwest::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)) {
-            Some(host) if host.starts_with("xsts.") => vec![
-                format!("https://{host}"),
-                format!("https://{host}/"),
-                format!("http://{host}/"),
-                format!("rp://{host}/"),
-            ],
-            _ => return Ok(None),
-        },
+    let body = if encoded.is_empty() {
+        Vec::new()
+    } else {
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| "request body is not valid base64".to_string())?
     };
+    Ok(XblRequest {
+        method: if method.is_empty() { "GET".to_string() } else { method },
+        url,
+        force_refresh,
+        title_id,
+        client_id,
+        body,
+    })
+}
 
-    let mut last_err = String::new();
-    for rp in rps {
-        match xsts_header(&state, rp.clone(), force_refresh).await {
+/// Answers `(authorization, signature)` for a request, `None` when it needs no token.
+async fn xbl_token(state: Arc<State>, body: &str) -> Result<Option<(String, String)>, String> {
+    let request = parse_xbl_request(body)?;
+    if !request.client_id.is_empty() && request.title_id != 0 {
+        return title_bound_token(&state, &request).await;
+    }
+
+    let table = endpoint_table(&state, 0, None).await?;
+    let mut last_err = None;
+    for endpoint in candidate_endpoints(&request.url, &table) {
+        let rp = endpoint.relying_party;
+        match user_only_header(&state, rp.clone(), request.force_refresh).await {
             Ok(header) => {
-                eprintln!("xodus bridge: token for {url} via relying party {rp}");
-                return Ok(Some(header));
+                eprintln!("xodus bridge: user token for {} via {rp}", request.url);
+                return Ok(Some((header, String::new())));
             }
             Err(err) => {
                 eprintln!("xodus bridge: relying party {rp} failed: {err}");
-                last_err = err;
+                last_err = Some(err);
             }
         }
     }
-    Err(last_err)
+    last_err.map_or(Ok(None), Err)
 }
 
-async fn xsts_header(state: &Arc<State>, rp: String, force_refresh: bool) -> Result<String, String> {
+/// Title-bound session for a game, established through the sisu flow when needed.
+async fn ensure_session(state: &State, client_id: &str, title_id: u32) -> Result<String, String> {
+    let key = format!("{client_id}:{title_id}");
+    let mut sessions = state.sessions.lock().await;
+    if !sessions.get(&key).is_some_and(TitleSession::is_valid) {
+        eprintln!("xodus bridge: establishing Xbox Live session for title {title_id}");
+        let session = TitleSession::establish(&state.client, &state.tokens, client_id, i64::from(title_id))
+            .await
+            .map_err(|err| format!("Xbox Live sign-in for title {title_id} failed: {err}"))?;
+        sessions.insert(key.clone(), session);
+    }
+    Ok(key)
+}
+
+/// Title-bound XSTS token for one relying party, cached until it expires.
+async fn title_token(
+    state: &State,
+    session_key: &str,
+    relying_party: &str,
+    force_refresh: bool,
+) -> Result<(XstsToken, xodus::auth::ProofKey), String> {
+    let cache_key = format!("{session_key}:{relying_party}");
+    let mut sessions = state.sessions.lock().await;
+    let session = sessions
+        .get_mut(session_key)
+        .ok_or("title session vanished")?;
+    let proof_key = session.proof_key();
+
+    let mut cache = state.title_xsts.lock().await;
+    if !force_refresh {
+        if let Some(token) = cache.get(&cache_key).filter(|t| t.check_validity().is_ok()) {
+            return Ok((token.clone(), proof_key));
+        }
+    }
+    let token = session
+        .get_xsts_token(relying_party)
+        .await
+        .map_err(|err| format!("XSTS request for {relying_party} failed: {err}"))?;
+    cache.insert(cache_key, token.clone());
+    Ok((token, proof_key))
+}
+
+async fn title_bound_token(
+    state: &State,
+    request: &XblRequest,
+) -> Result<Option<(String, String)>, String> {
+    let url = reqwest::Url::parse(&request.url).map_err(|_| "invalid url".to_string())?;
+    let session_key = ensure_session(state, &request.client_id, request.title_id).await?;
+
+    // The title's own endpoint table needs a title-bound token for the default relying party.
+    let (default_token, _) =
+        title_token(state, &session_key, title::DEFAULT_RELYING_PARTY, false).await?;
+    let default_auth = authorization(&default_token)?;
+    let table = endpoint_table(state, request.title_id, Some(&default_auth)).await?;
+
+    let mut last_err = None;
+    for endpoint in candidate_endpoints(&request.url, &table) {
+        let rp = endpoint.relying_party.clone();
+        let (token, proof_key) =
+            match title_token(state, &session_key, &rp, request.force_refresh).await {
+                Ok(result) => result,
+                Err(err) => {
+                    eprintln!("xodus bridge: {err}");
+                    last_err = Some(err);
+                    continue;
+                }
+            };
+        let header = authorization(&token)?;
+        let signature = match &endpoint.signature_policy {
+            Some(policy) => signing::sign_request(
+                &proof_key,
+                i32::from(policy.version),
+                policy.max_body_bytes as usize,
+                chrono::Utc::now(),
+                &request.method,
+                &signing::path_and_query(&url),
+                &header,
+                &request.body,
+            )
+            .map_err(|err| format!("request signing failed: {err}"))?,
+            None => String::new(),
+        };
+        eprintln!(
+            "xodus bridge: title token for {} via {rp}{}",
+            request.url,
+            if signature.is_empty() { "" } else { ", signed" }
+        );
+        return Ok(Some((header, signature)));
+    }
+    last_err.map_or(Ok(None), Err)
+}
+
+/// `XBL3.0 x=<uhs>;<token>` for an XSTS token.
+fn authorization(token: &XstsToken) -> Result<String, String> {
+    let uhs = UserIdentity::from_xsts(token)
+        .and_then(|identity| identity.uhs)
+        .ok_or("XSTS token without user hash")?;
+    Ok(format!("XBL3.0 x={uhs};{}", token.token))
+}
+
+async fn user_only_header(state: &Arc<State>, rp: String, force_refresh: bool) -> Result<String, String> {
     if !force_refresh {
         if let Some((header, at)) = state.xsts.lock().await.get(&rp) {
             if at.elapsed() < XSTS_LIFETIME {
@@ -351,14 +526,9 @@ async fn xsts_header(state: &Arc<State>, rp: String, force_refresh: bool) -> Res
         return Err("no device or user token, log in first".to_string());
     };
 
-    // The XSTS helper panics on errors; keep that inside its own task.
-    let client = state.client.clone();
-    let task_rp = rp.clone();
-    let xsts = tokio::spawn(async move {
-        xodus::api::xbox::run(&client, dev_token, user_token, &task_rp).await
-    })
-    .await
-    .map_err(|_| format!("could not get an XSTS token for {rp}"))?;
+    let xsts = xodus::api::xbox::xsts_user_only(&state.client, dev_token, user_token, &rp)
+        .await
+        .map_err(|err| format!("could not get an XSTS token for {rp}: {err}"))?;
 
     let header = xodus::api::xbox::get_xsts_auth_header(xsts);
     state

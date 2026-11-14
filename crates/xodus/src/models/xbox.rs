@@ -123,7 +123,7 @@ pub struct XstsRequest {
     pub properties: XstsPropertyBag,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct TitleMgtResponse {
     pub end_points: Vec<TitleMgtEndPoint>,
