@@ -228,7 +228,11 @@ pub async fn launch(
     options: LaunchOptions,
     progress: &dyn Progress,
 ) -> Result<RunningGame> {
-    let out: &Path = &options.source;
+    // Installs of the Windows Xbox app run through a link folder (see link.rs), whoever calls us.
+    let source = PathBuf::from(crate::link::resolve_source(
+        &options.source.to_string_lossy(),
+    )?);
+    let out: &Path = &source;
     let out_absolute = std::fs::canonicalize(out)
         .map_err(|e| Error::msg(format!("failed to resolve {}: {e}", out.display())))?;
     let final_path = out.join(PACKAGE_FILE);
