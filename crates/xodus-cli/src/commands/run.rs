@@ -302,6 +302,22 @@ pub async fn run(
         }
     }
 
+    // Hardware video decoders hand out frames in GPU memory (CUDA, Vulkan), which Wine's media
+    // pipeline cannot take; games then wait forever for their intro videos (MSFS 2024). Prefer
+    // the software decoders unless the user chose ranks themselves.
+    if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_none() {
+        identity_env.push((
+            "GST_PLUGIN_FEATURE_RANK",
+            [
+                "nvh264dec", "nvh265dec", "nvav1dec", "nvvp8dec", "nvvp9dec", "nvjpegdec",
+                "nvmpegvideodec", "nvmpeg2videodec", "nvmpeg4videodec", "vulkanh264dec",
+                "vulkanh265dec", "vulkanav1dec",
+            ]
+            .map(|d| format!("{d}:NONE"))
+            .join(","),
+        ));
+    }
+
     // Answers GDK calls that need the Microsoft services, see bridge.rs.
     match super::bridge::start(client.clone(), tokens.clone()).await {
         Ok(bridge) => {
