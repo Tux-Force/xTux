@@ -34,7 +34,7 @@ impl SimpleContext {
         shared: Arc<SharedState>,
     ) -> Self {
         let client = reqwest::ClientBuilder::new()
-            .user_agent(format!("xodus-service/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("xtux-service/{}", env!("CARGO_PKG_VERSION")))
             .connection_verbose(true)
             .timeout(std::time::Duration::from_secs(90))
             .build()

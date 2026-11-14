@@ -1,4 +1,4 @@
-//! `xodus-cli prefix init`: prepares a Wine prefix for GDK games.
+//! `xtux-cli prefix init`: prepares a Wine prefix for GDK games.
 //!
 //! - creates the prefix with `wineboot` when it does not exist yet,
 //! - installs DXVK (`dxgi`, `d3d11`, `d3d10core`) and vkd3d-proton (`d3d12`, `d3d12core`), downloaded from their
@@ -121,7 +121,7 @@ async fn run_init(client: &reqwest::Client, options: InitOptions) -> Result<(), 
     }
     let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
     std::fs::write(prefix.join(STATE_FILE), text).map_err(|e| e.to_string())?;
-    println!("Done. `xodus-cli run` uses this prefix setup when WINEPREFIX points here.");
+    println!("Done. `xtux-cli run` uses this prefix setup when WINEPREFIX points here.");
     Ok(())
 }
 

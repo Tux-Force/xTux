@@ -19,7 +19,7 @@ pub const PASSPORT_STS: &str = "http://Passport.NET/STS";
 /// Semantic facade over the two storage tiers: a persistent, keychain-backed tier
 /// for STS/device/user credentials, and an ephemeral tier for short-lived
 /// per-relying-party XSTS tokens. Centralizes the read-merge-write pattern that was
-/// previously duplicated across `xodus-cli` and `xodus-service`.
+/// previously duplicated across `xtux-cli` and `xtux-service`.
 #[derive(Clone)]
 pub struct TokenManager {
     persistent: Arc<dyn TokenBackend>,
@@ -38,7 +38,7 @@ impl TokenManager {
     }
 
     /// Keychain for persistent storage, in-memory for ephemeral - the default
-    /// wiring for both `xodus-cli` and `xodus-service` today.
+    /// wiring for both `xtux-cli` and `xtux-service` today.
     pub fn with_keychain_and_memory() -> Self {
         Self::new(
             Arc::new(KeychainBackend),
@@ -47,7 +47,7 @@ impl TokenManager {
     }
 
     /// Keychain for persistent storage, in-memory for ephemeral - the default
-    /// wiring for both `xodus-cli` and `xodus-service` today.
+    /// wiring for both `xtux-cli` and `xtux-service` today.
     pub fn with_memory() -> Self {
         Self::new(
             Arc::new(MemoryBackend::default()),

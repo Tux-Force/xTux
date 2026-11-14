@@ -1,8 +1,8 @@
 [package]
-name = "xodus-cli"
+name = "xtux-cli"
 version = "0.1.0"
 edition = "2024"
-default-run = "xodus-cli"
+default-run = "xtux-cli"
 
 [dependencies]
 xodus = { path = "../xodus" }

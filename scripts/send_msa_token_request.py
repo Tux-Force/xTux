@@ -29,7 +29,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Send an MSA_TOKEN_REQUEST XML message to a Unix socket"
     )
-    parser.add_argument("socket_path", help="Path to Unix socket (for example /run/user/1000/xodus.sock)")
+    parser.add_argument("socket_path", help="Path to Unix socket (for example /run/user/1000/xtux.sock)")
     parser.add_argument("clientid", help="ClientId field value for MSATokenRequest")
     args = parser.parse_args()
 

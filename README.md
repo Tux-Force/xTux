@@ -27,7 +27,7 @@ contributions (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main
 
 ### What xTux adds on top of Xodus
 
-- **Shared installs:** `xodus-cli run` and `xodus-cli link` start games straight from an installation made by the
+- **Shared installs:** `xtux-cli run` and `xtux-cli link` start games straight from an installation made by the
   Windows Xbox app (dual boot, NTFS), no second download.
 - **Bridge for GDK services:** `run` starts a loopback service with a per-run secret that answers what the game's
   xgameruntime needs from Microsoft without handing account tokens to the game:
@@ -47,17 +47,18 @@ and [Tux-Force/wine](https://github.com/Tux-Force/wine).
 | Farming Simulator 25 | Plays: menus, saves, ModHub, Xbox Live (achievements, presence, real-time) and clean exit |
 | Microsoft Flight Simulator 2024 | Signs in and reaches its services, then fails on its own backend (under investigation) |
 
-Binaries and crates still carry the Xodus names (`xodus-cli`, `xodus-service`) to keep merging upstream easy.
+The command line tool is **xTux-cli** (`xtux-cli`) and the daemon **xTux-service** (`xtux-service`); the core library
+keeps its upstream name `xodus`.
 
 ## Quick start
 
 ```bash
 # sign in once
-xodus-cli login
+xtux-cli login
 # prepare a prefix: DXVK, vkd3d-proton and the Microsoft root certificates games expect
-xodus-cli prefix init /path/to/tux-force-wine/wine --prefix ~/Games/xtux-prefix
-# run a game installed by the Windows Xbox app, or a folder downloaded with xodus-cli
-WINEPREFIX=~/Games/xtux-prefix xodus-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
+xtux-cli prefix init /path/to/tux-force-wine/wine --prefix ~/Games/xtux-prefix
+# run a game installed by the Windows Xbox app, or a folder downloaded with xtux-cli
+WINEPREFIX=~/Games/xtux-prefix xtux-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
 ```
 
 `prefix init` downloads DXVK and vkd3d-proton from their GitHub releases (or takes them from a local Proton build with
@@ -72,18 +73,18 @@ The project structure is as follows.
 .
 ├── msixvc - [rlib] common rlib crate for utilities for parsing MSIXVC and XSP files
 ├── xodus - [rlib] common rlib crate that contains core xodus functionality, API calls abstractions and utilities
-├── xodus-cli - [bin] CLI currently used for iterating over new xodus features
-└── xodus-service - [bin] service process exposing a xodus.sock for IPC communication, it takes care of xgameruntime.dll integration.
+├── xtux-cli - [bin] xTux-cli, the command line front end
+└── xtux-service - [bin] service process exposing xtux.sock for IPC communication, it takes care of xgameruntime.dll integration.
 ```
 
 > [!NOTE]
-> xodus-service aims to become a main point of integration. All xodus clients will connect to it to interact with games and XBOX services.
+> xtux-service aims to become a main point of integration. All xodus clients will connect to it to interact with games and XBOX services.
 
 ### Prerequisites
 
 - Rust version 1.98 or later
 - Right now CLI relies on wry and tao to show a login page. Consult https://docs.rs/wry/latest/wry/#platform-considerations
-- xodus-service relies on `protoc` to compile `proto/` definitions make sure to install it for your platform
+- xtux-service relies on `protoc` to compile `proto/` definitions make sure to install it for your platform
 
 ### Running
 
@@ -99,13 +100,13 @@ Running cli in debug
 cargo run -- --help
 ```
 
-Running xodus-service in debug
+Running xtux-service in debug
 
 ```
-cargo run --bin xodus-service
+cargo run --bin xtux-service
 ```
 
-Debug and profile `xodus-cli` or `xodus-service` with [tokio-console](https://github.com/tokio-rs/console)
+Debug and profile `xtux-cli` or `xtux-service` with [tokio-console](https://github.com/tokio-rs/console)
 
 ```
 RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console 
@@ -122,7 +123,7 @@ RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console
 ### CLI Usage
 
 ```
-Usage: xodus-cli <COMMAND>
+Usage: xtux-cli <COMMAND>
 
 Commands:
   download    Download msixvc or xsp files for a given game

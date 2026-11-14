@@ -31,14 +31,14 @@ fn find_package(dir: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Default place for link folders: `$XDG_DATA_HOME/xodus/links` or `~/.local/share/xodus/links`.
+/// Default place for link folders: `$XDG_DATA_HOME/xtux/links` or `~/.local/share/xtux/links`.
 fn default_link_root() -> io::Result<PathBuf> {
     if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(data).join("xodus/links"));
+        return Ok(PathBuf::from(data).join("xtux/links"));
     }
     let home = std::env::var_os("HOME")
         .ok_or_else(|| io::Error::other("HOME is not set, pass a destination explicitly"))?;
-    Ok(PathBuf::from(home).join(".local/share/xodus/links"))
+    Ok(PathBuf::from(home).join(".local/share/xtux/links"))
 }
 
 fn replace_link(target: &Path, link: &Path) -> io::Result<()> {

@@ -77,11 +77,11 @@ enum SubCommand {
     Link {
         /// Game folder of the Xbox app, for example XboxGames/Atomfall
         game_dir: String,
-        /// Folder for the links, defaults to ~/.local/share/xodus/links/<game>
+        /// Folder for the links, defaults to ~/.local/share/xtux/links/<game>
         dest: Option<String>,
     },
     #[cfg(unix)]
-    #[command(about = "Run a Game with xodus wine")]
+    #[command(about = "Run a game with the Tux-Force Wine build")]
     Run {
         source: String,
         wine: String,
@@ -179,7 +179,7 @@ async fn main() -> ExitCode {
         registry.init();
     }
     let client = reqwest::ClientBuilder::new()
-        .user_agent(format!("xodus-cli/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("xtux-cli/{}", env!("CARGO_PKG_VERSION")))
         .connection_verbose(true)
         .build()
         .unwrap();

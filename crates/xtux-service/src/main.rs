@@ -50,7 +50,7 @@ async fn main() {
     let shared = Arc::new(simple_context::SharedState::default());
     let runtime_dir = utils::get_runtime_dir();
     let cancellation = CancellationToken::new();
-    let socket_path = format!("{runtime_dir}/xodus.sock");
+    let socket_path = format!("{runtime_dir}/xtux.sock");
     let trigger = cancellation.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c()

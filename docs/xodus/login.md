@@ -14,7 +14,7 @@ Flow looks as follows
 
 ## Webview / JS IPC
 
-On Windows, `CloudExperienceHost` hosts the login page and exposes itself to it as `window.external`, plus a `CloudExperienceHost.Bridge.dispatchMessage` bridge the page can call into and get answers from. Xodus doesn't have a real `CloudExperienceHost` - `xodus-cli/src/webview.rs` re-implements just enough of it inside its own embedded webview (tao/wry) for the page to behave as if it were signing in through Windows.
+On Windows, `CloudExperienceHost` hosts the login page and exposes itself to it as `window.external`, plus a `CloudExperienceHost.Bridge.dispatchMessage` bridge the page can call into and get answers from. Xodus doesn't have a real `CloudExperienceHost` - `xtux-cli/src/webview.rs` re-implements just enough of it inside its own embedded webview (tao/wry) for the page to behave as if it were signing in through Windows.
 
 What that involves:
 
@@ -25,7 +25,7 @@ What that involves:
   - A `HostBridgeMessage` invoking `CloudExperienceHost.getContext` - the page asking its host for context about itself. Xodus answers by evaluating a script that calls `dispatchMessage` back into the page with a canned context payload, mirroring what the real host would return.
 - **Forcing the final handoff.** The page only pushes its `ServerData` (containing the `DAProperty`) over IPC on its own if a real host asked for it earlier in a way Xodus doesn't replicate. Instead, once the page finishes loading `https://login.live.com/ppsecure/post.srf`, Xodus evaluates `window.ipc.postMessage(JSON.stringify(ServerData))` itself to pull the tokens out.
 
-The webview runtime itself is generic: a `SessionHandler` trait (`bootstrap` / `on_token` / `on_closed`) describes what to do at each step, and a `RuntimeCommands` action queue lets a handler open or close webview sessions without owning the event loop directly. `xodus-cli/src/commands/login.rs`'s `LoginHandler` is the only implementation today - its `on_token` calls `exchange_user_token` (see [RST2.srf](#rst2srf)), and if that comes back as a SOAP fault with an inline auth URL, it closes the current session and opens a second one at that URL instead of failing outright. Once that second session also produces a `DAProperty`, the exchange is retried with an extra `http://Passport.NET/tb` scope added, which is what actually finalizes the token.
+The webview runtime itself is generic: a `SessionHandler` trait (`bootstrap` / `on_token` / `on_closed`) describes what to do at each step, and a `RuntimeCommands` action queue lets a handler open or close webview sessions without owning the event loop directly. `xtux-cli/src/commands/login.rs`'s `LoginHandler` is the only implementation today - its `on_token` calls `exchange_user_token` (see [RST2.srf](#rst2srf)), and if that comes back as a SOAP fault with an inline auth URL, it closes the current session and opens a second one at that URL instead of failing outright. Once that second session also produces a `DAProperty`, the exchange is retried with an extra `http://Passport.NET/tb` scope added, which is what actually finalizes the token.
 
 ## RST2.srf
 
