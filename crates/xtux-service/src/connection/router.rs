@@ -5,19 +5,22 @@ use tokio_util::sync::CancellationToken;
 use xodus::models::secrets::LegacyToken;
 use xodus::tokens::TokenManager;
 
+use crate::activity::Activity;
 use crate::simple_context::{SharedState, SimpleContext};
 
 pub async fn route(
     mut socket: tokio::net::UnixStream,
     token: CancellationToken,
-    device_token: LegacyToken,
+    device_token: Option<LegacyToken>,
     tokens: Arc<TokenManager>,
     shared: Arc<SharedState>,
+    activity: Activity,
 ) {
+    let _busy = activity.busy();
     let cred = socket.peer_cred().ok().and_then(|cred| cred.pid());
     tracing::debug!("Connection from pid {cred:?}");
 
-    let mut context = SimpleContext::new(device_token, tokens, shared);
+    let mut context = SimpleContext::new(device_token, tokens.clone(), shared);
     loop {
         let mut read_magic = [0; 4];
         if token.is_cancelled() {
@@ -38,6 +41,11 @@ pub async fn route(
         let res = match magic {
             crate::XML_MAGIC => super::xml::handle(&mut socket, &mut context).await,
             crate::PROTO_MAGIC => super::proto::handle(&mut socket, &mut context).await,
+            xtux_protocol::MAGIC => {
+                // A v2 client keeps the connection for its own framing.
+                super::v2::serve(socket, token, context.client.clone(), tokens, activity.clone()).await;
+                return;
+            }
             _ => {
                 tracing::error!("Unknown magic");
                 return;

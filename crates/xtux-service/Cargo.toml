@@ -6,6 +6,9 @@ rust-version = { workspace = true }
 
 [dependencies]
 xodus = { path = "../xodus" }
+xtux-games = { path = "../xtux-games" }
+xtux-protocol = { path = "../xtux-protocol" }
+nix = { version = "0.31.3", features = ["signal"] }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }

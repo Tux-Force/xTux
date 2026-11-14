@@ -29,7 +29,7 @@ pub struct SimpleContext {
 
 impl SimpleContext {
     pub fn new(
-        device_token: LegacyToken,
+        device_token: Option<LegacyToken>,
         tokens: Arc<TokenManager>,
         shared: Arc<SharedState>,
     ) -> Self {
@@ -42,7 +42,7 @@ impl SimpleContext {
 
         Self {
             client,
-            device_token: Some(device_token),
+            device_token,
             shared,
             tokens,
         }

@@ -1,5 +1,6 @@
 pub mod proto;
 pub mod router;
+pub mod v2;
 pub mod xml;
 
 pub fn encode_message(magic: u32, msg_type: u16, message_buffer: Vec<u8>) -> Vec<u8> {

@@ -37,6 +37,9 @@ pub struct LaunchOptions {
     pub exe: Option<String>,
     /// Store market for the license request, `neutral` when not set.
     pub market: Option<String>,
+    /// Environment for the game on top of this process' environment, for example the client's `WINEPREFIX`
+    /// when the daemon starts the game. These values also count as "set by the user" for the defaults below.
+    pub env: Vec<(String, String)>,
 }
 
 type Cleanup = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -127,22 +130,25 @@ async fn prepare(_lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Str
 }
 
 /// Environment that steers Wine and its libraries for GDK games, unless the user set it.
-fn compatibility_env() -> Vec<(&'static str, String)> {
+fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> {
+    let is_set = |name: &str| extra.iter().any(|(k, _)| k == name) || std::env::var_os(name).is_some();
+    let prefix = extra
+        .iter()
+        .find(|(k, _)| k == "WINEPREFIX")
+        .map(|(_, v)| PathBuf::from(v))
+        .or_else(|| crate::prefix::resolve_prefix(None));
     let mut env = Vec::new();
 
     // Use the DXVK/vkd3d-proton DLLs that `prefix init` installed.
-    if std::env::var_os("WINEDLLOVERRIDES").is_none() {
-        if let Some(overrides) = crate::prefix::resolve_prefix(None)
-            .as_deref()
-            .and_then(crate::prefix::recorded_overrides)
-        {
+    if !is_set("WINEDLLOVERRIDES") {
+        if let Some(overrides) = prefix.as_deref().and_then(crate::prefix::recorded_overrides) {
             env.push(("WINEDLLOVERRIDES", overrides));
         }
     }
 
     // Hardware video decoders hand out frames in GPU memory (CUDA, Vulkan), which Wine's media pipeline cannot
     // take; games then wait forever for their intro videos (MSFS 2024). Prefer the software decoders.
-    if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_none() {
+    if !is_set("GST_PLUGIN_FEATURE_RANK") {
         env.push((
             "GST_PLUGIN_FEATURE_RANK",
             [
@@ -305,7 +311,7 @@ pub async fn launch(
     let nt_entry = nt_entry.ok_or("could not find the game executable")?;
 
     let mut env = identity_env(client, tokens).await;
-    env.extend(compatibility_env());
+    env.extend(compatibility_env(&options.env));
 
     // Answers GDK calls that need the Microsoft services, see bridge.rs.
     match crate::bridge::start(client.clone(), tokens.clone()).await {
@@ -320,6 +326,7 @@ pub async fn launch(
     let child = Command::new(&options.wine)
         .arg(nt_entry)
         .envs(env)
+        .envs(options.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .env("WINE_DLL_FILE_MAP", file_map)
         .env("XODUS_PACKAGE_ID", xvd.content_id().simple().to_string())
         // Only reached after the license was obtained from the Microsoft licensing service.

@@ -9,9 +9,9 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use xodus::tokens::TokenManager;
 
+mod activity;
 mod connection;
 mod simple_context;
-mod utils;
 
 const XML_MAGIC: u32 = 0x58445358;
 const PROTO_MAGIC: u32 = 0x58445350;
@@ -41,16 +41,50 @@ async fn main() {
     xodus::secrets::init_secrets().expect("Failed to init keychain");
     let tokens = Arc::new(TokenManager::with_keychain_and_memory());
     xodus::tokens::device::ensure_device_credentials(&reqwest::Client::new(), &tokens).await;
-    let xodus::models::secrets::Token::Legacy(device_token) =
-        tokens.get_device_sts_token().unwrap()
-    else {
-        panic!("Device token isnt legacy")
+    // Without a device token the daemon still starts; requests then report the signed-out state.
+    let device_token = match tokens.get_device_sts_token() {
+        Ok(xodus::models::secrets::Token::Legacy(token)) => Some(token),
+        Ok(_) => {
+            tracing::warn!("the device token is not a legacy token");
+            None
+        }
+        Err(err) => {
+            tracing::warn!("no device token: {err}");
+            None
+        }
     };
 
     let shared = Arc::new(simple_context::SharedState::default());
-    let runtime_dir = utils::get_runtime_dir();
     let cancellation = CancellationToken::new();
-    let socket_path = format!("{runtime_dir}/xtux.sock");
+    let socket_path = xtux_protocol::socket_path();
+    if socket_path.exists() {
+        if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+            tracing::info!("xtux-service is already running");
+            return;
+        }
+        // Left over from a daemon that did not exit cleanly.
+        _ = tokio::fs::remove_file(&socket_path).await;
+    }
+    let activity = activity::Activity::new();
+    let idle_timeout = std::env::var("XTUX_IDLE_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(300);
+    if idle_timeout > 0 {
+        let activity = activity.clone();
+        let trigger = cancellation.clone();
+        tokio::spawn(async move {
+            let limit = std::time::Duration::from_secs(idle_timeout);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if activity.idle_for().is_some_and(|idle| idle >= limit) {
+                    tracing::info!("idle for {idle_timeout} s, exiting");
+                    trigger.cancel();
+                    break;
+                }
+            }
+        });
+    }
     let trigger = cancellation.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c()
@@ -74,8 +108,9 @@ async fn main() {
             let device_token = device_token.clone();
             let tokens = tokens.clone();
             let shared = shared.clone();
+            let activity = activity.clone();
             tokio::spawn(async move {
-                connection::router::route(accept.0, token, device_token, tokens, shared).await
+                connection::router::route(accept.0, token, device_token, tokens, shared, activity).await
             });
         }
     }

@@ -7235,12 +7235,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtux-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "xtux-service"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
  "console-subscriber",
+ "nix",
  "quick-xml 0.42.0",
  "reqwest 0.13.4",
  "serde_json",
@@ -7249,6 +7261,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "xodus",
+ "xtux-games",
+ "xtux-protocol",
 ]
 
 [[package]]

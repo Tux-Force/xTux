@@ -21,6 +21,7 @@ pub async fn run(
         wine,
         exe,
         market,
+        env: Vec::new(),
     };
     let game = match launch(client, tokens, options, &Print).await {
         Ok(game) => game,

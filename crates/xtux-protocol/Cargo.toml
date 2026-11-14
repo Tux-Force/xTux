@@ -1,0 +1,13 @@
+[package]
+name = "xtux-protocol"
+version = "0.1.0"
+edition = "2024"
+description = "Messages, framing and client for talking to xtux-service (protocol v2)."
+license = "GPL-3.0-or-later"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
