@@ -7,6 +7,7 @@ default-run = "xtux-cli"
 [dependencies]
 xodus = { path = "../xodus" }
 xtux-games = { path = "../xtux-games" }
+xtux-protocol = { path = "../xtux-protocol" }
 msixvc = { path = "../msixvc" }
 eappx = { git = "https://github.com/tuxuser/eappx-rs" }
 base64 = { workspace = true }

@@ -102,11 +102,31 @@ fn spawn_service() -> std::io::Result<()> {
 
     let binary = service_binary();
     tracing::debug!("starting {}", binary.display());
+    let log = log_file()
+        .and_then(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
+        .map(Stdio::from)
+        .unwrap_or_else(Stdio::null);
     Command::new(binary)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(log)
         .process_group(0)
         .spawn()
         .map(|_| ())
+}
+
+/// Where a daemon started by a client logs: `$XDG_STATE_HOME/xtux/service.log` or `~/.local/state/xtux/service.log`.
+pub fn log_file() -> Option<PathBuf> {
+    let dir = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?
+        .join("xtux");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("service.log"))
 }

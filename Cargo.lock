@@ -7210,6 +7210,7 @@ dependencies = [
  "wry",
  "xodus",
  "xtux-games",
+ "xtux-protocol",
 ]
 
 [[package]]

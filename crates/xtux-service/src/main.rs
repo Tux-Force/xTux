@@ -18,9 +18,14 @@ const PROTO_MAGIC: u32 = 0x58445350;
 
 #[tokio::main]
 async fn main() {
-    let filter = tracing_subscriber::EnvFilter::from_env("XODUS_LOG");
-    let registry =
-        tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_filter(filter));
+    let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info,xtux_service=info"));
+    let registry = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+            .with_filter(filter),
+    );
 
     #[cfg(feature = "tokio_console")]
     {

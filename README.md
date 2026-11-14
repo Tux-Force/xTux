@@ -61,6 +61,10 @@ xtux-cli prefix init /path/to/tux-force-wine/wine --prefix ~/Games/xtux-prefix
 WINEPREFIX=~/Games/xtux-prefix xtux-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
 ```
 
+`run` and `prefix init` go through the daemon `xtux-service`, which `xtux-cli` starts on demand and which exits
+after five idle minutes (`XTUX_IDLE_TIMEOUT` in seconds, `0` keeps it running). Its log, including the game bridge, is
+in `~/.local/state/xtux/service.log`. `XTUX_DIRECT=1` runs a command inside `xtux-cli` instead, without the daemon.
+
 `prefix init` downloads DXVK and vkd3d-proton from their GitHub releases (or takes them from a local Proton build with
 `--from-proton`), keeps Wine's own DLLs in `xtux-builtin-backup/` and records the setup in `xtux-prefix.json`, from
 which `run` takes the DLL overrides.
