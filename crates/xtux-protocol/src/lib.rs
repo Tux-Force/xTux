@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub use client::Client;
+pub use client::{Canceller, Client};
 
 /// `"XTX2"` read as a little endian `u32`.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"XTX2");
@@ -73,8 +73,28 @@ pub enum Request {
         from_proton: Option<String>,
         skip_graphics: bool,
     },
+    /// Installs a game by streaming its package; answered when done, with progress events in between.
+    Install {
+        source: InstallSource,
+        destination: PathBuf,
+        try_skip_ntfs: bool,
+        parallel: usize,
+        market: Option<String>,
+    },
     /// Stops the request with this id.
     Cancel { target: u64 },
+}
+
+/// What to install from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum InstallSource {
+    /// A local package file (absolute path).
+    File(PathBuf),
+    /// A direct `http(s)://` URL of the package.
+    Url(String),
+    /// A content id, looked up for the signed in user.
+    ContentId(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -95,6 +115,7 @@ pub enum Response {
     },
     GameExited { code: Option<i32> },
     PrefixReady { prefix: PathBuf },
+    Installed { destination: PathBuf },
     Cancelled,
 }
 
@@ -104,6 +125,9 @@ pub enum Event {
     Message { text: String },
     Bytes { done: u64, total: Option<u64> },
     GameStarted { pid: u32 },
+    /// Byte progress of one file being downloaded.
+    File { name: String, done: u64, total: u64 },
+    FileFinished { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, thiserror::Error)]

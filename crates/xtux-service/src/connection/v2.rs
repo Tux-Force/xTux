@@ -34,6 +34,24 @@ impl xtux_games::Progress for EventProgress {
             event: Event::Bytes { done, total },
         });
     }
+
+    fn file(&self, name: &str, done: u64, total: u64) {
+        let _ = self.outbox.send(ServerMessage::Event {
+            id: self.id,
+            event: Event::File {
+                name: name.to_string(),
+                done,
+                total,
+            },
+        });
+    }
+
+    fn file_finished(&self, name: &str) {
+        let _ = self.outbox.send(ServerMessage::Event {
+            id: self.id,
+            event: Event::FileFinished { name: name.to_string() },
+        });
+    }
 }
 
 fn error_body(err: xtux_games::Error) -> ErrorBody {
@@ -138,8 +156,9 @@ struct Job {
 
 impl Job {
     async fn run(self, request: Request) {
-        // A launch handles cancellation itself (it asks the game to quit and waits); other requests just stop.
-        let result = if matches!(request, Request::Launch { .. }) {
+        // Launches and installs handle cancellation themselves (quit the game, remove partial files); other
+        // requests just stop.
+        let result = if matches!(request, Request::Launch { .. } | Request::Install { .. }) {
             self.handle(request).await
         } else {
             tokio::select! {
@@ -217,6 +236,27 @@ impl Job {
                     .await
                     .map_err(error_body)?;
                 Ok(Response::PrefixReady { prefix })
+            }
+            Request::Install {
+                source,
+                destination,
+                try_skip_ntfs,
+                parallel,
+                market,
+            } => {
+                let source = match source {
+                    xtux_protocol::InstallSource::File(path) => xtux_games::install::Source::File(path),
+                    xtux_protocol::InstallSource::Url(url) => xtux_games::install::Source::Url(url),
+                    xtux_protocol::InstallSource::ContentId(id) => xtux_games::install::Source::ContentId(id),
+                };
+                let mut options = xtux_games::install::InstallOptions::new(destination.clone());
+                options.try_skip_ntfs = try_skip_ntfs;
+                options.parallel = parallel.max(1);
+                options.market = market;
+                xtux_games::install::install(&self.client, &self.tokens, source, &options, &progress, &self.cancel)
+                    .await
+                    .map_err(error_body)?;
+                Ok(Response::Installed { destination })
             }
             Request::Cancel { .. } => Err(ErrorBody::new(ErrorKind::InvalidRequest, "nested cancel")),
         }

@@ -64,7 +64,7 @@ pub async fn run(
         .request(request, |event| match event {
             Event::Message { text } => println!("{text}"),
             Event::GameStarted { pid: game } => pid.store(game, Ordering::SeqCst),
-            Event::Bytes { .. } => {}
+            Event::Bytes { .. } | Event::File { .. } | Event::FileFinished { .. } => {}
         })
         .await;
     match result {

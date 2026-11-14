@@ -1,6 +1,8 @@
 //! Client side of protocol v2, used by `xtux-cli` and the launcher.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::net::UnixStream;
@@ -23,8 +25,30 @@ pub enum ClientError {
 
 pub struct Client {
     reader: OwnedReadHalf,
-    writer: OwnedWriteHalf,
-    next_id: u64,
+    writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+    next_id: Arc<AtomicU64>,
+    current: Arc<AtomicU64>,
+}
+
+/// Cancels the request a [`Client`] is waiting for, from another task (for example a Ctrl+C handler).
+#[derive(Clone)]
+pub struct Canceller {
+    writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+    next_id: Arc<AtomicU64>,
+    current: Arc<AtomicU64>,
+}
+
+impl Canceller {
+    pub async fn cancel_current(&self) -> Result<(), ClientError> {
+        let target = self.current.load(Ordering::SeqCst);
+        if target == 0 {
+            return Ok(());
+        }
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let mut writer = self.writer.lock().await;
+        frame::write(&mut *writer, &ClientMessage { id, request: Request::Cancel { target } }).await?;
+        Ok(())
+    }
 }
 
 impl Client {
@@ -34,8 +58,9 @@ impl Client {
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader,
-            writer,
-            next_id: 1,
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
+            next_id: Arc::new(AtomicU64::new(1)),
+            current: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -56,15 +81,32 @@ impl Client {
         Err(last.unwrap_or(ClientError::Closed))
     }
 
+    pub fn canceller(&self) -> Canceller {
+        Canceller {
+            writer: self.writer.clone(),
+            next_id: self.next_id.clone(),
+            current: self.current.clone(),
+        }
+    }
+
     /// Sends a request and waits for its response, passing events for it to `on_event`.
     pub async fn request(
         &mut self,
         request: Request,
         mut on_event: impl FnMut(Event),
     ) -> Result<Response, ClientError> {
-        let id = self.next_id;
-        self.next_id += 1;
-        frame::write(&mut self.writer, &ClientMessage { id, request }).await?;
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut writer = self.writer.lock().await;
+            frame::write(&mut *writer, &ClientMessage { id, request }).await?;
+        }
+        self.current.store(id, Ordering::SeqCst);
+        let result = self.wait_for(id, &mut on_event).await;
+        self.current.store(0, Ordering::SeqCst);
+        result
+    }
+
+    async fn wait_for(&mut self, id: u64, on_event: &mut impl FnMut(Event)) -> Result<Response, ClientError> {
         loop {
             let Some(message) = frame::read::<_, ServerMessage>(&mut self.reader).await? else {
                 return Err(ClientError::Closed);

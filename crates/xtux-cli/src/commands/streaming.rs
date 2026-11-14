@@ -38,6 +38,10 @@ pub async fn run(
         source => source,
     };
 
+    if !super::direct_mode() {
+        return run_daemon(source, destination, try_skip_ntfs, parallel.unwrap_or(4), market).await;
+    }
+
     let mut options = InstallOptions::new(destination);
     options.try_skip_ntfs = try_skip_ntfs;
     options.parallel = parallel.unwrap_or(4);
@@ -48,6 +52,65 @@ pub async fn run(
     bars.total.abandon();
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Installs through xtux-service, drawing the same bars from its events. Ctrl+C cancels the install.
+async fn run_daemon(
+    source: Source,
+    destination: String,
+    try_skip_ntfs: bool,
+    parallel: usize,
+    market: Option<String>,
+) -> ExitCode {
+    use xtux_games::Progress;
+    use xtux_protocol::{Client, Event, InstallSource, Request};
+
+    let absolute = |p: &std::path::Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let source = match source {
+        Source::File(path) => InstallSource::File(absolute(&path)),
+        Source::Url(url) => InstallSource::Url(url),
+        Source::ContentId(id) => InstallSource::ContentId(id),
+    };
+    let request = Request::Install {
+        source,
+        destination: absolute(std::path::Path::new(&destination)),
+        try_skip_ntfs,
+        parallel,
+        market,
+    };
+
+    let mut daemon = match Client::connect_or_spawn().await {
+        Ok(daemon) => daemon,
+        Err(err) => {
+            eprintln!("{err} (set XTUX_DIRECT=1 to run without the daemon)");
+            return ExitCode::FAILURE;
+        }
+    };
+    let canceller = daemon.canceller();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = canceller.cancel_current().await;
+        }
+    });
+
+    let bars = Bars::new();
+    let result = daemon
+        .request(request, |event| match event {
+            Event::Message { text } => bars.message(&text),
+            Event::Bytes { done, total } => bars.bytes(done, total),
+            Event::File { name, done, total } => bars.file(&name, done, total),
+            Event::FileFinished { name } => bars.file_finished(&name),
+            Event::GameStarted { .. } => {}
+        })
+        .await;
+    bars.total.abandon();
+    match result {
+        Ok(_) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{err}");
             ExitCode::FAILURE
