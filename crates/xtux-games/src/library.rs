@@ -80,7 +80,7 @@ pub fn inspect(path: &Path) -> Option<Game> {
 const MAX_CONFIG_SIZE: u64 = 1024 * 1024;
 
 /// `MicrosoftGame.config` of a game folder; the file name's case differs between games.
-fn read_config(dir: &Path) -> Option<String> {
+pub(crate) fn read_config(dir: &Path) -> Option<String> {
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         if entry
@@ -108,7 +108,7 @@ fn element(xml: &str, tag: &str) -> Option<String> {
 }
 
 /// Value of `attr` on the first `<tag ...>`.
-fn attribute(xml: &str, tag: &str, attr: &str) -> Option<String> {
+pub(crate) fn attribute(xml: &str, tag: &str, attr: &str) -> Option<String> {
     let start = xml.find(&format!("<{tag}"))?;
     let end = xml[start..].find('>')? + start;
     let head = &xml[start..end];
