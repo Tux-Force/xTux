@@ -23,8 +23,6 @@ use crate::{Error, Progress, Result};
 
 /// Package metadata cached while the install runs.
 const CACHE_FILE: &str = ".xodus-streaming-tmp.msixvc";
-/// Package metadata of the last finished install, used to skip unchanged files.
-const FINAL_FILE: &str = ".xodus-streaming.msixvc";
 
 /// Where the `.msixvc` package comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,14 +207,54 @@ where
     std::fs::create_dir_all(out)
         .map_err(|e| Error::msg(format!("could not create {}: {e}", out.display())))?;
 
-    let cache_path = out.join(CACHE_FILE);
-    let final_path = out.join(FINAL_FILE);
+    // Updates of Xbox app installs would replace its own package header; not done (yet).
+    let existing = crate::layout::detect(out);
+    if existing.as_ref().is_some_and(|l| l.windows_app) {
+        return Err(Error::msg(format!(
+            "{} is an install of the Windows Xbox app; update it from Windows",
+            out.display()
+        )));
+    }
 
+    let cache_path = out.join(CACHE_FILE);
     let (remote_xvd, rfiles) = cancel::until_cancelled(
         cancel,
         read_remote_metadata(reader, len, &cache_path, options.try_skip_ntfs, progress),
     )
     .await?;
+
+    // New installs use the Windows layout (Content/ plus the content id named header, see
+    // layout.rs); existing installs keep theirs.
+    let remote_id = remote_xvd.content_id().hyphenated().to_string();
+    let (root, final_path) = match existing {
+        // The Xodus header has a fixed name; a Windows layout header is named by its content id.
+        Some(layout)
+            if layout.package.ends_with(crate::layout::XODUS_PACKAGE)
+                || layout
+                    .package
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&remote_id)) =>
+        {
+            (layout.root, layout.package)
+        }
+        Some(layout) => {
+            return Err(Error::msg(format!(
+                "{} holds another package ({}); pick an empty folder",
+                out.display(),
+                layout.package.display()
+            )));
+        }
+        None => (
+            out.join(crate::layout::CONTENT_DIR),
+            out.join(
+                remote_xvd
+                    .content_id()
+                    .hyphenated()
+                    .to_string()
+                    .to_uppercase(),
+            ),
+        ),
+    };
     let lfiles = read_local_metadata(&final_path).await;
 
     let market = options
@@ -253,7 +291,7 @@ where
         if unchanged {
             continue;
         }
-        let target = safe_join(out, name)?;
+        let target = safe_join(&root, name)?;
         if target == cache_path || target == final_path {
             return Err(Error::msg(format!(
                 "refusing to overwrite {name:?} from the package"

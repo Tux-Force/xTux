@@ -43,7 +43,10 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             libdbus-1-dev \
-            libssl-dev
+            libssl-dev \
+            libfontconfig1-dev \
+            libxkbcommon-dev \
+            libwayland-dev
 
       # The workspace requires a recent stable Rust (rust-version in Cargo.toml).
       - name: Update Rust toolchain
@@ -72,9 +75,9 @@ jobs:
       - name: Package binaries
         run: |
           mkdir -p dist
-          cp target/release/xtux-cli target/release/xtux-service dist/
-          strip dist/xtux-cli dist/xtux-service
-          (cd dist && sha256sum xtux-cli xtux-service > SHA256SUMS)
+          cp target/release/xtux-cli target/release/xtux-service target/release/xtux-launcher dist/
+          strip dist/xtux-cli dist/xtux-service dist/xtux-launcher
+          (cd dist && sha256sum xtux-cli xtux-service xtux-launcher > SHA256SUMS)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -107,9 +110,9 @@ jobs:
             echo "Release $tag exists already; bump the version in crates/xtux-cli/Cargo.toml for a new one."
             exit 0
           fi
-          chmod +x dist/xtux-cli dist/xtux-service
+          chmod +x dist/xtux-cli dist/xtux-service dist/xtux-launcher
           archive="xtux-$version-linux-x86_64.tar.gz"
-          tar -C dist -czf "$archive" xtux-cli xtux-service SHA256SUMS
+          tar -C dist -czf "$archive" xtux-cli xtux-service xtux-launcher SHA256SUMS
           sha256sum "$archive" > "$archive.sha256"
           gh release create "$tag" "$archive" "$archive.sha256" \
             --target "$GITHUB_SHA" --title "xTux $version" --generate-notes

@@ -27,8 +27,9 @@ contributions (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main
 
 ### What xTux adds on top of Xodus
 
-- **Shared installs:** `xtux-cli run` and `xtux-cli link` start games straight from an installation made by the
-  Windows Xbox app (dual boot, NTFS), no second download.
+- **One install format:** xTux reads and writes the layout of the Windows Xbox app (`Content/` plus the package
+  header named by its content id), so `xtux-cli run` starts games straight from a Windows installation (dual boot,
+  NTFS) without a second download. `xtux-cli migrate <folder>` moves an older Xodus install into that layout.
 - **Bridge for GDK services:** `run` starts a loopback service with a per-run secret that answers what the game's
   xgameruntime needs from Microsoft without handing account tokens to the game:
   - store license tokens (`XStoreQueryLicenseToken`),
@@ -59,11 +60,25 @@ xtux-cli login
 xtux-cli prefix init /path/to/tux-force-wine/wine --prefix ~/Games/xtux-prefix
 # run a game installed by the Windows Xbox app, or a folder downloaded with xtux-cli
 WINEPREFIX=~/Games/xtux-prefix xtux-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
+# or by name, with Wine, prefix and market from ~/.config/xtux/settings.toml
+xtux-cli list
+xtux-cli run "Farming Simulator 25 (PC)"
 ```
+
+Shell completion (game names for `run`): add `source <(COMPLETE=zsh xtux-cli)` to `~/.zshrc`, or
+`source <(COMPLETE=bash xtux-cli)` to `~/.bashrc`.
 
 `run` and `prefix init` go through the daemon `xtux-service`, which `xtux-cli` starts on demand and which exits
 after five idle minutes (`XTUX_IDLE_TIMEOUT` in seconds, `0` keeps it running). Its log, including the game bridge, is
 in `~/.local/state/xtux/service.log`. `XTUX_DIRECT=1` runs a command inside `xtux-cli` instead, without the daemon.
+
+Two password prompts can appear, neither from xTux itself:
+
+- **Keychain** (KWallet, GNOME Keyring): xTux keeps its Microsoft device and sign-in tokens there, so a locked keychain
+  asks for its password. If it stays locked, xTux stops instead of registering the PC again.
+- **polkit, once:** registering the PC with Microsoft reads the firmware system information
+  (`/sys/firmware/dmi`, root only), as Windows sends it too. xTux explains this first in a dialog of its own (kdialog or zenity) with
+  Continue and Skip; cancelling is fine, and `XTUX_SKIP_SMBIOS=1` skips it.
 
 `prefix init` downloads DXVK and vkd3d-proton from their GitHub releases (or takes them from a local Proton build with
 `--from-proton`), keeps Wine's own DLLs in `xtux-builtin-backup/` and records the setup in `xtux-prefix.json`, from
@@ -130,14 +145,21 @@ RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console
 Usage: xtux-cli <COMMAND>
 
 Commands:
-  download    Download msixvc or xsp files for a given game
-  license     Dump CIKs for use with XvdTool
-  extract     Extract locally stored msixvc file
-  login       
-  streaming   Download and extract the game through streaming algorithm
-  clep        Generate or decrypt base64-encoded CLEP challenge data
-  sp-license  Decode SPLicenseBlock
-  help        Print this message or the help of the given subcommand(s)
+  download       Download msixvc or xsp files for a given game
+  license        Dump CIKs for use with XvdTool
+  extract        Extract locally stored msixvc file
+  extract-eappx  Extract a locally stored EAppx/EMSIX package (research task, see issue #91)
+  login          
+  logout         
+  streaming      Download and extract the game through streaming algorithm
+  link           Link a game installed by the Windows Xbox app so it can be run from Linux without copying
+  run            Run a game with the Tux-Force Wine build
+  list           List the installed games of the library folders
+  migrate        Move an install from the old Xodus layout into the Windows Xbox app layout
+  prefix         Prepare a Wine prefix for GDK games (DXVK, vkd3d-proton, root certificates)
+  clep           Generate or decrypt base64-encoded CLEP challenge data
+  sp-license     Decode SPLicenseBlock
+  help           Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help

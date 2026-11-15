@@ -5,12 +5,21 @@ use crate::licensing::utils::{generate_string, parse_bcrypt_rsa_private};
 use crate::models::devicecredential::{Authentication, ClientInfo, DeviceAddRequest, DeviceInfo};
 use crate::models::secrets::Device;
 use crate::tokens::manager::TokenManager;
+use crate::tokens::store::TokenStoreError;
 
 /// Provisions a device (if none is stored yet) or re-authenticates an existing one
 /// (if its STS token is missing/expired), persisting the result through `tokens`.
+///
+/// Only a license that is really missing provisions a new device. A locked or unreachable keychain is reported and
+/// left alone: provisioning then would replace the stored device identity with a new one.
 pub async fn ensure_device_credentials(client: &reqwest::Client, tokens: &TokenManager) {
     match tokens.get_device_license() {
-        Err(_) => provision_device(client, tokens).await,
+        Err(TokenStoreError::NotFound) => provision_device(client, tokens).await,
+        Err(err) => tracing::warn!(
+            "cannot read the device license from the keychain ({err}). xTux keeps its Microsoft device and sign-in \
+             tokens in the system keychain (KWallet or GNOME Keyring), which asks for its own password when it is \
+             locked. Unlock it and try again."
+        ),
         Ok(license) if tokens.get_device_sts_token().is_err() => {
             reauthenticate_device(client, tokens, license).await
         }

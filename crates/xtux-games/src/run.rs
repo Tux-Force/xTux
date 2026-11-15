@@ -25,8 +25,8 @@ use xodus::tokens::TokenManager;
 use crate::license::get_license;
 use crate::{Error, Progress, Result};
 
-/// Name of the package file inside a game folder (streamed games and link folders).
-pub const PACKAGE_FILE: &str = ".xodus-streaming.msixvc";
+/// Package header of the Xodus layout, see [`crate::layout`].
+pub const PACKAGE_FILE: &str = crate::layout::XODUS_PACKAGE;
 
 pub struct LaunchOptions {
     /// Game folder: a streamed or downloaded game, or a link folder of a Windows install.
@@ -228,10 +228,17 @@ pub async fn launch(
     options: LaunchOptions,
     progress: &dyn Progress,
 ) -> Result<RunningGame> {
-    let out: &Path = &options.source;
+    // Both layouts are read in place (see layout.rs): game files under `root`, header in `package`.
+    let layout = crate::layout::detect(&options.source).ok_or_else(|| {
+        Error::msg(format!(
+            "{} is not a game folder (no package header found)",
+            options.source.display()
+        ))
+    })?;
+    let out: &Path = &layout.root;
     let out_absolute = std::fs::canonicalize(out)
         .map_err(|e| Error::msg(format!("failed to resolve {}: {e}", out.display())))?;
-    let final_path = out.join(PACKAGE_FILE);
+    let final_path = layout.package.clone();
 
     progress.message("Reading the package");
     let mut file = OpenOptions::new()

@@ -15,12 +15,14 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde_json = "1.0.151"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "0.8"
 fs2 = "0.4.3"
 futures-util = "0.3.34"
 tokio-util = "0.7.19"
 sha1 = "0.10"
 tempfile = "3.27.0"
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 uuid = { workspace = true, features = ["v4"] }

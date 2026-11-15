@@ -1,0 +1,265 @@
+// xTux Launcher, milestone 1: sign-in, local library, play, settings.
+
+import { Button, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+
+export global Brand {
+    out property <color> night: #06140F;
+    out property <color> forest: #0F3B2E;
+    out property <color> forest-light: #164a3a;
+    out property <color> lime: #A3E635;
+    out property <color> emerald: #10B981;
+    out property <color> ice: #F4F7FB;
+    out property <color> mist: #8FB5A3;
+}
+
+export struct GameRow {
+    name: string,
+    detail: string,
+    windows: bool,
+}
+
+component PrimaryButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 34px;
+    min-width: 96px;
+    border-radius: 8px;
+    background: !root.enabled ? Brand.forest-light : touch.pressed ? Brand.emerald : touch.has-hover ? #b8f05a : Brand.lime;
+    label := Text {
+        text: root.text;
+        color: root.enabled ? Brand.night : Brand.mist;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 38px;
+    border-radius: 8px;
+    background: root.active ? Brand.forest : touch.has-hover ? Brand.forest-light.transparentize(50%) : transparent;
+    Text {
+        x: 14px;
+        text: root.text;
+        color: root.active ? Brand.lime : Brand.ice;
+        font-size: 15px;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component GameCard inherits Rectangle {
+    in property <GameRow> game;
+    in property <bool> busy;
+    callback play();
+    height: 72px;
+    border-radius: 12px;
+    background: Brand.forest;
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 14px;
+        Rectangle {
+            width: 44px;
+            border-radius: 8px;
+            background: Brand.night;
+            Text {
+                text: root.game.windows ? "WIN" : "XTUX";
+                color: Brand.lime;
+                font-size: 10px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.game.name;
+                color: Brand.ice;
+                font-size: 16px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                text: root.game.detail;
+                color: Brand.mist;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+        PrimaryButton {
+            text: "Play";
+            enabled: !root.busy;
+            clicked => { root.play(); }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "xTux Launcher";
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    background: Brand.night;
+    default-font-size: 14px;
+
+    in property <bool> signed-in;
+    in property <string> user;
+    in property <string> status: "Connecting to xtux-service…";
+    in property <bool> busy;
+    in property <[GameRow]> games;
+    in-out property <string> wine;
+    in-out property <string> prefix;
+    in-out property <string> library-dirs;
+    in-out property <int> page: 0;
+
+    callback sign-in();
+    callback refresh();
+    callback play(int);
+    callback save-settings();
+
+    HorizontalLayout {
+        // Sidebar
+        Rectangle {
+            width: 220px;
+            background: #0a1d16;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 8px;
+                Image {
+                    source: @image-url("../assets/mascot.png");
+                    height: 96px;
+                    image-fit: contain;
+                }
+                Text {
+                    text: "xTux";
+                    color: Brand.lime;
+                    font-size: 26px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "by Tux-Force";
+                    color: Brand.emerald;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+                Rectangle { height: 16px; }
+                NavItem {
+                    text: "Library";
+                    active: root.page == 0;
+                    clicked => { root.page = 0; }
+                }
+                NavItem {
+                    text: "Settings";
+                    active: root.page == 1;
+                    clicked => { root.page = 1; }
+                }
+                Rectangle { }
+                Text {
+                    text: root.signed-in ? "Signed in as\n" + root.user : "Not signed in";
+                    color: Brand.mist;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if !root.signed-in: PrimaryButton {
+                    text: "Sign in";
+                    enabled: !root.busy;
+                    clicked => { root.sign-in(); }
+                }
+            }
+        }
+
+        // Content
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: root.page == 0 ? "Library" : "Settings";
+                    color: Brand.ice;
+                    font-size: 24px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                if root.page == 0: PrimaryButton {
+                    text: "Refresh";
+                    enabled: !root.busy;
+                    clicked => { root.refresh(); }
+                }
+            }
+
+            if root.page == 0: ScrollView {
+                VerticalLayout {
+                    spacing: 10px;
+                    for game[index] in root.games: GameCard {
+                        game: game;
+                        busy: root.busy;
+                        play => { root.play(index); }
+                    }
+                    if root.games.length == 0: Text {
+                        text: "No games found. Add library folders in Settings, or install a game with xtux-cli streaming.";
+                        color: Brand.mist;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            if root.page == 1: VerticalLayout {
+                spacing: 8px;
+                Text { text: "Wine binary"; color: Brand.mist; }
+                LineEdit {
+                    text <=> root.wine;
+                    placeholder-text: "/path/to/tux-force-wine/bin/wine";
+                }
+                Text { text: "Wine prefix (empty: WINEPREFIX or ~/Games/xtux-prefix)"; color: Brand.mist; }
+                LineEdit {
+                    text <=> root.prefix;
+                    placeholder-text: "~/Games/xtux-prefix";
+                }
+                Text { text: "Library folders, one per line"; color: Brand.mist; }
+                TextEdit {
+                    text <=> root.library-dirs;
+                    min-height: 120px;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    PrimaryButton {
+                        text: "Save";
+                        clicked => { root.save-settings(); }
+                    }
+                }
+                Rectangle { }
+            }
+
+            // Status bar
+            Rectangle {
+                height: 34px;
+                border-radius: 8px;
+                background: Brand.forest;
+                Text {
+                    x: 12px;
+                    text: root.status;
+                    color: root.busy ? Brand.lime : Brand.mist;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    width: parent.width - 24px;
+                }
+            }
+        }
+    }
+}

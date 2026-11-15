@@ -5,6 +5,7 @@ pub mod extract_eappx;
 pub mod license;
 #[cfg(unix)]
 pub mod link;
+pub mod list;
 pub mod login;
 pub mod logout;
 #[cfg(unix)]
