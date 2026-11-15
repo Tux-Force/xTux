@@ -3,17 +3,152 @@
 //! The Slint event loop runs on the main thread; daemon requests run on a tokio runtime and hand their results back
 //! with `slint::invoke_from_event_loop`.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak};
-use xtux_games::settings::Settings;
+use xtux_games::settings::{GameSettings, Settings};
 use xtux_protocol::{Client, ClientError, Event, GameInfo, Request, Response};
 
 slint::include_modules!();
 
 /// Games currently shown, in list order, so a Play click can find its folder.
 type Shown = Arc<Mutex<Vec<GameInfo>>>;
+/// The game open on the game page.
+type Current = Arc<Mutex<Option<GameInfo>>>;
+
+/// Shown part of a log file.
+const LOG_TAIL: u64 = 256 * 1024;
+
+fn path_text(path: &Option<PathBuf>) -> String {
+    path.as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn non_empty(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// `NAME=value` lines; lines without `=` or with an empty name are skipped.
+fn parse_env(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| {
+            let (name, value) = line.trim().split_once('=')?;
+            let name = name.trim();
+            (!name.is_empty()).then(|| (name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn show_game(ui: &AppWindow, game: &GameInfo) {
+    let settings = Settings::load().unwrap_or_default();
+    let own = settings.game(&game.path);
+    ui.set_game_name(game.name.clone().into());
+    ui.set_game_path(game.path.display().to_string().into());
+    ui.set_game_wine(own.wine.unwrap_or_default().into());
+    ui.set_game_prefix(path_text(&own.prefix).into());
+    ui.set_game_exe(own.exe.unwrap_or_default().into());
+    ui.set_game_args(own.args.join("\n").into());
+    ui.set_game_env(
+        own.env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into(),
+    );
+    show_logs(ui, Some(&game.path));
+}
+
+fn show_logs(ui: &AppWindow, game: Option<&Path>) {
+    if let Some(log) = game.and_then(xtux_games::logs::game_log) {
+        let text = xtux_games::logs::tail(&log, LOG_TAIL);
+        ui.set_game_log(
+            if text.is_empty() {
+                format!(
+                    "No log yet; it is written to {} when the game starts.",
+                    log.display()
+                )
+            } else {
+                text
+            }
+            .into(),
+        );
+    }
+    if let Some(log) = xtux_games::logs::service_log() {
+        ui.set_service_log(xtux_games::logs::tail(&log, LOG_TAIL).into());
+        ui.set_service_log_path(log.display().to_string().into());
+    }
+}
+
+/// The launch request for a game: its own settings, then the general ones.
+fn launch_request(game: &GameInfo) -> Result<Request, String> {
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let game_settings = settings.effective(&game.path);
+    let wine = game_settings
+        .wine
+        .ok_or("Set the Wine binary in Settings first")?;
+    let mut env: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k != "WINEPREFIX")
+        .collect();
+    if let Some(prefix) = &game_settings.prefix {
+        env.push(("WINEPREFIX".into(), prefix.to_string_lossy().into_owned()));
+    } else if let Ok(prefix) = std::env::var("WINEPREFIX") {
+        env.push(("WINEPREFIX".into(), prefix));
+    }
+    env.extend(game_settings.env);
+    Ok(Request::Launch {
+        source: game.path.clone(),
+        wine: expand_home(&wine).to_string_lossy().into_owned(),
+        exe: game_settings.exe,
+        market: settings.market,
+        env,
+        args: game_settings.args,
+    })
+}
+
+fn start_game(
+    ui: &AppWindow,
+    weak: &Weak<AppWindow>,
+    handle: &tokio::runtime::Handle,
+    game: GameInfo,
+) {
+    let request = match launch_request(&game) {
+        Ok(request) => request,
+        Err(err) => {
+            ui.set_status(err.into());
+            ui.set_page(1);
+            return;
+        }
+    };
+    ui.set_busy(true);
+    ui.set_status(format!("Starting {}…", game.name).into());
+    let weak = weak.clone();
+    handle.spawn(async move {
+        let name = game.name.clone();
+        let events = weak.clone();
+        let result = ask(request, move |event| match event {
+            Event::Message { text } => set_status(&events, format!("{name}: {text}"), None),
+            Event::GameStarted { .. } => set_status(&events, format!("{name} is running"), None),
+            _ => {}
+        })
+        .await;
+        match result {
+            Ok(Response::GameExited { code }) => set_status(
+                &weak,
+                format!("{} exited (code {})", game.name, code.unwrap_or(0)),
+                Some(false),
+            ),
+            Ok(other) => set_status(&weak, format!("Unexpected answer: {other:?}"), Some(false)),
+            Err(err) => set_status(&weak, err.to_string(), Some(false)),
+        }
+        let path = game.path.clone();
+        with_ui(&weak, move |ui| show_logs(&ui, Some(&path)));
+    });
+}
 
 fn expand_home(text: &str) -> PathBuf {
     match (text.strip_prefix("~/"), std::env::var_os("HOME")) {
@@ -115,6 +250,7 @@ fn main() {
     let runtime = tokio::runtime::Runtime::new().expect("cannot start the async runtime");
     let ui = AppWindow::new().expect("cannot create the window");
     let shown: Shown = Arc::default();
+    let current: Current = Arc::default();
 
     let settings = Settings::load().unwrap_or_default();
     ui.set_wine(settings.wine.clone().unwrap_or_default().into());
@@ -135,7 +271,6 @@ fn main() {
             .join("\n")
             .into(),
     );
-    let market = settings.market.clone();
 
     {
         let weak = ui.as_weak();
@@ -187,32 +322,108 @@ fn main() {
         let weak = ui.as_weak();
         let shown = shown.clone();
         let handle = runtime.handle().clone();
-        let market = market.clone();
         move || {
             let Some(ui) = weak.upgrade() else { return };
-            let wine = ui.get_wine().trim().to_string();
-            let prefix = ui.get_prefix().trim().to_string();
-            let settings = Settings {
-                library_dirs: ui
-                    .get_library_dirs()
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(expand_home)
-                    .collect(),
-                wine: (!wine.is_empty()).then(|| expand_home(&wine).to_string_lossy().into_owned()),
-                prefix: (!prefix.is_empty()).then(|| expand_home(&prefix)),
-                market: market.clone(),
+            // Keep what this page does not show (market, game settings); never overwrite a file we could not read.
+            let mut settings = match Settings::load() {
+                Ok(settings) => settings,
+                Err(err) => {
+                    ui.set_status(
+                        format!("Not saved, the settings file has an error: {err}").into(),
+                    );
+                    return;
+                }
             };
+            settings.library_dirs = ui
+                .get_library_dirs()
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(expand_home)
+                .collect();
+            settings.wine =
+                non_empty(&ui.get_wine()).map(|w| expand_home(&w).to_string_lossy().into_owned());
+            settings.prefix = non_empty(&ui.get_prefix()).map(|p| expand_home(&p));
             match settings.save() {
                 Ok(()) => {
                     ui.set_status("Settings saved".into());
-                    let weak = weak.clone();
-                    let shown = shown.clone();
-                    handle.spawn(refresh_library(weak, shown));
+                    handle.spawn(refresh_library(weak.clone(), shown.clone()));
                 }
                 Err(err) => ui.set_status(format!("Could not save the settings: {err}").into()),
             }
+        }
+    });
+
+    ui.on_open_game({
+        let weak = ui.as_weak();
+        let shown = shown.clone();
+        let current = current.clone();
+        move |index| {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(game) = shown
+                .lock()
+                .ok()
+                .and_then(|l| l.get(index as usize).cloned())
+            else {
+                return;
+            };
+            show_game(&ui, &game);
+            if let Ok(mut current) = current.lock() {
+                *current = Some(game);
+            }
+            ui.set_page(2);
+        }
+    });
+
+    ui.on_save_game({
+        let weak = ui.as_weak();
+        let current = current.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(game) = current.lock().ok().and_then(|c| c.clone()) else {
+                return;
+            };
+            let own = GameSettings {
+                wine: non_empty(&ui.get_game_wine())
+                    .map(|w| expand_home(&w).to_string_lossy().into_owned()),
+                prefix: non_empty(&ui.get_game_prefix()).map(|p| expand_home(&p)),
+                exe: non_empty(&ui.get_game_exe()),
+                args: ui
+                    .get_game_args()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                env: parse_env(&ui.get_game_env()),
+            };
+            let mut settings = match Settings::load() {
+                Ok(settings) => settings,
+                Err(err) => {
+                    ui.set_status(
+                        format!("Not saved, the settings file has an error: {err}").into(),
+                    );
+                    return;
+                }
+            };
+            settings.set_game(&game.path, own);
+            match settings.save() {
+                Ok(()) => ui.set_status(format!("Settings of {} saved", game.name).into()),
+                Err(err) => ui.set_status(format!("Could not save the settings: {err}").into()),
+            }
+        }
+    });
+
+    ui.on_refresh_logs({
+        let weak = ui.as_weak();
+        let current = current.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let game = current
+                .lock()
+                .ok()
+                .and_then(|c| c.as_ref().map(|g| g.path.clone()));
+            show_logs(&ui, game.as_deref());
         }
     });
 
@@ -229,54 +440,20 @@ fn main() {
             else {
                 return;
             };
-            let wine = ui.get_wine().trim().to_string();
-            if wine.is_empty() {
-                ui.set_status("Set the Wine binary in Settings first".into());
-                ui.set_page(1);
+            start_game(&ui, &weak, &handle, game);
+        }
+    });
+
+    ui.on_play_game({
+        let weak = ui.as_weak();
+        let current = current.clone();
+        let handle = runtime.handle().clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(game) = current.lock().ok().and_then(|c| c.clone()) else {
                 return;
-            }
-            let mut env: Vec<(String, String)> = std::env::vars().collect();
-            let prefix = ui.get_prefix().trim().to_string();
-            if !prefix.is_empty() {
-                env.retain(|(k, _)| k != "WINEPREFIX");
-                env.push((
-                    "WINEPREFIX".into(),
-                    expand_home(&prefix).to_string_lossy().into_owned(),
-                ));
-            }
-            let request = Request::Launch {
-                source: game.path.clone(),
-                wine: expand_home(&wine).to_string_lossy().into_owned(),
-                exe: None,
-                market: market.clone(),
-                env,
             };
-            ui.set_busy(true);
-            ui.set_status(format!("Starting {}…", game.name).into());
-            let weak = weak.clone();
-            handle.spawn(async move {
-                let name = game.name.clone();
-                let events = weak.clone();
-                let result = ask(request, move |event| match event {
-                    Event::Message { text } => set_status(&events, format!("{name}: {text}"), None),
-                    Event::GameStarted { .. } => {
-                        set_status(&events, format!("{name} is running"), None)
-                    }
-                    _ => {}
-                })
-                .await;
-                match result {
-                    Ok(Response::GameExited { code }) => set_status(
-                        &weak,
-                        format!("{} exited (code {})", game.name, code.unwrap_or(0)),
-                        Some(false),
-                    ),
-                    Ok(other) => {
-                        set_status(&weak, format!("Unexpected answer: {other:?}"), Some(false))
-                    }
-                    Err(err) => set_status(&weak, err.to_string(), Some(false)),
-                }
-            });
+            start_game(&ui, &weak, &handle, game);
         }
     });
 

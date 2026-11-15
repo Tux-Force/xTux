@@ -40,6 +40,46 @@ component PrimaryButton inherits Rectangle {
     }
 }
 
+component SecondaryButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 34px;
+    min-width: 96px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: root.enabled ? Brand.lime : Brand.forest-light;
+    background: touch.pressed ? Brand.forest-light : touch.has-hover ? Brand.forest-light.transparentize(50%) : transparent;
+    Text {
+        text: root.text;
+        color: root.enabled ? Brand.lime : Brand.mist;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Label inherits Text {
+    color: Brand.mist;
+}
+
+component LogView inherits Rectangle {
+    in property <string> text;
+    border-radius: 8px;
+    background: #030b08;
+    TextEdit {
+        text: root.text;
+        read-only: true;
+        font-size: 12px;
+        wrap: no-wrap;
+    }
+}
+
 component NavItem inherits Rectangle {
     in property <string> text;
     in property <bool> active;
@@ -64,6 +104,7 @@ component GameCard inherits Rectangle {
     in property <GameRow> game;
     in property <bool> busy;
     callback play();
+    callback open();
     height: 72px;
     border-radius: 12px;
     background: Brand.forest;
@@ -100,6 +141,10 @@ component GameCard inherits Rectangle {
                 overflow: elide;
             }
         }
+        SecondaryButton {
+            text: "Settings";
+            clicked => { root.open(); }
+        }
         PrimaryButton {
             text: "Play";
             enabled: !root.busy;
@@ -124,10 +169,26 @@ export component AppWindow inherits Window {
     in-out property <string> prefix;
     in-out property <string> library-dirs;
     in-out property <int> page: 0;
+    // Game page (page 2)
+    in property <string> game-name;
+    in property <string> game-path;
+    in-out property <string> game-wine;
+    in-out property <string> game-prefix;
+    in-out property <string> game-exe;
+    in-out property <string> game-args;
+    in-out property <string> game-env;
+    in property <string> game-log;
+    // Logs page (page 3)
+    in property <string> service-log;
+    in property <string> service-log-path;
 
     callback sign-in();
     callback refresh();
     callback play(int);
+    callback open-game(int);
+    callback play-game();
+    callback save-game();
+    callback refresh-logs();
     callback save-settings();
 
     HorizontalLayout {
@@ -167,6 +228,14 @@ export component AppWindow inherits Window {
                     active: root.page == 1;
                     clicked => { root.page = 1; }
                 }
+                NavItem {
+                    text: "Logs";
+                    active: root.page == 3;
+                    clicked => {
+                        root.page = 3;
+                        root.refresh-logs();
+                    }
+                }
                 Rectangle { }
                 Text {
                     text: root.signed-in ? "Signed in as\n" + root.user : "Not signed in";
@@ -189,7 +258,8 @@ export component AppWindow inherits Window {
             HorizontalLayout {
                 spacing: 12px;
                 Text {
-                    text: root.page == 0 ? "Library" : "Settings";
+                    text: root.page == 0 ? "Library" : root.page == 1 ? "Settings" : root.page == 2 ? root.game-name : "Logs";
+                    overflow: elide;
                     color: Brand.ice;
                     font-size: 24px;
                     font-weight: 700;
@@ -201,6 +271,19 @@ export component AppWindow inherits Window {
                     enabled: !root.busy;
                     clicked => { root.refresh(); }
                 }
+                if root.page == 2: SecondaryButton {
+                    text: "Back";
+                    clicked => { root.page = 0; }
+                }
+                if root.page == 2: PrimaryButton {
+                    text: "Play";
+                    enabled: !root.busy;
+                    clicked => { root.play-game(); }
+                }
+                if root.page == 3: PrimaryButton {
+                    text: "Refresh";
+                    clicked => { root.refresh-logs(); }
+                }
             }
 
             if root.page == 0: ScrollView {
@@ -210,6 +293,7 @@ export component AppWindow inherits Window {
                         game: game;
                         busy: root.busy;
                         play => { root.play(index); }
+                        open => { root.open-game(index); }
                     }
                     if root.games.length == 0: Text {
                         text: "No games found. Add library folders in Settings, or install a game with xtux-cli streaming.";
@@ -244,6 +328,55 @@ export component AppWindow inherits Window {
                     }
                 }
                 Rectangle { }
+            }
+
+            if root.page == 2: VerticalLayout {
+                spacing: 8px;
+                Label { text: root.game-path; font-size: 12px; overflow: elide; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        Label { text: "Wine binary (empty: general setting)"; }
+                        LineEdit { text <=> root.game-wine; placeholder-text: root.wine; }
+                        Label { text: "Wine prefix (empty: general setting)"; }
+                        LineEdit { text <=> root.game-prefix; placeholder-text: root.prefix; }
+                        Label { text: "Executable, package relative (empty: from MicrosoftGame.config)"; }
+                        LineEdit { text <=> root.game-exe; placeholder-text: "x64\\Game.exe"; }
+                        Label { text: "Arguments, one per line"; }
+                        TextEdit { text <=> root.game-args; min-height: 60px; }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Label { text: "Environment, one NAME=value per line"; }
+                        TextEdit {
+                            text <=> root.game-env;
+                            placeholder-text: "DXVK_HUD=fps";
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            PrimaryButton {
+                                text: "Save";
+                                clicked => { root.save-game(); }
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    Label { text: "Log of the last start"; vertical-alignment: center; }
+                    Rectangle { }
+                    SecondaryButton {
+                        text: "Reload";
+                        clicked => { root.refresh-logs(); }
+                    }
+                }
+                LogView { text: root.game-log; min-height: 160px; }
+            }
+
+            if root.page == 3: VerticalLayout {
+                spacing: 8px;
+                Label { text: "xtux-service: " + root.service-log-path; font-size: 12px; overflow: elide; }
+                LogView { text: root.service-log; }
             }
 
             // Status bar
