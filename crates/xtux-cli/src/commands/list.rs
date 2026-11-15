@@ -47,8 +47,19 @@ pub fn run(paths: bool) -> ExitCode {
             GameKind::Installed => "xTux",
             GameKind::Windows => "Xbox app",
         };
+        let mut license = String::new();
+        if xtux_games::license::problems::of(&game.path).is_some() {
+            license.push_str("  (license check failed)");
+        }
+        if let Some(anticheat) = &game.anticheat {
+            license.push_str(&if anticheat.blocks {
+                format!("  (Windows only: kernel anti-cheat {})", anticheat.name)
+            } else {
+                format!("  (anti-cheat {}, may not run)", anticheat.name)
+            });
+        }
         println!(
-            "{:<width$}  {:<8}  {:<8}  {}",
+            "{:<width$}  {:<8}  {:<8}  {}{license}",
             game.name,
             kind,
             game.title_id.as_deref().unwrap_or("-"),

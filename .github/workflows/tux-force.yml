@@ -1,6 +1,8 @@
 # Tux-Force (xTux) CI: build the workspace on Linux x86_64, run the tests
 # and publish xtux-cli and xtux-service as downloadable artifacts.
 # Pushes to main also create a GitHub release v<version of xtux-cli> once.
+# The licenses job checks the licenses and sources of all dependencies
+# (cargo-deny, deny.toml) and that licenses/THIRD-PARTY-LICENSES.md is current.
 #
 # The upstream "Rust check" workflow (rust.yml) is left untouched; it only
 # runs on pushes to main and on pull requests (clippy + tests).
@@ -24,6 +26,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  licenses:
+    name: Licenses and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Licenses must be GPL-3.0 compatible, git sources known (deny.toml).
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources bans
+
+      # Known vulnerabilities block; the few without a reachable fix are ignored with a reason in deny.toml.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about --version 0.9.3 --features cli
+
+      - name: Third-party license list is up to date
+        run: |
+          ./scripts/third-party-licenses.sh
+          git diff --exit-code -- licenses/THIRD-PARTY-LICENSES.md || {
+            echo "licenses/THIRD-PARTY-LICENSES.md is out of date: run scripts/third-party-licenses.sh and commit it."
+            exit 1
+          }
+
   build:
     name: Build and test (linux x86_64)
     runs-on: ubuntu-latest
@@ -76,6 +105,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/xtux-cli target/release/xtux-service target/release/xtux-launcher dist/
+          cp LICENSE licenses/THIRD-PARTY-LICENSES.md dist/
           strip dist/xtux-cli dist/xtux-service dist/xtux-launcher
           (cd dist && sha256sum xtux-cli xtux-service xtux-launcher > SHA256SUMS)
 
@@ -87,7 +117,7 @@ jobs:
 
   release:
     name: Release
-    needs: build
+    needs: [build, licenses]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -112,7 +142,7 @@ jobs:
           fi
           chmod +x dist/xtux-cli dist/xtux-service dist/xtux-launcher
           archive="xtux-$version-linux-x86_64.tar.gz"
-          tar -C dist -czf "$archive" xtux-cli xtux-service xtux-launcher SHA256SUMS
+          tar -C dist -czf "$archive" xtux-cli xtux-service xtux-launcher SHA256SUMS LICENSE THIRD-PARTY-LICENSES.md
           sha256sum "$archive" > "$archive.sha256"
           gh release create "$tag" "$archive" "$archive.sha256" \
             --target "$GITHUB_SHA" --title "xTux $version" --generate-notes

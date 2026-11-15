@@ -1,24 +1,254 @@
 //! xTux Launcher: a thin graphical client of `xtux-service`.
 //!
-//! The Slint event loop runs on the main thread; daemon requests run on a tokio runtime and hand their results back
-//! with `slint::invoke_from_event_loop`.
+//! The Slint event loop runs on the main thread; daemon requests and image work run on a tokio runtime and hand their
+//! results back with `slint::invoke_from_event_loop`. Images travel between threads as pixel buffers, `slint::Image`
+//! is only made on the UI thread.
 
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak};
-use xtux_games::settings::Settings;
-use xtux_protocol::{Client, ClientError, Event, GameInfo, Request, Response};
+use slint::{
+    ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel, Weak,
+};
+use xtux_games::art::{self, Artwork};
+use xtux_games::settings::{GameSettings, Settings};
+use xtux_protocol::{
+    Canceller, Client, ClientError, ErrorKind, Event, GameInfo, Request, Response,
+};
+
+mod theme;
 
 slint::include_modules!();
 
-/// Games currently shown, in list order, so a Play click can find its folder.
-type Shown = Arc<Mutex<Vec<GameInfo>>>;
+type Pixels = SharedPixelBuffer<Rgba8Pixel>;
+
+/// Shown part of a log file.
+const LOG_TAIL: u64 = 256 * 1024;
+
+/// A game of the library with its decoded images.
+#[derive(Clone)]
+struct Entry {
+    info: GameInfo,
+    art: Artwork,
+    cover: Option<Pixels>,
+    /// Strongly blurred cover for the frosted action bar.
+    cover_blur: Option<Pixels>,
+    logo: Option<Pixels>,
+    backdrop: Option<Pixels>,
+}
+
+#[derive(Default)]
+struct State {
+    all: Vec<Entry>,
+    /// Indices into `all` of the games shown, in order.
+    shown: Vec<usize>,
+    search: String,
+    /// The game open on the game page.
+    current: Option<usize>,
+    /// Which backdrop layer is visible, and the game it shows.
+    show_a: bool,
+    backdrop_of: Option<usize>,
+    /// `dynamic`, `static` or `off` (Settings).
+    backdrop_mode: String,
+    /// Running games by folder, with what stops them.
+    running: HashMap<PathBuf, Canceller>,
+    /// What the command line asked for, done once the library is loaded.
+    startup: Option<Startup>,
+    handle: Option<tokio::runtime::Handle>,
+}
+
+/// Start options, for desktop shortcuts or Steam entries.
+#[derive(clap::Parser)]
+#[command(
+    name = "xtux-launcher",
+    version,
+    about = "xTux Launcher: library, sign-in and game start of Tux-Force"
+)]
+struct Args {
+    /// Start this game right away: its name as shown in the library, its folder name or its folder path
+    #[arg(long, value_name = "GAME")]
+    play: Option<String>,
+    /// Open the page of this game
+    #[arg(long, value_name = "GAME", conflicts_with = "play")]
+    game: Option<String>,
+    /// Open a page
+    #[arg(long, value_parser = ["library", "settings", "about", "logs"], conflicts_with_all = ["play", "game"])]
+    page: Option<String>,
+}
+
+#[derive(Clone)]
+enum Startup {
+    Play(String),
+    Game(String),
+    Page(String),
+}
+
+/// The library index of `query`: a folder path, a display name or a folder name (case-insensitive).
+fn find_game(all: &[Entry], query: &str) -> Result<usize, String> {
+    let as_path = std::fs::canonicalize(query).ok();
+    let folder = |e: &Entry| {
+        e.info
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    let matching = |pick: &dyn Fn(&Entry) -> bool| -> Vec<usize> {
+        all.iter()
+            .enumerate()
+            .filter(|(_, e)| pick(e))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let mut found = Vec::new();
+    if let Some(path) = &as_path {
+        found = matching(&|e| std::fs::canonicalize(&e.info.path).ok().as_ref() == Some(path));
+    }
+    if found.is_empty() {
+        found = matching(&|e| e.info.name.eq_ignore_ascii_case(query));
+    }
+    if found.is_empty() {
+        found = matching(&|e| folder(e) == query.to_lowercase());
+    }
+    match found.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(format!("{query:?} is not in the library")),
+        _ => Err(format!(
+            "{query:?} is installed more than once; pass its folder path"
+        )),
+    }
+}
+
+/// Carries out the start option once the library is there (UI thread).
+fn run_startup(ui: &AppWindow, state: &Shared) {
+    let (startup, handle) = match state.lock() {
+        Ok(mut s) => (s.startup.take(), s.handle.clone()),
+        Err(_) => return,
+    };
+    let (Some(startup), Some(handle)) = (startup, handle) else {
+        return;
+    };
+    let all = state.lock().map(|s| s.all.clone()).unwrap_or_default();
+    match startup {
+        Startup::Page(page) => ui.set_page(match page.as_str() {
+            "settings" => 1,
+            "logs" => 3,
+            "about" => 4,
+            _ => 0,
+        }),
+        Startup::Game(query) => match find_game(&all, &query) {
+            Ok(index) => open_game(ui, state, &handle, index),
+            Err(err) => ui.set_status(err.into()),
+        },
+        Startup::Play(query) => match find_game(&all, &query) {
+            Ok(index) => {
+                open_game(ui, state, &handle, index);
+                if all[index].info.anticheat_blocks {
+                    ui.set_status(
+                        format!(
+                            "{} runs on Windows only (kernel anti-cheat)",
+                            all[index].info.name
+                        )
+                        .into(),
+                    );
+                } else {
+                    start_game(ui, state, &handle, all[index].info.clone());
+                }
+            }
+            Err(err) => ui.set_status(err.into()),
+        },
+    }
+}
+
+/// What asks for a backdrop change.
+#[derive(PartialEq)]
+enum BackdropCause {
+    /// The library loaded: the ambient backdrop.
+    Ambient,
+    /// The mouse is over a game, or its page opened.
+    Game,
+}
+
+type Shared = Arc<Mutex<State>>;
 
 fn expand_home(text: &str) -> PathBuf {
     match (text.strip_prefix("~/"), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
         _ => PathBuf::from(text),
+    }
+}
+
+fn path_text(path: &Option<PathBuf>) -> String {
+    path.as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn non_empty(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// `NAME=value` lines; lines without `=` or with an empty name are skipped.
+fn parse_env(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| {
+            let (name, value) = line.trim().split_once('=')?;
+            let name = name.trim();
+            (!name.is_empty()).then(|| (name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// Decodes an image file, scaled down to fit `max_w` × `max_h`.
+fn decode(path: Option<&Path>, max_w: u32, max_h: u32) -> Option<Pixels> {
+    let image = art::open_image(path?).ok()?;
+    let image = if image.width() > max_w || image.height() > max_h {
+        image.thumbnail(max_w, max_h)
+    } else {
+        image
+    };
+    let rgba = image.to_rgba8();
+    Some(SharedPixelBuffer::clone_from_slice(
+        rgba.as_raw(),
+        rgba.width(),
+        rgba.height(),
+    ))
+}
+
+/// A small, strongly blurred copy for frosted glass.
+fn blur(pixels: &Option<Pixels>) -> Option<Pixels> {
+    let pixels = pixels.as_ref()?;
+    let image =
+        image::RgbaImage::from_raw(pixels.width(), pixels.height(), pixels.as_bytes().to_vec())?;
+    let small = image::imageops::thumbnail(&image, 120, 180);
+    let blurred = image::imageops::fast_blur(&small, 10.0);
+    Some(SharedPixelBuffer::clone_from_slice(
+        blurred.as_raw(),
+        blurred.width(),
+        blurred.height(),
+    ))
+}
+
+fn load_entry(info: GameInfo) -> Entry {
+    let art = art::available(&info.path, info.store_id.as_deref());
+    let cover = decode(art.cover.as_deref(), 360, 540);
+    Entry {
+        cover_blur: blur(&cover),
+        cover,
+        logo: decode(art.logo.as_deref(), 192, 192),
+        backdrop: decode(art.backdrop.as_deref(), 640, 360),
+        art,
+        info,
+    }
+}
+
+fn to_image(pixels: &Option<Pixels>) -> (Image, bool) {
+    match pixels {
+        Some(p) => (Image::from_rgba8(p.clone()), true),
+        None => (Image::default(), false),
     }
 }
 
@@ -48,6 +278,88 @@ fn set_status(ui: &Weak<AppWindow>, text: impl Into<String>, busy: Option<bool>)
     });
 }
 
+/// Applies the search and pushes the shown games to the window (UI thread).
+fn show_games(ui: &AppWindow, state: &Shared) {
+    let Ok(mut state) = state.lock() else { return };
+    let needle = state.search.to_lowercase();
+    state.shown = state
+        .all
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| needle.is_empty() || e.info.name.to_lowercase().contains(&needle))
+        .map(|(i, _)| i)
+        .collect();
+    let rows: Vec<GameRow> = state
+        .shown
+        .iter()
+        .map(|&i| {
+            let entry = &state.all[i];
+            let (cover, has_cover) = to_image(&entry.cover);
+            let (cover_blur, _) = to_image(&entry.cover_blur);
+            let (logo, has_logo) = to_image(&entry.logo);
+            let windows = entry.info.kind == "windows";
+            let running = state.running.contains_key(&entry.info.path);
+            let license_problem = entry.info.license_problem.clone().unwrap_or_default();
+            GameRow {
+                name: entry.info.name.clone().into(),
+                detail: format!(
+                    "{} · {}",
+                    if windows {
+                        "Windows Xbox app install"
+                    } else {
+                        "Installed by xTux"
+                    },
+                    entry.info.path.display()
+                )
+                .into(),
+                windows,
+                running,
+                license_problem: license_problem.into(),
+                anticheat: entry.info.anticheat.clone().unwrap_or_default().into(),
+                anticheat_blocks: entry.info.anticheat_blocks,
+                cover,
+                cover_blur,
+                has_cover,
+                logo,
+                has_logo,
+            }
+        })
+        .collect();
+    ui.set_game_count(state.all.len() as i32);
+    ui.set_games(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Cross-fades the window backdrop to the blurred art of `all[index]` (UI thread), as the backdrop setting allows.
+fn show_backdrop(ui: &AppWindow, state: &Shared, index: usize, cause: BackdropCause) {
+    let Ok(mut state) = state.lock() else { return };
+    match state.backdrop_mode.as_str() {
+        "off" => {
+            ui.set_has_backdrop(false);
+            return;
+        }
+        "static" if cause == BackdropCause::Game && state.backdrop_of.is_some() => return,
+        _ => {}
+    }
+    if state.backdrop_of == Some(index) {
+        ui.set_has_backdrop(true);
+        return;
+    }
+    let Some(pixels) = state.all.get(index).and_then(|e| e.backdrop.clone()) else {
+        return;
+    };
+    let image = Image::from_rgba8(pixels);
+    // Fill the hidden layer, then make it the visible one.
+    if state.show_a {
+        ui.set_backdrop_b(image);
+    } else {
+        ui.set_backdrop_a(image);
+    }
+    state.show_a = !state.show_a;
+    state.backdrop_of = Some(index);
+    ui.set_show_a(state.show_a);
+    ui.set_has_backdrop(true);
+}
+
 async fn refresh_status(ui: Weak<AppWindow>) {
     match ask(Request::Status, |_| {}).await {
         Ok(Response::Status {
@@ -64,47 +376,573 @@ async fn refresh_status(ui: Weak<AppWindow>) {
     }
 }
 
-async fn refresh_library(ui: Weak<AppWindow>, shown: Shown) {
-    match ask(Request::Library, |_| {}).await {
-        Ok(Response::Library { games }) => {
-            let rows: Vec<(String, String, bool)> = games
-                .iter()
-                .map(|g| {
-                    let source = if g.kind == "windows" {
-                        "Windows Xbox app install"
-                    } else {
-                        "Installed by xTux"
-                    };
-                    (
-                        g.name.clone(),
-                        format!("{source} · {}", g.path.display()),
-                        g.kind == "windows",
-                    )
-                })
-                .collect();
-            let count = games.len();
-            if let Ok(mut list) = shown.lock() {
-                *list = games;
+/// Loads the library with the art at hand, then fetches missing catalog art in the background.
+async fn refresh_library(ui: Weak<AppWindow>, state: Shared) {
+    let games = match ask(Request::Library, |_| {}).await {
+        Ok(Response::Library { games }) => games,
+        Ok(other) => return set_status(&ui, format!("Unexpected answer: {other:?}"), None),
+        Err(err) => return set_status(&ui, err.to_string(), None),
+    };
+    let count = games.len();
+    let entries =
+        tokio::task::spawn_blocking(move || games.into_iter().map(load_entry).collect::<Vec<_>>())
+            .await
+            .unwrap_or_default();
+    let missing: Vec<String> = {
+        let mut ids: Vec<String> = entries
+            .iter()
+            .filter(|e| e.art.cover.is_none() || e.art.backdrop.is_none() || e.art.hero.is_none())
+            .filter_map(|e| e.info.store_id.clone())
+            .filter(|id| art::is_store_id(id))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    if let Ok(mut s) = state.lock() {
+        s.all = entries;
+        s.current = None;
+        s.backdrop_of = None;
+    }
+    {
+        let state = state.clone();
+        with_ui(&ui, move |ui| {
+            show_games(&ui, &state);
+            ui.set_status(format!("{count} games in the library").into());
+            run_startup(&ui, &state);
+            // An ambient backdrop from the first game with art.
+            let first = state
+                .lock()
+                .ok()
+                .and_then(|s| s.all.iter().position(|e| e.backdrop.is_some()));
+            if let Some(first) = first {
+                show_backdrop(&ui, &state, first, BackdropCause::Ambient);
             }
-            with_ui(&ui, move |ui| {
-                let model: Vec<GameRow> = rows
-                    .into_iter()
-                    .map(|(name, detail, windows)| GameRow {
-                        name: name.into(),
-                        detail: detail.into(),
-                        windows,
-                    })
-                    .collect();
-                ui.set_games(ModelRc::new(VecModel::from(model)));
-                ui.set_status(SharedString::from(format!("{count} games in the library")));
-            });
+        });
+    }
+    // Opt-out in Settings: the catalog learns the Store IDs of installed games.
+    let online = Settings::load().map(|s| s.ui.online_art).unwrap_or(true);
+    if missing.is_empty() || !online {
+        return;
+    }
+
+    // Catalog art: public Store data, only the Store ID and market are sent.
+    let market = Settings::load().ok().and_then(|s| s.market);
+    let client = art::client(&format!("xtux-launcher/{}", env!("CARGO_PKG_VERSION")));
+    let mut fetched = false;
+    for id in missing {
+        match art::fetch(&client, &id, market.as_deref()).await {
+            Ok(_) => fetched = true,
+            Err(err) => tracing::warn!("no catalog art for {id}: {err}"),
         }
-        Ok(other) => set_status(&ui, format!("Unexpected answer: {other:?}"), None),
-        Err(err) => set_status(&ui, err.to_string(), None),
+    }
+    if !fetched {
+        return;
+    }
+    let infos: Vec<GameInfo> = state
+        .lock()
+        .map(|s| s.all.iter().map(|e| e.info.clone()).collect())
+        .unwrap_or_default();
+    let entries =
+        tokio::task::spawn_blocking(move || infos.into_iter().map(load_entry).collect::<Vec<_>>())
+            .await
+            .unwrap_or_default();
+    if let Ok(mut s) = state.lock() {
+        if s.all.len() == entries.len() {
+            s.all = entries;
+            s.backdrop_of = None;
+        }
+    }
+    with_ui(&ui, move |ui| {
+        show_games(&ui, &state);
+        let first = state
+            .lock()
+            .ok()
+            .and_then(|s| s.all.iter().position(|e| e.backdrop.is_some()));
+        if let Some(first) = first {
+            show_backdrop(&ui, &state, first, BackdropCause::Ambient);
+        }
+    });
+}
+
+/// The end of a log, newest line first.
+fn newest_first(path: &Path) -> String {
+    let text = xtux_games::logs::tail(path, LOG_TAIL);
+    text.lines().rev().collect::<Vec<_>>().join("\n")
+}
+
+fn show_logs(ui: &AppWindow, game: Option<&Path>) {
+    if let Some(log) = game.and_then(xtux_games::logs::game_log) {
+        let text = newest_first(&log);
+        ui.set_game_log(
+            if text.is_empty() {
+                format!(
+                    "No log yet. It is written when the game starts:\n{}",
+                    log.display()
+                )
+            } else {
+                text
+            }
+            .into(),
+        );
+    }
+    if let Some(log) = xtux_games::logs::service_log() {
+        ui.set_service_log(newest_first(&log).into());
+        ui.set_service_log_path(log.display().to_string().into());
     }
 }
 
+/// Opens the game page of `all[index]` (UI thread); the hero image follows from a worker.
+fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, index: usize) {
+    let Some(entry) = state.lock().ok().and_then(|s| s.all.get(index).cloned()) else {
+        return;
+    };
+    if let Ok(mut s) = state.lock() {
+        s.current = Some(index);
+    }
+    let game = &entry.info;
+    let own = Settings::load().unwrap_or_default().game(&game.path);
+    ui.set_game_name(game.name.clone().into());
+    ui.set_game_path(game.path.display().to_string().into());
+    ui.set_game_kind(
+        if game.kind == "windows" {
+            "Windows Xbox app install"
+        } else {
+            "Installed by xTux"
+        }
+        .into(),
+    );
+    ui.set_game_wine(own.wine.unwrap_or_default().into());
+    ui.set_game_prefix(path_text(&own.prefix).into());
+    ui.set_game_exe(own.exe.unwrap_or_default().into());
+    ui.set_game_args(own.args.join("\n").into());
+    ui.set_game_env(
+        own.env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into(),
+    );
+    ui.set_game_windows(game.kind == "windows");
+    ui.set_game_license_problem(game.license_problem.clone().unwrap_or_default().into());
+    ui.set_game_anticheat(game.anticheat.clone().unwrap_or_default().into());
+    ui.set_game_anticheat_blocks(game.anticheat_blocks);
+    ui.set_game_running(
+        state
+            .lock()
+            .is_ok_and(|s| s.running.contains_key(&game.path)),
+    );
+    let (logo, has_logo) = to_image(&entry.logo);
+    ui.set_game_logo(logo);
+    ui.set_has_game_logo(has_logo);
+    ui.set_has_game_hero(false);
+    show_logs(ui, Some(&game.path));
+    show_backdrop(ui, state, index, BackdropCause::Game);
+    ui.set_page(2);
+
+    let weak = ui.as_weak();
+    let state = state.clone();
+    let hero = entry.art.hero.clone();
+    handle.spawn(async move {
+        let pixels = tokio::task::spawn_blocking(move || decode(hero.as_deref(), 1920, 1080))
+            .await
+            .ok()
+            .flatten();
+        with_ui(&weak, move |ui| {
+            // Still the same game?
+            if state.lock().ok().and_then(|s| s.current) == Some(index) {
+                let (hero, has_hero) = to_image(&pixels);
+                ui.set_game_hero(hero);
+                ui.set_has_game_hero(has_hero);
+            }
+        });
+    });
+}
+
+/// The launch request for a game: its own settings, then the general ones.
+fn launch_request(game: &GameInfo) -> Result<Request, String> {
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let game_settings = settings.effective(&game.path);
+    let wine = game_settings
+        .wine
+        .ok_or("Set the Wine binary in Settings first")?;
+    let mut env: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k != "WINEPREFIX")
+        .collect();
+    if let Some(prefix) = &game_settings.prefix {
+        env.push(("WINEPREFIX".into(), prefix.to_string_lossy().into_owned()));
+    } else if let Ok(prefix) = std::env::var("WINEPREFIX") {
+        env.push(("WINEPREFIX".into(), prefix));
+    }
+    env.extend(game_settings.env);
+    Ok(Request::Launch {
+        source: game.path.clone(),
+        wine: expand_home(&wine).to_string_lossy().into_owned(),
+        exe: game_settings.exe,
+        market: settings.market,
+        env,
+        args: game_settings.args,
+    })
+}
+
+/// Shows the running state of the games (UI thread).
+fn show_running(ui: &AppWindow, state: &Shared) {
+    show_games(ui, state);
+    let running = state.lock().ok().and_then(|s| {
+        let current = s.all.get(s.current?)?;
+        Some(s.running.contains_key(&current.info.path))
+    });
+    ui.set_game_running(running.unwrap_or(false));
+    let problem = state.lock().ok().and_then(|s| {
+        let current = s.all.get(s.current?)?;
+        current.info.license_problem.clone()
+    });
+    ui.set_game_license_problem(problem.unwrap_or_default().into());
+}
+
+fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, game: GameInfo) {
+    if state
+        .lock()
+        .is_ok_and(|s| s.running.contains_key(&game.path))
+    {
+        return;
+    }
+    let request = match launch_request(&game) {
+        Ok(request) => request,
+        Err(err) => {
+            ui.set_status(err.into());
+            ui.set_page(1);
+            return;
+        }
+    };
+    ui.set_status(format!("Starting {}…", game.name).into());
+    let weak = ui.as_weak();
+    let state = state.clone();
+    handle.spawn(async move {
+        let mut daemon = match Client::connect_or_spawn().await {
+            Ok(daemon) => daemon,
+            Err(err) => return set_status(&weak, err.to_string(), None),
+        };
+        // Running from now on, so Stop works already while the game starts.
+        if let Ok(mut s) = state.lock() {
+            s.running.insert(game.path.clone(), daemon.canceller());
+        }
+        {
+            let state = state.clone();
+            with_ui(&weak, move |ui| show_running(&ui, &state));
+        }
+        let name = game.name.clone();
+        let events = weak.clone();
+        let started = state.clone();
+        let started_path = game.path.clone();
+        let result = daemon
+            .request(request, move |event| match event {
+                Event::Message { text } => set_status(&events, format!("{name}: {text}"), None),
+                Event::GameStarted { .. } => {
+                    // The license was granted.
+                    set_license_problem(&started, &started_path, None);
+                    set_status(&events, format!("{name} is running"), None)
+                }
+                _ => {}
+            })
+            .await;
+        match result {
+            Ok(Response::GameExited { code }) => set_status(
+                &weak,
+                format!("{} exited (code {})", game.name, code.unwrap_or(0)),
+                None,
+            ),
+            Ok(Response::Cancelled) => set_status(&weak, format!("{} stopped", game.name), None),
+            Ok(other) => set_status(&weak, format!("Unexpected answer: {other:?}"), None),
+            Err(ClientError::Remote(body)) if body.kind == ErrorKind::NotEntitled => {
+                set_license_problem(&state, &game.path, Some(body.message.clone()));
+                set_status(
+                    &weak,
+                    format!("{}: license check failed: {}", game.name, body.message),
+                    None,
+                )
+            }
+            Err(err) => set_status(&weak, err.to_string(), None),
+        }
+        if let Ok(mut s) = state.lock() {
+            s.running.remove(&game.path);
+        }
+        let path = game.path.clone();
+        with_ui(&weak, move |ui| {
+            show_running(&ui, &state);
+            show_logs(&ui, Some(&path));
+        });
+    });
+}
+
+/// Updates the license mark of a game in the library (the daemon remembers it too).
+fn set_license_problem(state: &Shared, path: &Path, problem: Option<String>) {
+    if let Ok(mut s) = state.lock() {
+        if let Some(entry) = s.all.iter_mut().find(|e| e.info.path == path) {
+            entry.info.license_problem = problem;
+        }
+    }
+}
+
+/// Licenses of all dependencies, from licenses/THIRD-PARTY-LICENSES.md (cargo-about, checked by the CI).
+const THIRD_PARTY: &str = include_str!("../../../licenses/THIRD-PARTY-LICENSES.md");
+
+/// One row per license: name, crates using it, full text.
+fn license_rows() -> Vec<LicenseRow> {
+    let mut rows = Vec::new();
+    let Some(start) = THIRD_PARTY.find("## Licenses and the crates that use them") else {
+        return rows;
+    };
+    for section in THIRD_PARTY[start..].split("\n### ").skip(1) {
+        let name = section
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let crates: Vec<String> = section
+            .lines()
+            .find_map(|l| l.strip_prefix("Used by: "))
+            .unwrap_or_default()
+            .split("), ")
+            .filter_map(|link| {
+                link.strip_prefix('[')?
+                    .split(']')
+                    .next()
+                    .map(str::to_string)
+            })
+            .collect();
+        let text = section
+            .split("```text")
+            .nth(1)
+            .and_then(|t| t.split("```").next())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        rows.push(LicenseRow {
+            name: name.into(),
+            count: crates.len() as i32,
+            crates: crates.join(", ").into(),
+            text: text.into(),
+        });
+    }
+    rows.sort_by_key(|r| -r.count);
+    // The same license with different copyright lines comes as several texts; number them.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let totals: HashMap<String, usize> = rows.iter().fold(HashMap::new(), |mut m, r| {
+        *m.entry(r.name.to_string()).or_default() += 1;
+        m
+    });
+    for row in &mut rows {
+        let name = row.name.to_string();
+        if totals[&name] > 1 {
+            let n = seen.entry(name.clone()).or_default();
+            *n += 1;
+            row.name = format!("{name} · text {n} of {}", totals[&name]).into();
+        }
+    }
+    rows
+}
+
+/// Asks a running game to quit, like closing its window.
+fn stop_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, path: &Path) {
+    let Some(canceller) = state.lock().ok().and_then(|s| s.running.get(path).cloned()) else {
+        return;
+    };
+    ui.set_status("Asking the game to quit…".into());
+    let weak = ui.as_weak();
+    handle.spawn(async move {
+        if let Err(err) = canceller.cancel_current().await {
+            set_status(&weak, format!("Could not stop the game: {err}"), None);
+        }
+    });
+}
+
+/// Deletes the game open on the game page, after the confirmation in the window.
+fn delete_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle) {
+    let Some(game) = state
+        .lock()
+        .ok()
+        .and_then(|s| s.current.and_then(|i| s.all.get(i).map(|e| e.info.clone())))
+    else {
+        return;
+    };
+    if state
+        .lock()
+        .is_ok_and(|s| s.running.contains_key(&game.path))
+    {
+        ui.set_status("Stop the game before deleting it".into());
+        return;
+    }
+    ui.set_busy(true);
+    ui.set_status(format!("Deleting {}…", game.name).into());
+    let weak = ui.as_weak();
+    let state = state.clone();
+    handle.spawn(async move {
+        match ask(
+            Request::Uninstall {
+                path: game.path.clone(),
+            },
+            |_| {},
+        )
+        .await
+        {
+            Ok(Response::Uninstalled { .. }) => {
+                set_status(&weak, format!("{} deleted", game.name), Some(false));
+                with_ui(&weak, |ui| ui.set_page(0));
+                refresh_library(weak, state).await;
+            }
+            Ok(other) => set_status(&weak, format!("Unexpected answer: {other:?}"), Some(false)),
+            Err(err) => set_status(&weak, err.to_string(), Some(false)),
+        }
+    });
+}
+
+/// Colours of the chosen theme and accent (contrast checked in theme.rs).
+fn apply_theme(ui: &AppWindow) {
+    let theme = ui.global::<Theme>();
+    let variant = theme::variant(
+        &theme.get_choice(),
+        &theme.get_dark_variant(),
+        theme.get_system_dark(),
+    );
+    let p = theme::palette(variant, &theme.get_accent_name());
+    theme.set_light(variant == theme::Variant::Light);
+    theme.set_base(p.base.to_slint());
+    theme.set_base_2(p.base_2.to_slint());
+    theme.set_text(p.text.to_slint());
+    theme.set_muted(p.muted.to_slint());
+    theme.set_glass(p.glass.to_slint());
+    theme.set_glass_strong(p.glass_strong.to_slint());
+    theme.set_glass_border(p.glass_border.to_slint());
+    theme.set_shine(p.shine.to_slint());
+    theme.set_shadow(p.shadow.to_slint());
+    theme.set_field(p.field.to_slint());
+    theme.set_accent(p.accent.to_slint());
+    theme.set_accent_text(p.accent_text.to_slint());
+    theme.set_on_accent(p.on_accent.to_slint());
+    theme.set_danger(p.danger.to_slint());
+    theme.set_on_danger(p.on_danger.to_slint());
+    theme.set_warning(p.warning.to_slint());
+    theme.set_on_warning(p.on_warning.to_slint());
+    theme.set_backdrop_opacity(p.backdrop_opacity);
+    theme.set_veil_top(p.veil_min);
+    ui.invoke_apply_theme();
+    apply_icon(ui, p.accent);
+}
+
+/// The chosen app icon, in brand colours or recoloured to the accent, for the sidebar and the window.
+fn apply_icon(ui: &AppWindow, accent: theme::Rgba) {
+    let bytes: &[u8] = match ui.get_icon_choice().as_str() {
+        "mark" => include_bytes!("../assets/icon-mark.png"),
+        "symbol" => include_bytes!("../assets/icon-symbol.png"),
+        "mono" => include_bytes!("../assets/icon-mono.png"),
+        _ => include_bytes!("../assets/icon-mascot.png"),
+    };
+    let Ok(image) = image::load_from_memory(bytes) else {
+        return;
+    };
+    let mut rgba = image.to_rgba8();
+    if ui.get_icon_colour() == "accent" {
+        // Colourful and white pixels take the accent with their brightness; dark ones (badges, outlines) stay.
+        for pixel in rgba.pixels_mut() {
+            let [r, g, b, _] = pixel.0;
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            let colourful = max - min > 60 || min > 200;
+            if colourful {
+                let v = max as f32 / 255.0;
+                pixel.0[0] = (accent.r as f32 * v) as u8;
+                pixel.0[1] = (accent.g as f32 * v) as u8;
+                pixel.0[2] = (accent.b as f32 * v) as u8;
+            }
+        }
+    }
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+        rgba.as_raw(),
+        rgba.width(),
+        rgba.height(),
+    );
+    ui.set_app_icon(Image::from_rgba8(buffer));
+}
+
+/// Settings for saving; `None` (with a status message) when the file has an error, so it is never overwritten.
+fn settings_for_saving(ui: &AppWindow) -> Option<Settings> {
+    match Settings::load() {
+        Ok(settings) => Some(settings),
+        Err(err) => {
+            ui.set_status(format!("Not saved, the settings file has an error: {err}").into());
+            None
+        }
+    }
+}
+
+/// `XTUX_SNAPSHOT=<file.png>` renders one page (`XTUX_SNAPSHOT_PAGE`: library, list, game, settings, logs) to a
+/// PNG and quits; used to check the look without a person at the screen.
+fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle) {
+    let Some(file) = std::env::var_os("XTUX_SNAPSHOT").map(PathBuf::from) else {
+        return;
+    };
+    let page = std::env::var("XTUX_SNAPSHOT_PAGE").unwrap_or_else(|_| "library".into());
+    let weak = ui.as_weak();
+    let state = state.clone();
+    let handle = handle.clone();
+    slint::Timer::single_shot(Duration::from_secs(5), move || {
+        let Some(ui) = weak.upgrade() else { return };
+        match page.as_str() {
+            "list" => ui.set_view("list".into()),
+            "game" => open_game(&ui, &state, &handle, 0),
+            "settings" => ui.set_page(1),
+            "about" => {
+                ui.set_page(4);
+                ui.set_license_open(0);
+            }
+            "delete" => {
+                open_game(&ui, &state, &handle, 0);
+                ui.set_confirm_delete(true);
+            }
+            // Shows the first game as running (display only) to check the running look.
+            "running" => {
+                use slint::Model;
+                let games = ui.get_games();
+                if let Some(mut row) = games.row_data(0) {
+                    row.running = true;
+                    games.set_row_data(0, row);
+                }
+            }
+            "logs" => {
+                ui.set_page(3);
+                show_logs(&ui, None);
+            }
+            _ => ui.set_view("grid".into()),
+        }
+        let weak = weak.clone();
+        let file = file.clone();
+        slint::Timer::single_shot(Duration::from_secs(2), move || {
+            if let Some(ui) = weak.upgrade() {
+                match ui.window().take_snapshot() {
+                    Ok(shot) => {
+                        let saved = image::RgbaImage::from_raw(
+                            shot.width(),
+                            shot.height(),
+                            shot.as_bytes().to_vec(),
+                        )
+                        .map(|img| img.save(&file));
+                        if !matches!(saved, Some(Ok(()))) {
+                            eprintln!("could not save the snapshot to {}", file.display());
+                        }
+                    }
+                    Err(err) => eprintln!("snapshot failed: {err}"),
+                }
+            }
+            let _ = slint::quit_event_loop();
+        });
+    });
+}
+
 fn main() {
+    let args = <Args as clap::Parser>::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
@@ -114,18 +952,36 @@ fn main() {
 
     let runtime = tokio::runtime::Runtime::new().expect("cannot start the async runtime");
     let ui = AppWindow::new().expect("cannot create the window");
-    let shown: Shown = Arc::default();
+    let state: Shared = Arc::default();
+    if let Ok(mut s) = state.lock() {
+        s.handle = Some(runtime.handle().clone());
+        s.startup = match (args.play, args.game, args.page) {
+            (Some(game), _, _) => Some(Startup::Play(game)),
+            (_, Some(game), _) => Some(Startup::Game(game)),
+            (_, _, Some(page)) => Some(Startup::Page(page)),
+            _ => None,
+        };
+    }
+    let handle = runtime.handle().clone();
 
     let settings = Settings::load().unwrap_or_default();
+    {
+        let theme = ui.global::<Theme>();
+        theme.set_choice(settings.ui.theme.clone().into());
+        theme.set_dark_variant(settings.ui.dark_variant.clone().into());
+        theme.set_accent_name(settings.ui.accent.clone().into());
+        ui.set_view(settings.ui.view.clone().into());
+        ui.set_online_art(settings.ui.online_art);
+        ui.set_backdrop_mode(settings.ui.backdrop.clone().into());
+        ui.set_icon_choice(settings.ui.icon.clone().into());
+        ui.set_icon_colour(settings.ui.icon_colour.clone().into());
+        if let Ok(mut s) = state.lock() {
+            s.backdrop_mode = settings.ui.backdrop.clone();
+        }
+        apply_theme(&ui);
+    }
     ui.set_wine(settings.wine.clone().unwrap_or_default().into());
-    ui.set_prefix(
-        settings
-            .prefix
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default()
-            .into(),
-    );
+    ui.set_prefix(path_text(&settings.prefix).into());
     ui.set_library_dirs(
         settings
             .library_dirs
@@ -135,34 +991,33 @@ fn main() {
             .join("\n")
             .into(),
     );
-    let market = settings.market.clone();
 
     {
         let weak = ui.as_weak();
-        let shown = shown.clone();
+        let state = state.clone();
         runtime.spawn(async move {
             refresh_status(weak.clone()).await;
-            refresh_library(weak, shown).await;
+            refresh_library(weak, state).await;
         });
     }
 
     ui.on_refresh({
         let weak = ui.as_weak();
-        let shown = shown.clone();
-        let handle = runtime.handle().clone();
+        let state = state.clone();
+        let handle = handle.clone();
         move || {
             let weak = weak.clone();
-            let shown = shown.clone();
+            let state = state.clone();
             handle.spawn(async move {
                 refresh_status(weak.clone()).await;
-                refresh_library(weak, shown).await;
+                refresh_library(weak, state).await;
             });
         }
     });
 
     ui.on_sign_in({
         let weak = ui.as_weak();
-        let handle = runtime.handle().clone();
+        let handle = handle.clone();
         move || {
             let weak = weak.clone();
             set_status(&weak, "Opening the Microsoft sign-in window…", Some(true));
@@ -183,102 +1038,306 @@ fn main() {
         }
     });
 
-    ui.on_save_settings({
+    ui.on_search_edited({
         let weak = ui.as_weak();
-        let shown = shown.clone();
-        let handle = runtime.handle().clone();
-        let market = market.clone();
+        let state = state.clone();
+        move |text| {
+            let Some(ui) = weak.upgrade() else { return };
+            if let Ok(mut s) = state.lock() {
+                s.search = text.to_string();
+            }
+            show_games(&ui, &state);
+        }
+    });
+
+    ui.on_hover_game({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        move |row| {
+            let Some(ui) = weak.upgrade() else { return };
+            let index = state
+                .lock()
+                .ok()
+                .and_then(|s| s.shown.get(row as usize).copied());
+            if let Some(index) = index {
+                show_backdrop(&ui, &state, index, BackdropCause::Game);
+            }
+        }
+    });
+
+    ui.on_ui_changed({
+        let weak = ui.as_weak();
+        let state = state.clone();
         move || {
             let Some(ui) = weak.upgrade() else { return };
-            let wine = ui.get_wine().trim().to_string();
-            let prefix = ui.get_prefix().trim().to_string();
-            let settings = Settings {
-                library_dirs: ui
-                    .get_library_dirs()
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(expand_home)
-                    .collect(),
-                wine: (!wine.is_empty()).then(|| expand_home(&wine).to_string_lossy().into_owned()),
-                prefix: (!prefix.is_empty()).then(|| expand_home(&prefix)),
-                market: market.clone(),
+            let Some(mut settings) = settings_for_saving(&ui) else {
+                return;
             };
+            let theme = ui.global::<Theme>();
+            settings.ui.theme = theme.get_choice().into();
+            settings.ui.dark_variant = theme.get_dark_variant().into();
+            settings.ui.accent = theme.get_accent_name().into();
+            settings.ui.view = ui.get_view().into();
+            settings.ui.online_art = ui.get_online_art();
+            settings.ui.backdrop = ui.get_backdrop_mode().into();
+            settings.ui.icon = ui.get_icon_choice().into();
+            settings.ui.icon_colour = ui.get_icon_colour().into();
+            apply_theme(&ui);
+            // Show the backdrop setting at once.
+            if let Ok(mut s) = state.lock() {
+                s.backdrop_mode = settings.ui.backdrop.clone();
+                s.backdrop_of = None;
+            }
+            let first = state.lock().ok().and_then(|s| {
+                s.current
+                    .or_else(|| s.all.iter().position(|e| e.backdrop.is_some()))
+            });
+            if let Some(first) = first {
+                show_backdrop(&ui, &state, first, BackdropCause::Ambient);
+            } else if settings.ui.backdrop == "off" {
+                ui.set_has_backdrop(false);
+            }
+            if let Err(err) = settings.save() {
+                ui.set_status(format!("Could not save the settings: {err}").into());
+            }
+        }
+    });
+
+    ui.on_save_settings({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            // Keep what this page does not show (market, look, game settings).
+            let Some(mut settings) = settings_for_saving(&ui) else {
+                return;
+            };
+            settings.library_dirs = ui
+                .get_library_dirs()
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(expand_home)
+                .collect();
+            settings.wine =
+                non_empty(&ui.get_wine()).map(|w| expand_home(&w).to_string_lossy().into_owned());
+            settings.prefix = non_empty(&ui.get_prefix()).map(|p| expand_home(&p));
             match settings.save() {
                 Ok(()) => {
                     ui.set_status("Settings saved".into());
-                    let weak = weak.clone();
-                    let shown = shown.clone();
-                    handle.spawn(refresh_library(weak, shown));
+                    handle.spawn(refresh_library(weak.clone(), state.clone()));
                 }
                 Err(err) => ui.set_status(format!("Could not save the settings: {err}").into()),
             }
         }
     });
 
-    ui.on_play({
+    ui.on_open_game({
         let weak = ui.as_weak();
-        let shown = shown.clone();
-        let handle = runtime.handle().clone();
-        move |index| {
+        let state = state.clone();
+        let handle = handle.clone();
+        move |row| {
             let Some(ui) = weak.upgrade() else { return };
-            let Some(game) = shown
+            let index = state
                 .lock()
                 .ok()
-                .and_then(|l| l.get(index as usize).cloned())
-            else {
-                return;
-            };
-            let wine = ui.get_wine().trim().to_string();
-            if wine.is_empty() {
-                ui.set_status("Set the Wine binary in Settings first".into());
-                ui.set_page(1);
-                return;
+                .and_then(|s| s.shown.get(row as usize).copied());
+            if let Some(index) = index {
+                open_game(&ui, &state, &handle, index);
             }
-            let mut env: Vec<(String, String)> = std::env::vars().collect();
-            let prefix = ui.get_prefix().trim().to_string();
-            if !prefix.is_empty() {
-                env.retain(|(k, _)| k != "WINEPREFIX");
-                env.push((
-                    "WINEPREFIX".into(),
-                    expand_home(&prefix).to_string_lossy().into_owned(),
-                ));
-            }
-            let request = Request::Launch {
-                source: game.path.clone(),
-                wine: expand_home(&wine).to_string_lossy().into_owned(),
-                exe: None,
-                market: market.clone(),
-                env,
-            };
-            ui.set_busy(true);
-            ui.set_status(format!("Starting {}…", game.name).into());
-            let weak = weak.clone();
-            handle.spawn(async move {
-                let name = game.name.clone();
-                let events = weak.clone();
-                let result = ask(request, move |event| match event {
-                    Event::Message { text } => set_status(&events, format!("{name}: {text}"), None),
-                    Event::GameStarted { .. } => {
-                        set_status(&events, format!("{name} is running"), None)
-                    }
-                    _ => {}
-                })
-                .await;
-                match result {
-                    Ok(Response::GameExited { code }) => set_status(
-                        &weak,
-                        format!("{} exited (code {})", game.name, code.unwrap_or(0)),
-                        Some(false),
-                    ),
-                    Ok(other) => {
-                        set_status(&weak, format!("Unexpected answer: {other:?}"), Some(false))
-                    }
-                    Err(err) => set_status(&weak, err.to_string(), Some(false)),
-                }
-            });
         }
     });
 
+    ui.on_save_game({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(game) = state
+                .lock()
+                .ok()
+                .and_then(|s| s.current.and_then(|i| s.all.get(i).map(|e| e.info.clone())))
+            else {
+                return;
+            };
+            let own = GameSettings {
+                wine: non_empty(&ui.get_game_wine())
+                    .map(|w| expand_home(&w).to_string_lossy().into_owned()),
+                prefix: non_empty(&ui.get_game_prefix()).map(|p| expand_home(&p)),
+                exe: non_empty(&ui.get_game_exe()),
+                args: ui
+                    .get_game_args()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                env: parse_env(&ui.get_game_env()),
+            };
+            let Some(mut settings) = settings_for_saving(&ui) else {
+                return;
+            };
+            settings.set_game(&game.path, own);
+            match settings.save() {
+                Ok(()) => ui.set_status(format!("Settings of {} saved", game.name).into()),
+                Err(err) => ui.set_status(format!("Could not save the settings: {err}").into()),
+            }
+        }
+    });
+
+    ui.on_refresh_logs({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let game = state.lock().ok().and_then(|s| {
+                s.current
+                    .and_then(|i| s.all.get(i).map(|e| e.info.path.clone()))
+            });
+            show_logs(&ui, game.as_deref());
+        }
+    });
+
+    ui.on_play({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move |row| {
+            let Some(ui) = weak.upgrade() else { return };
+            let game = state.lock().ok().and_then(|s| {
+                s.shown
+                    .get(row as usize)
+                    .and_then(|&i| s.all.get(i).map(|e| e.info.clone()))
+            });
+            if let Some(game) = game {
+                start_game(&ui, &state, &handle, game);
+            }
+        }
+    });
+
+    ui.on_play_game({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let game = state
+                .lock()
+                .ok()
+                .and_then(|s| s.current.and_then(|i| s.all.get(i).map(|e| e.info.clone())));
+            if let Some(game) = game {
+                start_game(&ui, &state, &handle, game);
+            }
+        }
+    });
+
+    ui.on_stop({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move |row| {
+            let Some(ui) = weak.upgrade() else { return };
+            let path = state.lock().ok().and_then(|s| {
+                s.shown
+                    .get(row as usize)
+                    .and_then(|&i| s.all.get(i).map(|e| e.info.path.clone()))
+            });
+            if let Some(path) = path {
+                stop_game(&ui, &state, &handle, &path);
+            }
+        }
+    });
+
+    ui.on_stop_game({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let path = state.lock().ok().and_then(|s| {
+                s.current
+                    .and_then(|i| s.all.get(i).map(|e| e.info.path.clone()))
+            });
+            if let Some(path) = path {
+                stop_game(&ui, &state, &handle, &path);
+            }
+        }
+    });
+
+    ui.on_delete_game({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                delete_game(&ui, &state, &handle);
+            }
+        }
+    });
+
+    ui.set_version(env!("CARGO_PKG_VERSION").into());
+    ui.set_licenses(ModelRc::new(VecModel::from(license_rows())));
+    ui.on_open_url(|url| {
+        // Fixed https links of the About page only.
+        if url.starts_with("https://") {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(url.as_str())
+                .spawn();
+        }
+    });
+
+    schedule_snapshot(&ui, &state, &handle);
     ui.run().expect("the window failed");
+}
+
+#[cfg(test)]
+mod tests {
+    fn entry(name: &str, path: &str) -> super::Entry {
+        super::Entry {
+            info: xtux_protocol::GameInfo {
+                name: name.into(),
+                path: path.into(),
+                kind: "windows".into(),
+                title_id: None,
+                store_id: None,
+                license_problem: None,
+                anticheat: None,
+                anticheat_blocks: false,
+            },
+            art: Default::default(),
+            cover: None,
+            cover_blur: None,
+            logo: None,
+            backdrop: None,
+        }
+    }
+
+    #[test]
+    fn finds_games_by_name_or_folder() {
+        let all = vec![
+            entry(
+                "Farming Simulator 25 (PC)",
+                "/g/XboxGames/Farming Simulator 25 (PC)",
+            ),
+            entry("Farming Simulator 25 (PC)", "/g/XodusGames/LS25"),
+            entry("Atomfall", "/g/XboxGames/Atomfall"),
+        ];
+        assert_eq!(super::find_game(&all, "atomfall"), Ok(2));
+        assert_eq!(super::find_game(&all, "LS25"), Ok(1));
+        assert!(super::find_game(&all, "Farming Simulator 25 (PC)").is_err());
+        assert!(super::find_game(&all, "Nope").is_err());
+    }
+
+    #[test]
+    fn third_party_licenses_parse() {
+        let rows = super::license_rows();
+        assert!(rows.len() > 5);
+        let mit = rows
+            .iter()
+            .find(|r| r.name.contains("(MIT)"))
+            .expect("MIT is used");
+        assert!(mit.count > 100);
+        assert!(mit.text.contains("Permission is hereby granted"));
+    }
 }

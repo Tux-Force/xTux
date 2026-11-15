@@ -1,0 +1,32 @@
+# cargo-about: licenses of all dependencies, see scripts/third-party-licenses.sh.
+accepted = [
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "LGPL-2.1-or-later",
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+ignore-build-dependencies = false
+ignore-dev-dependencies = true
+workarounds = ["ring", "rustls"]
+
+# eappx-rs has a LICENSE file (MIT) but no license field in its manifest.
+[eappx.clarify]
+license = "MIT"
+[[eappx.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "20b1cff517c0810ea002cd3d057ddfe8334e27e51ea98237174de881856c2d2f"

@@ -109,6 +109,15 @@ RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console
 > See https://en.wikipedia.org/wiki/AES_instruction_set for a list of compatible CPUs (every processor from
 > 2011 onwards should be supported).
 
+## License
+
+xTux is free software under the GNU General Public License 3.0 ([LICENSE](LICENSE)); the crates taken over from
+Xodus are `GPL-3.0-only`, the new xTux crates `GPL-3.0-or-later`. The licenses of all dependencies are listed in
+[licenses/THIRD-PARTY-LICENSES.md](licenses/THIRD-PARTY-LICENSES.md) (generated with `scripts/third-party-licenses.sh`,
+shipped with every release and shown on the launcher's About page). The CI checks with `cargo deny` (`deny.toml`)
+that every dependency has a GPL-3.0 compatible license and comes from a known source. More on the website:
+[Licenses](https://tux-force.github.io/project/licenses/).
+
 ## Special Thanks
 
 - The [Xodus](https://github.com/xodus-gaming/xodus) team and contributors, on whose work xTux is built

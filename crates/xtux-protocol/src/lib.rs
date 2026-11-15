@@ -67,6 +67,9 @@ pub enum Request {
         /// Extra environment for the game, for example `WINEPREFIX`.
         #[serde(default)]
         env: Vec<(String, String)>,
+        /// Command line arguments for the game.
+        #[serde(default)]
+        args: Vec<String>,
     },
     /// Prepares a Wine prefix (DXVK, vkd3d-proton, certificates).
     PrefixInit {
@@ -82,6 +85,10 @@ pub enum Request {
         try_skip_ntfs: bool,
         parallel: usize,
         market: Option<String>,
+    },
+    /// Deletes a game folder of the library with everything in it.
+    Uninstall {
+        path: PathBuf,
     },
     /// Signs a user in: the daemon opens the Microsoft sign-in window in a helper process (`xtux-cli login`)
     /// with this environment (it needs the client's display) and answers with the new status.
@@ -104,6 +111,15 @@ pub struct GameInfo {
     pub kind: String,
     pub title_id: Option<String>,
     pub store_id: Option<String>,
+    /// Why the last license check failed (for example not entitled); `None` when it passed or never ran.
+    #[serde(default)]
+    pub license_problem: Option<String>,
+    /// Anti-cheat found in the game folder, for example `Ricochet (Activision)`.
+    #[serde(default)]
+    pub anticheat: Option<String>,
+    /// The anti-cheat is a kernel driver Wine cannot load: the game runs on Windows only.
+    #[serde(default)]
+    pub anticheat_blocks: bool,
 }
 
 /// What to install from.
@@ -151,6 +167,9 @@ pub enum Response {
     },
     Library {
         games: Vec<GameInfo>,
+    },
+    Uninstalled {
+        path: PathBuf,
     },
     Cancelled,
 }
