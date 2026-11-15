@@ -2014,7 +2014,7 @@ export component AppWindow inherits Window {
                             alignment: center;
                             HorizontalLayout {
                                 spacing: 6px;
-                                if item.playable && !item.running: ShinyButton { text: "▶  Play"; enabled: !root.busy; clicked => { root.download-action(item.id, "play"); } }
+                                if item.playable && !item.running: ShinyButton { text: "▶  Play"; width: 120px; enabled: !root.busy; clicked => { root.download-action(item.id, "play"); } }
                                 if item.playable && item.running: RunningChip { }
                                 if item.state == "running" || item.state == "queued": GhostButton { text: "❚❚"; width: 44px; clicked => { root.download-action(item.id, "pause"); } }
                                 if item.state == "paused" || item.state == "failed": GhostButton { text: "▶"; width: 44px; clicked => { root.download-action(item.id, "resume"); } }
@@ -2333,6 +2333,25 @@ export component AppWindow inherits Window {
     if root.shot-open >= 0 && root.shot-open < root.store-shots.length: Rectangle {
         background: #000000D8;
         TouchArea { clicked => { root.shot-open = -1; } }
+        // ← → browse, Esc closes.
+        shot-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.LeftArrow {
+                    if root.shot-open > 0 { root.shot-open -= 1; }
+                    return accept;
+                }
+                if event.text == Key.RightArrow {
+                    if root.shot-open < root.store-shots.length - 1 { root.shot-open += 1; }
+                    return accept;
+                }
+                if event.text == Key.Escape {
+                    root.shot-open = -1;
+                    return accept;
+                }
+                reject
+            }
+        }
         Image {
             x: 60px;
             y: 50px;
