@@ -22,8 +22,9 @@ const BATCH: usize = 20;
 const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_ANSWER_BYTES: usize = 8 * 1024 * 1024;
 
-/// Titles with a kernel anti-cheat, known before installing (installed games are checked by their files, see
-/// anticheat.rs). Matched at the start of the title.
+/// Titles guessed to use a kernel anti-cheat, by the start of their name. xTux's own list, written from general
+/// knowledge and not verified per title, so it is off unless the user turns it on (`[ui] anticheat_guess`);
+/// installed games are checked by their files instead (anticheat.rs).
 const KNOWN_WINDOWS_ONLY: &[(&str, &str)] = &[
     ("Call of Duty", "Ricochet (Activision)"),
     ("Battlefield 2042", "EA AntiCheat"),

@@ -721,6 +721,8 @@ fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&Pixels>) -> Sto
         owned: title.owned,
         installable: title.installable,
         installed: title.installed.is_some(),
+        no_package: title.package_format.is_none(),
+        package_format: title.package_format.clone().unwrap_or_default().into(),
         windows_only: title.windows_only.clone().unwrap_or_default().into(),
     }
 }
@@ -1221,6 +1223,7 @@ fn main() {
         ui.set_backdrop_mode(settings.ui.backdrop.clone().into());
         ui.set_icon_choice(settings.ui.icon.clone().into());
         ui.set_icon_colour(settings.ui.icon_colour.clone().into());
+        ui.set_anticheat_guess(settings.ui.anticheat_guess);
         if let Ok(mut s) = state.lock() {
             s.backdrop_mode = settings.ui.backdrop.clone();
         }
@@ -1328,6 +1331,7 @@ fn main() {
             settings.ui.backdrop = ui.get_backdrop_mode().into();
             settings.ui.icon = ui.get_icon_choice().into();
             settings.ui.icon_colour = ui.get_icon_colour().into();
+            settings.ui.anticheat_guess = ui.get_anticheat_guess();
             apply_theme(&ui);
             // Show the backdrop setting at once.
             if let Ok(mut s) = state.lock() {

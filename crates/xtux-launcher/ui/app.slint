@@ -49,7 +49,10 @@ export struct StoreRow {
     owned: bool,
     installable: bool,
     installed: bool,
-    // Known kernel anti-cheat; empty when none is known.
+    // The Store lists no PC package (other launcher, or not offered for PC here).
+    no-package: bool,
+    package-format: string,
+    // Kernel anti-cheat guessed from xTux's list (opt-in); empty otherwise.
     windows-only: string,
 }
 
@@ -295,8 +298,9 @@ component StoreTile inherits Rectangle {
             spacing: 4px;
             alignment: start;
             if root.title.installed: HorizontalLayout { alignment: start; Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; } }
-            if root.title.windows-only != "": HorizontalLayout { alignment: start; Badge { text: "⛔ Windows only"; fill: Theme.danger; ink: Theme.on-danger; } }
-            if root.title.windows-only == "" && !root.title.installable: HorizontalLayout { alignment: start; Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; } }
+            if root.title.windows-only != "": HorizontalLayout { alignment: start; Badge { text: "Likely Windows only"; fill: Theme.danger; ink: Theme.on-danger; } }
+            if root.title.windows-only == "" && !root.title.installable && !root.title.no-package: HorizontalLayout { alignment: start; Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; } }
+            if root.title.windows-only == "" && root.title.no-package: HorizontalLayout { alignment: start; Badge { text: "No PC package"; fill: Theme.glass-strong; ink: Theme.text; } }
         }
         touch := TouchArea {
             mouse-cursor: pointer;
@@ -788,6 +792,7 @@ export component AppWindow inherits Window {
     in-out property <string> store-source: "all";
     in-out property <bool> store-installable;
     in-out property <bool> store-hide-windows-only;
+    in-out property <bool> anticheat-guess;
     in property <StoreRow> store-title;
     in property <image> store-hero;
     in property <bool> has-store-hero;
@@ -1360,6 +1365,18 @@ export component AppWindow inherits Window {
                                     GhostButton { text: "Accent colour"; active: root.icon-colour == "accent"; clicked => { root.icon-colour = "accent"; root.ui-changed(); } }
                                 }
                             }
+                            Label { text: "Store: guess kernel anti-cheat"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Off"; active: !root.anticheat-guess; clicked => { root.anticheat-guess = false; root.ui-changed(); root.store-refresh(); } }
+                                GhostButton { text: "From xTux's own list"; active: root.anticheat-guess; clicked => { root.anticheat-guess = true; root.ui-changed(); root.store-refresh(); } }
+                            }
+                            Label {
+                                text: "The list matches title names (for example Call of Duty, EA SPORTS FC) and is not verified per title. Installed games are always checked by their files.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
                             Label { text: "Game artwork"; }
                             HorizontalLayout {
                                 alignment: start;
@@ -1436,7 +1453,7 @@ export component AppWindow inherits Window {
                 GhostButton { text: "Installed"; active: root.store-source == "installed"; clicked => { root.store-source = "installed"; root.store-filter-changed(); } }
                 Rectangle { width: 12px; }
                 GhostButton { text: "Installable only"; active: root.store-installable; clicked => { root.store-installable = !root.store-installable; root.store-filter-changed(); } }
-                GhostButton { text: "Hide Windows only"; active: root.store-hide-windows-only; clicked => { root.store-hide-windows-only = !root.store-hide-windows-only; root.store-filter-changed(); } }
+                if root.anticheat-guess: GhostButton { text: "Hide likely Windows only"; active: root.store-hide-windows-only; clicked => { root.store-hide-windows-only = !root.store-hide-windows-only; root.store-filter-changed(); } }
             }
             if root.page == 5: Flickable {
                 property <length> tile: 160px;
@@ -1555,8 +1572,9 @@ export component AppWindow inherits Window {
                                 if root.store-title.in-game-pass: Badge { text: "Game Pass"; fill: Theme.accent; ink: Theme.on-accent; }
                                 if root.store-title.owned: Badge { text: "Owned"; fill: Theme.accent; ink: Theme.on-accent; }
                                 if root.store-title.installed: Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; }
-                                if root.store-title.windows-only != "": Badge { text: "⛔ Windows only"; fill: Theme.danger; ink: Theme.on-danger; }
-                                if root.store-title.windows-only == "" && !root.store-title.installable: Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; }
+                                if root.store-title.windows-only != "": Badge { text: "Likely Windows only"; fill: Theme.danger; ink: Theme.on-danger; }
+                                if root.store-title.windows-only == "" && !root.store-title.installable && !root.store-title.no-package: Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; }
+                                if root.store-title.windows-only == "" && root.store-title.no-package: Badge { text: "No PC package"; fill: Theme.glass-strong; ink: Theme.text; }
                             }
                             Text {
                                 text: root.store-title.description;
@@ -1565,10 +1583,12 @@ export component AppWindow inherits Window {
                             }
                             Label {
                                 text: root.store-title.windows-only != ""
-                                    ? "Known to use the kernel anti-cheat " + root.store-title.windows-only + ", which Wine cannot load: it runs on Windows only."
+                                    ? "xTux's own list (a guess, not verified for this title) says it uses the kernel anti-cheat " + root.store-title.windows-only + ", which Wine cannot load. Turn the list off in Settings."
                                     : root.store-title.installable
-                                    ? "A GDK game xTux can install. Whether it runs on Linux is not tested yet unless it is marked."
-                                    : "Not a GDK package (for example an older UWP app or a game with its own launcher); xTux cannot install it.";
+                                    ? "A GDK game (MSIXVC package) xTux can install. Whether it runs on Linux is not tested yet unless it is marked."
+                                    : root.store-title.no-package
+                                    ? "The Store lists no PC package for this title. Such games usually install through another launcher (Ubisoft Connect, EA app, Steam) after you claim them, or are only offered for consoles here; xTux cannot install them."
+                                    : "Its PC package is an older UWP app package (" + root.store-title.package-format + "), not a GDK game. xTux cannot install these (yet).";
                                 wrap: word-wrap;
                             }
                         }

@@ -280,7 +280,9 @@ impl Job {
                         in_game_pass: t.in_game_pass,
                         owned: t.owned,
                         installable: t.installable,
-                        windows_only: t.windows_only,
+                        package_format: t.package_format,
+                        // xTux's own title list is a guess: only when the user asked for it.
+                        windows_only: t.windows_only.filter(|_| settings.ui.anticheat_guess),
                     })
                     .collect();
                 Ok(Response::Catalog { titles })

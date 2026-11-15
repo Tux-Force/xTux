@@ -146,7 +146,10 @@ pub struct CatalogTitle {
     pub owned: bool,
     /// A GDK package xTux can install.
     pub installable: bool,
-    /// Known kernel anti-cheat: runs on Windows only.
+    /// Format of the PC package (`MSIXVC`, `EAppx`, `Appx` …); `None` when the Store lists no PC package.
+    #[serde(default)]
+    pub package_format: Option<String>,
+    /// Kernel anti-cheat guessed from xTux's own title list (only when turned on in the settings).
     pub windows_only: Option<String>,
     /// Folder of the installed game, when it is in the library.
     pub installed: Option<PathBuf>,
