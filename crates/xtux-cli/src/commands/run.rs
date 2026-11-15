@@ -70,6 +70,10 @@ pub async fn run(
     tokens: &TokenManager,
     options: LaunchOptions,
 ) -> ExitCode {
+    // Only a warning: the game starts anyway.
+    if let Some(warning) = xtux_games::gpu::status().await.low_memory_warning() {
+        eprintln!("Warning: {warning}");
+    }
     if direct_mode() {
         return run_direct(client, tokens, options).await;
     }
@@ -82,6 +86,7 @@ pub async fn run(
             return ExitCode::FAILURE;
         }
     };
+    let source_dir = source.clone();
     let request = Request::Launch {
         source,
         wine: absolute_command(&options.wine),
@@ -119,7 +124,16 @@ pub async fn run(
         })
         .await;
     match result {
-        Ok(Response::GameExited { code }) => ExitCode::from(code.map(|c| c as u8).unwrap_or(0)),
+        Ok(Response::GameExited { code, crash }) => {
+            if let Some(crash) = crash {
+                eprintln!("The game crashed: {}", crash.reason);
+                eprintln!("{}", crash.hint);
+                if let Some(log) = xtux_games::logs::game_log(&source_dir) {
+                    eprintln!("Log: {}", log.display());
+                }
+            }
+            ExitCode::from(code.map(|c| c as u8).unwrap_or(0))
+        }
         Ok(other) => {
             eprintln!("unexpected answer from xtux-service: {other:?}");
             ExitCode::FAILURE

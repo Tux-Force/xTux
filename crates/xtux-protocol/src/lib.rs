@@ -251,6 +251,9 @@ pub enum Response {
     },
     GameExited {
         code: Option<i32>,
+        /// Why the game ended abnormally, when a known cause was found. Absent for older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crash: Option<CrashInfo>,
     },
     PrefixReady {
         prefix: PathBuf,
@@ -300,6 +303,31 @@ pub enum Event {
     },
 }
 
+/// A game crash told in plain words, for a message to the user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrashInfo {
+    pub kind: CrashKind,
+    /// What happened, one sentence.
+    pub reason: String,
+    /// What the user can do.
+    pub hint: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CrashKind {
+    License,
+    OutOfMemory,
+    GpuLost,
+    MissingDll,
+    Unimplemented,
+    Exception,
+    Killed,
+    /// A kind this client does not know yet.
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, thiserror::Error)]
 #[error("{kind:?}: {message}")]
 pub struct ErrorBody {
@@ -346,6 +374,34 @@ mod tests {
         };
         let text = serde_json::to_string(&reply).unwrap();
         assert_eq!(serde_json::from_str::<ServerMessage>(&text).unwrap(), reply);
+    }
+
+    #[test]
+    fn game_exited_stays_compatible() {
+        // An older daemon sends no crash; an older client ignores it.
+        let old: Response = serde_json::from_str(r#"{"type":"game_exited","code":84}"#).unwrap();
+        assert_eq!(
+            old,
+            Response::GameExited {
+                code: Some(84),
+                crash: None
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"type":"game_exited","code":84}"#
+        );
+        let new: Response = serde_json::from_str(
+            r#"{"type":"game_exited","code":84,"crash":{"kind":"some_future_kind","reason":"r","hint":"h"}}"#,
+        )
+        .unwrap();
+        let Response::GameExited {
+            crash: Some(crash), ..
+        } = new
+        else {
+            panic!("no crash: {new:?}");
+        };
+        assert_eq!(crash.kind, CrashKind::Unknown);
     }
 
     #[test]
