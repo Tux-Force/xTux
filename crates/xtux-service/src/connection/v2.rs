@@ -305,7 +305,9 @@ impl Job {
                 xtux_games::Progress::message(&progress, "Opening the Microsoft sign-in window");
                 let mut helper = tokio::process::Command::new(sign_in_helper())
                     .arg("login")
-                    .envs(env)
+                    // Only what the sign-in window needs from the client's session.
+                    .env_clear()
+                    .envs(env.into_iter().filter(|(key, _)| sign_in_env(key)))
                     .env("XTUX_NO_BANNER", "1")
                     .env("XTUX_DIRECT", "1")
                     .stdin(std::process::Stdio::null())
@@ -345,6 +347,22 @@ impl Job {
 }
 
 /// The sign-in helper: `XTUX_CLI`, `xtux-cli` next to the daemon, or `xtux-cli` from `PATH`.
+/// Variables of the client passed to the sign-in helper: display, session bus, locale, home and keychain access.
+fn sign_in_env(key: &str) -> bool {
+    matches!(
+        key,
+        "DISPLAY"
+            | "WAYLAND_DISPLAY"
+            | "XAUTHORITY"
+            | "DBUS_SESSION_BUS_ADDRESS"
+            | "HOME"
+            | "USER"
+            | "LANG"
+            | "PATH"
+    ) || key.starts_with("XDG_")
+        || key.starts_with("LC_")
+}
+
 fn sign_in_helper() -> std::path::PathBuf {
     if let Some(path) = std::env::var_os("XTUX_CLI") {
         return path.into();

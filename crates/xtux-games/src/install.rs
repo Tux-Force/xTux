@@ -225,8 +225,25 @@ where
 
     // New installs use the Windows layout (Content/ plus the content id named header, see
     // layout.rs); existing installs keep theirs.
+    let remote_id = remote_xvd.content_id().hyphenated().to_string();
     let (root, final_path) = match existing {
-        Some(layout) => (layout.root, layout.package),
+        // The Xodus header has a fixed name; a Windows layout header is named by its content id.
+        Some(layout)
+            if layout.package.ends_with(crate::layout::XODUS_PACKAGE)
+                || layout
+                    .package
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&remote_id)) =>
+        {
+            (layout.root, layout.package)
+        }
+        Some(layout) => {
+            return Err(Error::msg(format!(
+                "{} holds another package ({}); pick an empty folder",
+                out.display(),
+                layout.package.display()
+            )));
+        }
         None => (
             out.join(crate::layout::CONTENT_DIR),
             out.join(

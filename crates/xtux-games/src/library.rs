@@ -64,6 +64,7 @@ pub fn inspect(path: &Path) -> Option<Game> {
     let name = config
         .as_deref()
         .and_then(|c| attribute(c, "ShellVisuals", "DefaultDisplayName"))
+        .map(|n| n.chars().filter(|c| !c.is_control()).collect::<String>())
         .filter(|n| !n.is_empty() && !n.starts_with("ms-resource:"))
         .unwrap_or(folder_name);
     Some(Game {
@@ -75,6 +76,9 @@ pub fn inspect(path: &Path) -> Option<Game> {
     })
 }
 
+/// Largest `MicrosoftGame.config` read; real ones are a few kilobytes.
+const MAX_CONFIG_SIZE: u64 = 1024 * 1024;
+
 /// `MicrosoftGame.config` of a game folder; the file name's case differs between games.
 fn read_config(dir: &Path) -> Option<String> {
     let entries = std::fs::read_dir(dir).ok()?;
@@ -84,7 +88,13 @@ fn read_config(dir: &Path) -> Option<String> {
             .to_string_lossy()
             .eq_ignore_ascii_case("MicrosoftGame.config")
         {
-            return std::fs::read_to_string(entry.path()).ok();
+            // A regular file of sane size only: library folders may be shared with other users.
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path).ok()?;
+            if !meta.is_file() || meta.len() > MAX_CONFIG_SIZE {
+                return None;
+            }
+            return std::fs::read_to_string(path).ok();
         }
     }
     None

@@ -242,7 +242,7 @@ fn load_raw_smbios() -> io::Result<Vec<u8>> {
                 .status();
         }
     }
-    let cmd = Command::new("pkexec")
+    let cmd = Command::new("/usr/bin/pkexec")
         .args(["cat", "/sys/firmware/dmi/entries/1-0/raw"])
         .stdout(Stdio::piped())
         .spawn()?;

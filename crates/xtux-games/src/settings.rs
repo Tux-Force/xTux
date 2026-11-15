@@ -55,11 +55,40 @@ pub fn detect_windows_libraries() -> Vec<PathBuf> {
         for entry in entries.flatten() {
             let candidate = entry.path().join("XboxGames");
             if candidate.is_dir() && !found.contains(&candidate) {
+                if writable_by_others(&candidate) {
+                    tracing::warn!(
+                        "{} is writable by other users and not added automatically; add it to the settings if you trust it",
+                        candidate.display()
+                    );
+                    continue;
+                }
                 found.push(candidate);
             }
         }
     }
     found
+}
+
+/// Whether users other than us (and root) could place games in `dir`.
+fn writable_by_others(dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(meta) = std::fs::metadata(dir) else {
+            return true;
+        };
+        let me = rustix::process::getuid().as_raw();
+        let owner_ok = meta.uid() == me || meta.uid() == 0;
+        let world_writable = meta.mode() & 0o002 != 0;
+        // Group write is fine on our own folder, not on one owned by root.
+        let group_writable = meta.mode() & 0o020 != 0 && meta.uid() != me;
+        !owner_ok || world_writable || group_writable
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        false
+    }
 }
 
 /// Market from the system language, for example `de_DE.UTF-8` gives `DE`.
