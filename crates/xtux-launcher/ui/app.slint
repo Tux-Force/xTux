@@ -49,13 +49,49 @@ export struct StoreRow {
     owned: bool,
     installable: bool,
     installed: bool,
+    cover-blur: image,
     // The Store lists no PC package (other launcher, or not offered for PC here).
     no-package: bool,
     package-format: string,
     // Kernel anti-cheat guessed from xTux's list (opt-in); empty otherwise.
     windows-only: string,
+    // In the download queue: queued | running | pausing | paused | failed (empty: not queued).
+    dl-state: string,
+    dl-progress: float,
     // What the labels mean, shown on hover.
     hint: string,
+}
+
+export struct DownloadRow {
+    id: int,
+    name: string,
+    // queued | running | paused | failed | done
+    state: string,
+    progress: float,
+    detail: string,
+    // Finished and in the library: it can be played from here.
+    playable: bool,
+    running: bool,
+    cover: image,
+    cover-blur: image,
+    has-cover: bool,
+}
+
+export struct GraphPoint {
+    // Share of the graph's top value, 0 to 1.
+    network: float,
+    disk: float,
+}
+
+export struct ShotRow {
+    image: image,
+    blur: image,
+    loaded: bool,
+}
+
+export struct LibraryChoice {
+    path: string,
+    free: string,
 }
 
 export struct LicenseRow {
@@ -82,6 +118,68 @@ export struct GameRow {
     has-logo: bool,
 }
 
+// An image that arrives softly: its blurred copy fades in first, then the sharp image over it.
+component SoftImage inherits Rectangle {
+    in property <image> sharp;
+    in property <image> soft;
+    in property <bool> loaded;
+    Image {
+        source: root.soft;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.loaded ? 1 : 0;
+        animate opacity { duration: 250ms; easing: ease-out; }
+    }
+    Image {
+        source: root.sharp;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.loaded ? 1 : 0;
+        animate opacity { duration: 700ms; delay: 200ms; easing: ease-out; }
+    }
+}
+
+// A ring that fills with the download progress, like an App Store download.
+component ProgressRing inherits Rectangle {
+    in property <float> progress;
+    in property <bool> paused;
+    in property <length> stroke: 5px;
+    property <float> p: max(0.001, min(0.999, root.progress));
+    property <angle> a: 360deg * root.p;
+    width: 44px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: Theme.glass-strong;
+    border-width: root.stroke;
+    border-color: Theme.field;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        stroke: root.paused ? Theme.muted : Theme.accent;
+        stroke-width: root.stroke;
+        fill: transparent;
+        commands: "M 50 " + (50 - 50 * (1 - root.stroke / root.width) + 0) + " A " + (50 - 50 * root.stroke / root.width) + " " + (50 - 50 * root.stroke / root.width) + " 0 " + (root.p > 0.5 ? "1" : "0") + " 1 " + (50 + (50 - 50 * root.stroke / root.width) * sin(root.a)) + " " + (50 - (50 - 50 * root.stroke / root.width) * cos(root.a));
+    }
+    // Pause bars or a play triangle in the middle.
+    if !root.paused: HorizontalLayout {
+        alignment: center;
+        spacing: root.width * 0.08;
+        padding-top: root.width * 0.33;
+        padding-bottom: root.width * 0.33;
+        Rectangle { width: root.width * 0.08; border-radius: 1px; background: Theme.text; }
+        Rectangle { width: root.width * 0.08; border-radius: 1px; background: Theme.text; }
+    }
+    if root.paused: Text {
+        text: "▶";
+        color: Theme.text;
+        font-size: root.width * 0.32;
+    }
+}
+
 // Frosted glass: translucent fill, light edge, top shine and a soft shadow.
 component Glass inherits Rectangle {
     in property <bool> strong;
@@ -105,7 +203,7 @@ component ShinyButton inherits Rectangle {
     in property <bool> big;
     callback clicked();
     height: big ? 48px : 36px;
-    min-width: big ? 150px : 96px;
+    min-width: max(big ? 150px : 96px, shiny-label.preferred-width + 40px);
     border-radius: big ? 24px : 18px;
     background: !enabled ? Theme.glass : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 55%, Theme.accent.darker(18%) 100%);
     drop-shadow-blur: touch.has-hover && enabled ? 22px : 10px;
@@ -121,7 +219,7 @@ component ShinyButton inherits Rectangle {
         background: @linear-gradient(180deg, #FFFFFF66 0%, #FFFFFF00 100%);
         visible: root.enabled;
     }
-    Text {
+    shiny-label := Text {
         text: root.text;
         color: root.enabled ? Theme.on-accent : Theme.muted;
         font-size: root.big ? 17px : 14px;
@@ -273,12 +371,6 @@ component StoreTile inherits Rectangle {
         drop-shadow-color: root.hover ? Theme.accent.transparentize(60%) : Theme.shadow;
         transform-scale: root.hover ? 1.04 : 1;
         animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
-        if root.title.has-cover: Image {
-            source: root.title.cover;
-            width: parent.width;
-            height: parent.height;
-            image-fit: cover;
-        }
         if !root.title.has-cover: Rectangle {
             background: @linear-gradient(150deg, Theme.base-2 0%, Theme.accent.transparentize(70%) 100%);
             Text {
@@ -290,6 +382,13 @@ component StoreTile inherits Rectangle {
                 horizontal-alignment: center;
                 width: parent.width - 24px;
             }
+        }
+        SoftImage {
+            width: parent.width;
+            height: parent.height;
+            sharp: root.title.cover;
+            soft: root.title.cover-blur;
+            loaded: root.title.has-cover;
         }
         Rectangle {
             background: @linear-gradient(135deg, #FFFFFF30 0%, #FFFFFF00 40%);
@@ -307,6 +406,14 @@ component StoreTile inherits Rectangle {
         touch := TouchArea {
             mouse-cursor: pointer;
             clicked => { root.open(); }
+        }
+        if root.title.dl-state != "": ProgressRing {
+            x: parent.width - self.width - 8px;
+            y: 8px;
+            width: 38px;
+            stroke: 4px;
+            progress: root.title.dl-progress;
+            paused: root.title.dl-state == "paused" || root.title.dl-state == "failed" || root.title.dl-state == "queued";
         }
         // On hover: what the labels mean, on frosted glass (only titles with a label).
         if root.title.hint != "": Rectangle {
@@ -502,16 +609,17 @@ component CoverTile inherits Rectangle {
         transform-scale: root.hover ? 1.04 : 1;
         animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
 
-        if root.game.has-cover: Image {
-            source: root.game.cover;
-            width: parent.width;
-            height: parent.height;
-            image-fit: cover;
-        }
         if !root.game.has-cover: ArtFallback {
             game: root.game;
             width: parent.width;
             height: parent.height;
+        }
+        SoftImage {
+            width: parent.width;
+            height: parent.height;
+            sharp: root.game.cover;
+            soft: root.game.cover-blur;
+            loaded: root.game.has-cover;
         }
         // Gloss sweep.
         Rectangle {
@@ -656,16 +764,17 @@ component ListRow inherits Rectangle {
             width: 56px;
             border-radius: 10px;
             clip: true;
-            if root.game.has-cover: Image {
-                source: root.game.cover;
-                width: parent.width;
-                height: parent.height;
-                image-fit: cover;
-            }
             if !root.game.has-cover: ArtFallback {
                 game: root.game;
                 width: parent.width;
                 height: parent.height;
+            }
+            SoftImage {
+                width: parent.width;
+                height: parent.height;
+                sharp: root.game.cover;
+                soft: root.game.cover-blur;
+                loaded: root.game.has-cover;
             }
         }
         VerticalLayout {
@@ -773,6 +882,8 @@ export component AppWindow inherits Window {
     in property <image> backdrop-b;
     in property <bool> show-a: true;
     in property <bool> has-backdrop;
+    // Game art behind library, game, store and title pages; settings, logs and about stay neutral.
+    property <bool> art-page: root.page == 0 || root.page == 2 || root.page == 5 || root.page == 6;
     // Logo of the sidebar and the window icon, chosen in Settings.
     in property <image> app-icon;
     in-out property <string> icon-choice: "mascot";
@@ -791,6 +902,7 @@ export component AppWindow inherits Window {
     in property <string> game-kind;
     in property <image> game-hero;
     in property <bool> has-game-hero;
+    in property <image> game-hero-soft;
     in property <image> game-logo;
     in property <bool> has-game-logo;
     in-out property <string> game-wine;
@@ -818,6 +930,19 @@ export component AppWindow inherits Window {
     in property <StoreRow> store-title;
     in property <image> store-hero;
     in property <bool> has-store-hero;
+    in property <image> store-hero-soft;
+    // Downloads (page 7) and the install dialog
+    in property <[DownloadRow]> downloads;
+    in property <int> downloads-active;
+    in-out property <bool> install-open;
+    in property <[LibraryChoice]> install-libraries;
+    in-out property <int> install-choice;
+    in property <bool> store-title-queued;
+    in property <[ShotRow]> store-shots;
+    in-out property <int> shot-open: -1;
+    // Download history graph: one point per second, oldest first, and its label.
+    in property <[GraphPoint]> graph;
+    in property <string> graph-label;
     // About page (page 4)
     in property <string> version;
     in property <[LicenseRow]> licenses;
@@ -844,6 +969,12 @@ export component AppWindow inherits Window {
     callback open-store-title(int);
     callback store-play();
     callback store-refresh();
+    callback store-install();
+    callback store-download-toggle();
+    callback open-shot(int);
+    callback confirm-install();
+    callback open-downloads();
+    callback download-action(int, string);
 
     // The std widgets follow the launcher's theme.
     public function apply-theme() {
@@ -875,7 +1006,7 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         image-fit: cover;
-        opacity: root.has-backdrop && root.show-a ? Theme.backdrop-opacity : 0;
+        opacity: root.has-backdrop && root.show-a && root.art-page ? Theme.backdrop-opacity : 0;
         animate opacity { duration: 450ms; easing: ease-in-out; }
     }
     Image {
@@ -883,7 +1014,7 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         image-fit: cover;
-        opacity: root.has-backdrop && !root.show-a ? Theme.backdrop-opacity : 0;
+        opacity: root.has-backdrop && !root.show-a && root.art-page ? Theme.backdrop-opacity : 0;
         animate opacity { duration: 450ms; easing: ease-in-out; }
     }
     Rectangle {
@@ -933,6 +1064,32 @@ export component AppWindow inherits Window {
                     clicked => {
                         root.page = 5;
                         root.open-store();
+                    }
+                }
+                Rectangle {
+                    height: 42px;
+                    NavItem {
+                        glyph: "⤓";
+                        text: "Downloads";
+                        active: root.page == 7;
+                        clicked => {
+                            root.page = 7;
+                            root.open-downloads();
+                        }
+                    }
+                    if root.downloads-active > 0: Rectangle {
+                        x: parent.width - self.width - 12px;
+                        y: (parent.height - self.height) / 2;
+                        width: max(22px, count-text.preferred-width + 12px);
+                        height: 22px;
+                        border-radius: 11px;
+                        background: Theme.accent;
+                        count-text := Text {
+                            text: root.downloads-active;
+                            color: Theme.on-accent;
+                            font-size: 12px;
+                            font-weight: 800;
+                        }
                     }
                 }
                 NavItem {
@@ -1052,7 +1209,7 @@ export component AppWindow inherits Window {
                 content-width: self.visible-width;
                 property <length> tile: 176px;
                 property <length> gap: 26px;
-                property <int> cols: max(1, floor((self.visible-width - 16px + self.gap) / (self.tile + self.gap)));
+                property <int> cols: max(1, floor((self.visible-width - 40px + self.gap) / (self.tile + self.gap)));
                 property <length> row-height: self.tile * 1.5 + 54px;
                 content-height: ceil(root.games.length / self.cols) * (self.row-height + self.gap) + 24px;
                 for game[index] in root.games: CoverTile {
@@ -1078,7 +1235,7 @@ export component AppWindow inherits Window {
                 for game[index] in root.games: ListRow {
                     x: 2px;
                     y: 4px + index * 86px;
-                    width: lib-list.visible-width - 18px;
+                    width: lib-list.visible-width - 28px;
                     game: game;
                     busy: root.busy;
                     play => { root.play(index); }
@@ -1106,7 +1263,7 @@ export component AppWindow inherits Window {
                 page-content := VerticalLayout {
                     // Room for the scrollbar on the right.
                     x: 0;
-                    width: game-scroll.visible-width - 16px;
+                    width: game-scroll.visible-width - 28px;
                     spacing: 14px;
                     // Hero banner
                     Rectangle {
@@ -1116,11 +1273,12 @@ export component AppWindow inherits Window {
                         background: Theme.base-2;
                         border-width: 1px;
                         border-color: Theme.glass-border;
-                        if root.has-game-hero: Image {
-                            source: root.game-hero;
+                        SoftImage {
                             width: parent.width;
                             height: parent.height;
-                            image-fit: cover;
+                            sharp: root.game-hero;
+                            soft: root.game-hero-soft;
+                            loaded: root.has-game-hero;
                         }
                         Rectangle {
                             background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
@@ -1320,7 +1478,7 @@ export component AppWindow inherits Window {
                 settings-content := VerticalLayout {
                     // Room for the scrollbar on the right.
                     x: 0;
-                    width: settings-scroll.visible-width - 16px;
+                    width: settings-scroll.visible-width - 28px;
                     spacing: 14px;
                     alignment: start;
                     Glass {
@@ -1497,7 +1655,7 @@ export component AppWindow inherits Window {
                 content-width: self.visible-width;
                 property <length> tile: 160px;
                 property <length> gap: 24px;
-                property <int> cols: max(1, floor((self.visible-width - 16px + self.gap) / (self.tile + self.gap)));
+                property <int> cols: max(1, floor((self.visible-width - 40px + self.gap) / (self.tile + self.gap)));
                 property <length> row-height: self.tile * 1.5 + 54px;
                 property <length> grid-height: ceil(root.store.length / self.cols) * (self.row-height + self.gap);
                 content-height: self.grid-height + 90px;
@@ -1525,7 +1683,7 @@ export component AppWindow inherits Window {
                 title-content := VerticalLayout {
                     // Room for the scrollbar on the right.
                     x: 0;
-                    width: title-scroll.visible-width - 16px;
+                    width: title-scroll.visible-width - 28px;
                     spacing: 14px;
                     alignment: start;
                     Rectangle {
@@ -1535,11 +1693,12 @@ export component AppWindow inherits Window {
                         background: Theme.base-2;
                         border-width: 1px;
                         border-color: Theme.glass-border;
-                        if root.has-store-hero: Image {
-                            source: root.store-hero;
+                        SoftImage {
                             width: parent.width;
                             height: parent.height;
-                            image-fit: cover;
+                            sharp: root.store-hero;
+                            soft: root.store-hero-soft;
+                            loaded: root.has-store-hero;
                         }
                         Rectangle {
                             background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
@@ -1596,12 +1755,79 @@ export component AppWindow inherits Window {
                                         enabled: !root.busy && root.store-title.windows-only == "";
                                         clicked => { root.store-play(); }
                                     }
-                                    if !root.store-title.installed: ShinyButton {
-                                        text: root.store-title.windows-only != "" ? "Windows only" : root.store-title.installable ? "Install soon" : "Not supported";
+                                    if !root.store-title.installed && root.store-title.dl-state != "": HorizontalLayout {
+                                        spacing: 10px;
+                                        ring-touch := TouchArea {
+                                            width: 48px;
+                                            mouse-cursor: pointer;
+                                            clicked => { root.store-download-toggle(); }
+                                            ProgressRing {
+                                                width: 48px;
+                                                progress: root.store-title.dl-progress;
+                                                paused: root.store-title.dl-state == "paused" || root.store-title.dl-state == "failed" || root.store-title.dl-state == "queued";
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: root.store-title.dl-state == "running" ? round(root.store-title.dl-progress * 100) + " %"
+                                                    : root.store-title.dl-state == "queued" ? "Waiting"
+                                                    : root.store-title.dl-state == "pausing" ? "Pausing…"
+                                                    : root.store-title.dl-state == "failed" ? "Failed" : "Paused";
+                                                color: Theme.text;
+                                                font-weight: 800;
+                                            }
+                                            Text {
+                                                text: "Downloads ›";
+                                                color: Theme.muted;
+                                                font-size: 12px;
+                                                TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.page = 7;
+                                                        root.open-downloads();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !root.store-title.installed && root.store-title.dl-state == "": ShinyButton {
+                                        text: root.store-title-queued ? "In downloads"
+                                            : root.store-title.installable ? "⤓  Install"
+                                            : root.store-title.no-package ? "No PC package" : "Not supported";
                                         big: true;
-                                        enabled: false;
+                                        enabled: root.store-title.installable && !root.store-title-queued;
+                                        clicked => { root.store-install(); }
                                     }
                                 }
+                            }
+                        }
+                    }
+                    if root.store-shots.length > 0: shots-scroll := ScrollView {
+                        height: 196px;
+                        vertical-scrollbar-policy: always-off;
+                        content-height: 186px;
+                        content-width: root.store-shots.length * 334px;
+                        for shot[index] in root.store-shots: Rectangle {
+                            x: index * 334px;
+                            y: 0;
+                            width: 320px;
+                            height: 180px;
+                            border-radius: 12px;
+                            clip: true;
+                            background: Theme.base-2;
+                            border-width: 1px;
+                            border-color: shot-touch.has-hover ? Theme.accent : Theme.glass-border;
+                            SoftImage {
+                                width: parent.width;
+                                height: parent.height;
+                                sharp: shot.image;
+                                soft: shot.blur;
+                                loaded: shot.loaded;
+                            }
+                            shot-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.shot-open = index; }
                             }
                         }
                     }
@@ -1641,6 +1867,166 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // Downloads
+            if root.page == 7: HorizontalLayout {
+                height: 48px;
+                spacing: 10px;
+                PageTitle { text: "Downloads"; }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "Clear finished";
+                        clicked => { root.download-action(0, "clear"); }
+                    }
+                }
+            }
+            if root.page == 7: Glass {
+                height: 170px;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 16px;
+                        Heading { text: "Activity"; vertical-alignment: center; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            VerticalLayout { alignment: center; Rectangle { width: 12px; height: 4px; border-radius: 2px; background: Theme.accent; } }
+                            Label { text: "Download"; vertical-alignment: center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            VerticalLayout { alignment: center; Rectangle { width: 12px; height: 4px; border-radius: 2px; background: Theme.text; } }
+                            Label { text: "Disk write"; vertical-alignment: center; }
+                        }
+                        Rectangle { }
+                        Label { text: root.graph-label; vertical-alignment: center; }
+                    }
+                    graph-area := Rectangle {
+                        border-radius: 10px;
+                        background: Theme.field;
+                        clip: true;
+                        for point[index] in root.graph: Rectangle {
+                            x: index * graph-area.width / max(1, root.graph.length);
+                            width: graph-area.width / max(1, root.graph.length) + 0.5px;
+                            // Download: filled bars.
+                            Rectangle {
+                                y: parent.height - self.height;
+                                height: point.network * (parent.height - 8px);
+                                background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.transparentize(75%) 100%);
+                            }
+                            // Disk write: a thin line on top of its value.
+                            Rectangle {
+                                y: parent.height - point.disk * (parent.height - 8px) - 1.5px;
+                                height: 1.5px;
+                                background: Theme.text.transparentize(25%);
+                                visible: point.disk > 0;
+                            }
+                        }
+                    }
+                }
+            }
+            if root.page == 7 && root.downloads.length == 0: Glass {
+                height: 90px;
+                Text {
+                    text: "Nothing to download. Install a game from the Store.";
+                    color: Theme.muted;
+                }
+            }
+            if root.page == 7 && root.downloads.length > 0: dl-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: root.downloads.length * 104px + 10px;
+                for item[index] in root.downloads: Rectangle {
+                    x: 0;
+                    y: index * 104px;
+                    width: dl-scroll.visible-width - 28px;
+                    height: 94px;
+                    border-radius: 14px;
+                    background: Theme.glass;
+                    border-width: 1px;
+                    border-color: item.state == "running" ? Theme.accent : item.state == "failed" ? Theme.danger : Theme.glass-border;
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-right: 14px;
+                        spacing: 14px;
+                        Rectangle {
+                            width: 49px;
+                            border-radius: 8px;
+                            clip: true;
+                            background: Theme.base-2;
+                            SoftImage {
+                                width: parent.width;
+                                height: parent.height;
+                                sharp: item.cover;
+                                soft: item.cover-blur;
+                                loaded: item.has-cover;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: item.name;
+                                    color: Theme.text;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
+                                Rectangle { }
+                                Text {
+                                    text: item.state == "running" ? "Downloading"
+                                        : item.state == "queued" ? "Waiting"
+                                        : item.state == "pausing" ? "Pausing…"
+                                        : item.state == "removing" ? "Removing…"
+                                        : item.state == "paused" ? "Paused"
+                                        : item.state == "failed" ? "Failed" : "Installed";
+                                    opacity: item.state == "pausing" || item.state == "removing" ? 0.55 + 0.45 * sin(animation-tick() * 0.3deg / 1ms) : 1;
+                                    color: item.state == "failed" ? Theme.text : Theme.muted;
+                                    font-weight: 700;
+                                }
+                            }
+                            // Progress bar
+                            Rectangle {
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.field;
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * max(0, min(1, item.progress));
+                                    border-radius: 4px;
+                                    background: item.state == "failed" ? Theme.danger : @linear-gradient(90deg, Theme.accent.darker(10%) 0%, Theme.accent.brighter(20%) 100%);
+                                    animate width { duration: 400ms; }
+                                }
+                            }
+                            Text {
+                                text: item.detail;
+                                color: Theme.muted;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                if item.playable && !item.running: ShinyButton { text: "▶  Play"; width: 120px; enabled: !root.busy; clicked => { root.download-action(item.id, "play"); } }
+                                if item.playable && item.running: RunningChip { }
+                                if item.state == "running" || item.state == "queued": GhostButton { text: "❚❚"; width: 44px; clicked => { root.download-action(item.id, "pause"); } }
+                                if item.state == "paused" || item.state == "failed": GhostButton { text: "▶"; width: 44px; clicked => { root.download-action(item.id, "resume"); } }
+                                if item.state != "done" && item.state != "pausing" && item.state != "removing": GhostButton { text: "↑"; width: 40px; clicked => { root.download-action(item.id, "up"); } }
+                                if item.state != "done" && item.state != "pausing" && item.state != "removing": GhostButton { text: "↓"; width: 40px; clicked => { root.download-action(item.id, "down"); } }
+                                if item.state != "pausing" && item.state != "removing": GhostButton { text: item.state == "done" ? "✓" : "✕"; width: 44px; clicked => { root.download-action(item.id, "remove"); } }
+                            }
+                        }
+                    }
+                }
+            }
+
             // About
             if root.page == 4: PageTitle {
                 text: "About";
@@ -1653,7 +2039,7 @@ export component AppWindow inherits Window {
                 about-content := VerticalLayout {
                     // Room for the scrollbar on the right.
                     x: 0;
-                    width: about-scroll.visible-width - 16px;
+                    width: about-scroll.visible-width - 28px;
                     spacing: 14px;
                     alignment: start;
                     Glass {
@@ -1871,6 +2257,129 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    // Install dialog: where the game goes.
+    if root.install-open: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(560px, parent.width - 60px);
+            height: install-dialog.preferred-height;
+            install-dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: "Install " + root.store-title.name;
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "Download size " + root.store-title.size + ". Choose the library folder; the game gets its own folder in it.";
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                for choice[index] in root.install-libraries: Rectangle {
+                    height: choice-line.preferred-height;
+                    border-radius: 12px;
+                    background: root.install-choice == index ? Theme.accent.transparentize(78%) : choice-touch.has-hover ? Theme.glass-strong : Theme.glass;
+                    border-width: 1px;
+                    border-color: root.install-choice == index ? Theme.accent : Theme.glass-border;
+                    choice-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.install-choice = index; }
+                    }
+                    choice-line := HorizontalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        Text {
+                            text: choice.path;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        Rectangle { }
+                        Text {
+                            text: choice.free;
+                            color: Theme.muted;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    GhostButton {
+                        text: "Cancel";
+                        clicked => { root.install-open = false; }
+                    }
+                    ShinyButton {
+                        text: "Add to downloads";
+                        enabled: root.install-libraries.length > 0;
+                        clicked => {
+                            root.install-open = false;
+                            root.confirm-install();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Screenshot, large.
+    if root.shot-open >= 0 && root.shot-open < root.store-shots.length: Rectangle {
+        background: #000000D8;
+        TouchArea { clicked => { root.shot-open = -1; } }
+        // ← → browse, Esc closes.
+        shot-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.LeftArrow {
+                    if root.shot-open > 0 { root.shot-open -= 1; }
+                    return accept;
+                }
+                if event.text == Key.RightArrow {
+                    if root.shot-open < root.store-shots.length - 1 { root.shot-open += 1; }
+                    return accept;
+                }
+                if event.text == Key.Escape {
+                    root.shot-open = -1;
+                    return accept;
+                }
+                reject
+            }
+        }
+        Image {
+            x: 60px;
+            y: 50px;
+            width: parent.width - 120px;
+            height: parent.height - 100px;
+            source: root.store-shots[root.shot-open].image;
+            image-fit: contain;
+        }
+        if root.shot-open > 0: GhostButton {
+            x: 12px;
+            y: (parent.height - self.height) / 2;
+            text: "‹";
+            width: 40px;
+            clicked => { root.shot-open -= 1; }
+        }
+        if root.shot-open < root.store-shots.length - 1: GhostButton {
+            x: parent.width - self.width - 12px;
+            y: (parent.height - self.height) / 2;
+            text: "›";
+            width: 40px;
+            clicked => { root.shot-open += 1; }
+        }
+        GhostButton {
+            x: parent.width - self.width - 12px;
+            y: 12px;
+            text: "✕";
+            width: 40px;
+            clicked => { root.shot-open = -1; }
         }
     }
 }

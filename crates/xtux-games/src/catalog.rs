@@ -49,6 +49,9 @@ pub struct Title {
     /// Image URLs of the Store (store-images.s-microsoft.com).
     pub poster_url: Option<String>,
     pub hero_url: Option<String>,
+    /// Screenshot URLs (up to eight).
+    #[serde(default)]
+    pub screenshots: Vec<String>,
     pub in_game_pass: bool,
     pub owned: bool,
     /// xTux can install it: a GDK package (MSIXVC) for Windows PCs.
@@ -57,8 +60,14 @@ pub struct Title {
     pub windows_only: Option<String>,
 }
 
+/// Bumped when a cached catalog lacks fields a newer xTux shows (2: screenshots, 3: screenshots without
+/// the Xbox copies).
+const CACHE_VERSION: u32 = 3;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
+    #[serde(default)]
+    pub version: u32,
     pub titles: Vec<Title>,
     /// Seconds since the Unix epoch when it was loaded.
     pub fetched_at: u64,
@@ -253,6 +262,9 @@ struct Image {
     image_purpose: String,
     #[serde(default, deserialize_with = "text")]
     uri: String,
+    /// For example `Desktop/1` or `Xbox/1`: the same screenshot comes once per platform.
+    #[serde(default, deserialize_with = "text")]
+    image_position_info: String,
 }
 
 #[derive(Deserialize)]
@@ -313,6 +325,26 @@ fn image_url(images: &[Image], purposes: &[&str]) -> Option<String> {
     })
 }
 
+/// Screenshots for PCs first, each image once (the Store lists the same file for Xbox too), at most eight.
+fn screenshots(images: &[Image]) -> Vec<String> {
+    let mut shots: Vec<&Image> = images
+        .iter()
+        .filter(|i| i.image_purpose == "Screenshot")
+        .collect();
+    shots.sort_by_key(|i| !i.image_position_info.starts_with("Desktop"));
+    let mut seen = std::collections::HashSet::new();
+    shots
+        .into_iter()
+        // The file name is the same for both platforms; the host part of the URL differs.
+        .filter(|i| seen.insert(i.uri.rsplit('.').next().unwrap_or(&i.uri).to_string()))
+        .take(8)
+        .map(|i| match i.uri.strip_prefix("//") {
+            Some(rest) => format!("https://{rest}"),
+            None => i.uri.clone(),
+        })
+        .collect()
+}
+
 fn windows_only(name: &str) -> Option<String> {
     KNOWN_WINDOWS_ONLY
         .iter()
@@ -359,6 +391,7 @@ fn to_title(product: Product) -> Option<Title> {
         download_size: pc.and_then(|p| p.max_download_size_in_bytes),
         poster_url: image_url(&localized.images, &["Poster", "BoxArt"]),
         hero_url: image_url(&localized.images, &["SuperHeroArt", "TitledHeroArt"]),
+        screenshots: screenshots(&localized.images),
         in_game_pass: false,
         owned: false,
     })
@@ -393,7 +426,9 @@ pub async fn load(
     let account = account(tokens);
     if !refresh {
         if let Some(cached) = read_cache(&market, &account) {
-            if now().saturating_sub(cached.fetched_at) < MAX_AGE.as_secs() {
+            if cached.version == CACHE_VERSION
+                && now().saturating_sub(cached.fetched_at) < MAX_AGE.as_secs()
+            {
                 return Ok(cached);
             }
         }
@@ -419,6 +454,7 @@ pub async fn load(
     let mut titles: Vec<Title> = by_id.into_values().collect();
     titles.sort_by_key(|t| t.name.to_lowercase());
     let catalog = Catalog {
+        version: CACHE_VERSION,
         titles,
         fetched_at: now(),
     };
@@ -457,6 +493,33 @@ mod tests {
             Some("https://store-images.s-microsoft.com/image/a")
         );
         assert_eq!(title.windows_only, None);
+    }
+
+    #[test]
+    fn screenshots_once_each() {
+        let image = |pos: &str, uri: &str| Image {
+            image_purpose: "Screenshot".into(),
+            uri: uri.into(),
+            image_position_info: pos.into(),
+        };
+        let shots = screenshots(&[
+            image("Xbox/1", "//store-images.s-microsoft.com/image/apps.1.aaa"),
+            image(
+                "Desktop/1",
+                "//store-images.s-microsoft.com/image/apps.2.aaa",
+            ),
+            image(
+                "Desktop/2",
+                "//store-images.s-microsoft.com/image/apps.3.bbb",
+            ),
+        ]);
+        assert_eq!(
+            shots,
+            vec![
+                "https://store-images.s-microsoft.com/image/apps.2.aaa",
+                "https://store-images.s-microsoft.com/image/apps.3.bbb"
+            ]
+        );
     }
 
     #[test]

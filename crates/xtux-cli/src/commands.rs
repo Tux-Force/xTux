@@ -1,5 +1,7 @@
 pub mod clep;
 pub mod download;
+#[cfg(unix)]
+pub mod downloads;
 pub mod extract;
 pub mod extract_eappx;
 pub mod license;

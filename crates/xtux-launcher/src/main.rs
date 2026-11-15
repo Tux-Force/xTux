@@ -15,7 +15,7 @@ use slint::{
 use xtux_games::art::{self, Artwork};
 use xtux_games::settings::{GameSettings, Settings};
 use xtux_protocol::{
-    Canceller, Client, ClientError, ErrorKind, Event, GameInfo, Request, Response,
+    Canceller, Client, ClientError, DownloadCommand, ErrorKind, Event, GameInfo, Request, Response,
 };
 
 mod theme;
@@ -23,6 +23,32 @@ mod theme;
 slint::include_modules!();
 
 type Pixels = SharedPixelBuffer<Rgba8Pixel>;
+
+thread_local! {
+    // The window's models live as long as it: rows are updated in place, so a cover that arrives fades in
+    // instead of the whole grid being rebuilt.
+    static GAMES: std::rc::Rc<VecModel<GameRow>> = std::rc::Rc::new(VecModel::default());
+    static STORE: std::rc::Rc<VecModel<StoreRow>> = std::rc::Rc::new(VecModel::default());
+    static DOWNLOAD_ROWS: std::rc::Rc<VecModel<DownloadRow>> = std::rc::Rc::new(VecModel::default());
+    static SHOTS: std::rc::Rc<VecModel<ShotRow>> = std::rc::Rc::new(VecModel::default());
+    static GRAPH: std::rc::Rc<VecModel<GraphPoint>> = std::rc::Rc::new(VecModel::default());
+    /// Counts gallery loads, so screenshots of a title left meanwhile are dropped.
+    static SHOT_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Replaces the rows of `model`, changing only rows that differ when the length stays (UI thread).
+fn update_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
+    use slint::Model;
+    if model.row_count() == rows.len() {
+        for (i, row) in rows.into_iter().enumerate() {
+            if model.row_data(i).as_ref() != Some(&row) {
+                model.set_row_data(i, row);
+            }
+        }
+    } else {
+        model.set_vec(rows);
+    }
+}
 
 /// Shown part of a log file.
 const LOG_TAIL: u64 = 256 * 1024;
@@ -60,7 +86,13 @@ struct State {
     store_limit: usize,
     store_current: Option<usize>,
     /// Decoded store covers by Store ID.
-    covers: HashMap<String, Pixels>,
+    covers: HashMap<String, (Pixels, Pixels)>,
+    /// The download queue as xtux-service last reported it, and the library folders offered for an install.
+    downloads: Vec<xtux_protocol::DownloadItem>,
+    /// Network and disk rates, oldest first.
+    history: Vec<xtux_protocol::RateSample>,
+    download_polling: bool,
+    install_libraries: Vec<PathBuf>,
     /// What the command line asked for, done once the library is loaded.
     startup: Option<Startup>,
     handle: Option<tokio::runtime::Handle>,
@@ -337,7 +369,7 @@ fn show_games(ui: &AppWindow, state: &Shared) {
         })
         .collect();
     ui.set_game_count(state.all.len() as i32);
-    ui.set_games(ModelRc::new(VecModel::from(rows)));
+    GAMES.with(|model| update_rows(model, rows));
 }
 
 /// Cross-fades the window backdrop to the blurred art of `all[index]` (UI thread), as the backdrop setting allows.
@@ -548,6 +580,8 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
     ui.set_game_logo(logo);
     ui.set_has_game_logo(has_logo);
     ui.set_has_game_hero(false);
+    // The blurred backdrop is the hero's soft first look.
+    ui.set_game_hero_soft(to_image(&entry.backdrop).0);
     show_logs(ui, Some(&game.path));
     show_backdrop(ui, state, index, BackdropCause::Game);
     ui.set_page(2);
@@ -748,8 +782,30 @@ fn store_hint(title: &xtux_protocol::CatalogTitle) -> String {
     hint
 }
 
-fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&Pixels>) -> StoreRow {
-    let (cover, has_cover) = to_image(&cover.cloned());
+/// State and progress of a title in the download queue; empty when it is not queued (or finished).
+fn download_of(downloads: &[xtux_protocol::DownloadItem], product_id: &str) -> (String, f32) {
+    downloads
+        .iter()
+        .rev()
+        .find(|d| d.product_id == product_id && d.state != "done" && d.state != "removing")
+        .map(|d| {
+            let progress = match d.total {
+                Some(total) if total > 0 => d.done as f32 / total as f32,
+                _ => 0.0,
+            };
+            (d.state.clone(), progress)
+        })
+        .unwrap_or_default()
+}
+
+fn store_row(
+    title: &xtux_protocol::CatalogTitle,
+    cover: Option<&(Pixels, Pixels)>,
+    downloads: &[xtux_protocol::DownloadItem],
+) -> StoreRow {
+    let (dl_state, dl_progress) = download_of(downloads, &title.product_id);
+    let (cover_blur, _) = to_image(&cover.map(|c| c.1.clone()));
+    let (cover, has_cover) = to_image(&cover.map(|c| c.0.clone()));
     StoreRow {
         name: title.name.clone().into(),
         publisher: title.publisher.clone().into(),
@@ -762,10 +818,13 @@ fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&Pixels>) -> Sto
         owned: title.owned,
         installable: title.installable,
         installed: title.installed.is_some(),
+        cover_blur,
         no_package: title.package_format.is_none(),
         package_format: title.package_format.clone().unwrap_or_default().into(),
         windows_only: title.windows_only.clone().unwrap_or_default().into(),
         hint: store_hint(title).into(),
+        dl_state: dl_state.into(),
+        dl_progress,
     }
 }
 
@@ -811,11 +870,11 @@ fn show_store(ui: &AppWindow, state: &Shared) {
         .iter()
         .take(s.store_limit)
         .filter_map(|&i| s.catalog.get(i))
-        .map(|t| store_row(t, s.covers.get(&t.product_id)))
+        .map(|t| store_row(t, s.covers.get(&t.product_id), &s.downloads))
         .collect();
     ui.set_store_count(s.store_filtered.len() as i32);
     ui.set_store_total(s.catalog.len() as i32);
-    ui.set_store(ModelRc::new(VecModel::from(rows)));
+    STORE.with(|model| update_rows(model, rows));
 }
 
 /// Loads the covers of the shown store titles: from the art cache, else from the Store (when allowed).
@@ -853,10 +912,13 @@ fn load_store_covers(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
                         .ok()?
                         .cover;
                 }
-                let pixels =
-                    tokio::task::spawn_blocking(move || decode(cover.as_deref(), 320, 480))
-                        .await
-                        .ok()??;
+                let pixels = tokio::task::spawn_blocking(move || {
+                    let sharp = decode(cover.as_deref(), 320, 480)?;
+                    let soft = blur(&Some(sharp.clone()))?;
+                    Some((sharp, soft))
+                })
+                .await
+                .ok()??;
                 Some((id, pixels))
             });
         }
@@ -932,10 +994,15 @@ fn open_store_title(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Han
     }) else {
         return;
     };
-    if let Ok(mut s) = state.lock() {
-        s.store_current = Some(index);
-    }
-    ui.set_store_title(store_row(&title, cover.as_ref()));
+    let downloads = match state.lock() {
+        Ok(mut s) => {
+            s.store_current = Some(index);
+            s.downloads.clone()
+        }
+        Err(_) => Vec::new(),
+    };
+    ui.set_store_title(store_row(&title, cover.as_ref(), &downloads));
+    load_screenshots(ui, &title, handle);
     ui.set_has_store_hero(false);
     ui.set_page(6);
     let online = Settings::load().map(|s| s.ui.online_art).unwrap_or(true);
@@ -950,18 +1017,373 @@ fn open_store_title(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Han
                 .ok()
                 .and_then(|a| a.hero);
         }
-        let pixels = tokio::task::spawn_blocking(move || decode(hero.as_deref(), 1920, 1080))
-            .await
-            .ok()
-            .flatten();
+        let backdrop = art::cached(&title.product_id).backdrop;
+        let (pixels, soft) = tokio::task::spawn_blocking(move || {
+            (
+                decode(hero.as_deref(), 1920, 1080),
+                decode(backdrop.as_deref(), 640, 360),
+            )
+        })
+        .await
+        .unwrap_or_default();
         with_ui(&weak, move |ui| {
             if state.lock().ok().and_then(|s| s.store_current) == Some(index) {
                 let (hero, has_hero) = to_image(&pixels);
+                ui.set_store_hero_soft(to_image(&soft).0);
                 ui.set_store_hero(hero);
                 ui.set_has_store_hero(has_hero);
             }
         });
     });
+}
+
+/// Free space of the file system holding `path`, as text.
+fn free_space(path: &Path) -> String {
+    match rustix::fs::statvfs(path) {
+        Ok(stat) => format!("{} free", size_text(Some(stat.f_bavail * stat.f_frsize))),
+        Err(_) => String::new(),
+    }
+}
+
+fn download_detail(item: &xtux_protocol::DownloadItem) -> String {
+    let amount = match item.total {
+        Some(total) if total > 0 => format!(
+            "{} of {}",
+            size_text(Some(item.done)),
+            size_text(Some(total))
+        ),
+        _ => String::new(),
+    };
+    let speed = if item.state == "running" && item.speed > 0 {
+        let left = item
+            .total
+            .map(|t| t.saturating_sub(item.done) / item.speed.max(1))
+            .map(|secs| match secs {
+                s if s >= 3600 => format!(" · {} h {} min left", s / 3600, (s % 3600) / 60),
+                s if s >= 60 => format!(" · {} min left", s / 60),
+                s => format!(" · {s} s left"),
+            })
+            .unwrap_or_default();
+        format!(" · {}{left}", rate_text(item.speed))
+    } else {
+        String::new()
+    };
+    match item.state.as_str() {
+        "done" => format!("Installed in {}", item.destination.display()),
+        "failed" => item.message.clone(),
+        _ if amount.is_empty() => item.message.clone(),
+        _ => format!("{amount}{speed} · {}", item.message),
+    }
+}
+
+/// The library game installed in `folder`.
+fn library_entry<'a>(all: &'a [Entry], folder: &Path) -> Option<&'a Entry> {
+    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+    all.iter().find(|e| {
+        e.info.path == folder || std::fs::canonicalize(&e.info.path).is_ok_and(|p| p == folder)
+    })
+}
+
+/// Pushes the download queue to the window (UI thread).
+/// Bytes per second as text, also below a megabyte.
+fn rate_text(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.1} GB/s", b as f64 / (1u64 << 30) as f64),
+        b if b >= 1 << 20 => format!("{:.0} MB/s", b as f64 / (1u64 << 20) as f64),
+        b if b >= 1 << 10 => format!("{} KB/s", b >> 10),
+        b => format!("{b} B/s"),
+    }
+}
+
+/// The activity graph of the Downloads page from the rate history (UI thread).
+fn show_graph(ui: &AppWindow, history: &[xtux_protocol::RateSample]) {
+    let network: Vec<u64> = history.iter().map(|h| h.network).collect();
+    let disk: Vec<u64> = history.iter().map(|h| h.disk_write).collect();
+    let max = network
+        .iter()
+        .chain(disk.iter())
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(1) as f32;
+    // Always five minutes wide: older seconds are empty until the history has them.
+    let width: usize = 300;
+    let mut points = vec![GraphPoint::default(); width.saturating_sub(history.len())];
+    points.extend(history.iter().rev().take(width).rev().map(|h| GraphPoint {
+        network: h.network as f32 / max,
+        disk: h.disk_write as f32 / max,
+    }));
+    GRAPH.with(|model| update_rows(model, points));
+    let now = history.last().copied().unwrap_or_default();
+    let peak = network.iter().copied().max().unwrap_or(0);
+    ui.set_graph_label(
+        if history.is_empty() {
+            "No activity yet".to_string()
+        } else {
+            format!(
+                "Download {} · disk write {} · read {} · peak {}",
+                rate_text(now.network),
+                rate_text(now.disk_write),
+                rate_text(now.disk_read),
+                rate_text(peak)
+            )
+        }
+        .into(),
+    );
+}
+
+/// Screenshots of a store title, loaded into the gallery one by one (UI thread starts it).
+fn load_screenshots(
+    ui: &AppWindow,
+    title: &xtux_protocol::CatalogTitle,
+    handle: &tokio::runtime::Handle,
+) {
+    let count = title.screenshots.len().min(8);
+    SHOTS.with(|model| {
+        model.set_vec(vec![ShotRow::default(); count]);
+    });
+    let generation = SHOT_GENERATION.with(|g| {
+        g.set(g.get() + 1);
+        g.get()
+    });
+    ui.set_shot_open(-1);
+    if count == 0 {
+        return;
+    }
+    let online = Settings::load().map(|s| s.ui.online_art).unwrap_or(true);
+    let weak = ui.as_weak();
+    let id = title.product_id.clone();
+    let urls = title.screenshots.clone();
+    handle.spawn(async move {
+        let client = art::client(&format!("xtux-launcher/{}", env!("CARGO_PKG_VERSION")));
+        for (index, url) in urls.into_iter().take(8).enumerate() {
+            let cached = art::cache_dir().map(|d| d.join(&id).join(art::screenshot_file(&url)));
+            let path = match cached.filter(|p| p.is_file()) {
+                Some(path) => Some(path),
+                None if online => art::fetch_screenshot(&client, &id, index, &url).await.ok(),
+                None => None,
+            };
+            let pixels = tokio::task::spawn_blocking(move || {
+                let sharp = decode(path.as_deref(), 1280, 720)?;
+                let soft = blur(&Some(sharp.clone()))?;
+                Some((sharp, soft))
+            })
+            .await
+            .ok()
+            .flatten();
+            let Some((sharp, soft)) = pixels else {
+                continue;
+            };
+            with_ui(&weak, move |_ui| {
+                // Still the same title?
+                if SHOT_GENERATION.with(|g| g.get()) != generation {
+                    return;
+                }
+                SHOTS.with(|model| {
+                    use slint::Model;
+                    if index < model.row_count() {
+                        model.set_row_data(
+                            index,
+                            ShotRow {
+                                image: Image::from_rgba8(sharp),
+                                blur: Image::from_rgba8(soft),
+                                loaded: true,
+                            },
+                        );
+                    }
+                });
+            });
+        }
+    });
+}
+
+fn show_downloads(ui: &AppWindow, state: &Shared) {
+    // Rings on store tiles and the title page follow the queue.
+    show_store(ui, state);
+    if let Some(row) = state.lock().ok().and_then(|s| {
+        let title = s.catalog.get(s.store_current?)?;
+        Some(store_row(
+            title,
+            s.covers.get(&title.product_id),
+            &s.downloads,
+        ))
+    }) {
+        ui.set_store_title(row);
+    }
+    let Ok(s) = state.lock() else { return };
+    show_graph(ui, &s.history);
+    let rows: Vec<DownloadRow> = s
+        .downloads
+        .iter()
+        .map(|item| {
+            let cover = s.covers.get(&item.product_id);
+            let (cover_blur, _) = to_image(&cover.map(|c| c.1.clone()));
+            let (cover_image, has_cover) = to_image(&cover.map(|c| c.0.clone()));
+            DownloadRow {
+                id: item.id as i32,
+                name: item.name.clone().into(),
+                state: item.state.clone().into(),
+                progress: match (item.state.as_str(), item.total) {
+                    ("done", _) => 1.0,
+                    (_, Some(total)) if total > 0 => item.done as f32 / total as f32,
+                    _ => 0.0,
+                },
+                detail: download_detail(item).into(),
+                playable: item.state == "done"
+                    && library_entry(&s.all, &item.destination).is_some(),
+                running: library_entry(&s.all, &item.destination)
+                    .is_some_and(|e| s.running.contains_key(&e.info.path)),
+                cover: cover_image,
+                cover_blur,
+                has_cover,
+            }
+        })
+        .collect();
+    let active = s
+        .downloads
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.state.as_str(),
+                "queued" | "running" | "pausing" | "removing"
+            )
+        })
+        .count();
+    ui.set_downloads_active(active as i32);
+    let queued = s
+        .store_current
+        .and_then(|i| s.catalog.get(i))
+        .is_some_and(|t| {
+            s.downloads
+                .iter()
+                .any(|d| d.product_id == t.product_id && d.state != "done")
+        });
+    ui.set_store_title_queued(queued);
+    DOWNLOAD_ROWS.with(|model| update_rows(model, rows));
+}
+
+/// Sends a queue command to xtux-service and shows the queue it answers with; refreshes the library when an
+/// install finished.
+fn download_command(
+    ui: &AppWindow,
+    state: &Shared,
+    handle: &tokio::runtime::Handle,
+    command: DownloadCommand,
+) {
+    // One list request at a time: a slow answer is not stacked up by the poll timer.
+    let is_list = command == DownloadCommand::List;
+    if is_list {
+        match state.lock() {
+            Ok(mut s) if !s.download_polling => s.download_polling = true,
+            _ => return,
+        }
+    }
+    let weak = ui.as_weak();
+    let state = state.clone();
+    let handle2 = handle.clone();
+    handle.spawn(async move {
+        let answer = ask(Request::Downloads(command), |_| {}).await;
+        if is_list {
+            if let Ok(mut s) = state.lock() {
+                s.download_polling = false;
+            }
+        }
+        let items = match answer {
+            Ok(Response::Downloads { items, history }) => {
+                if let Ok(mut s) = state.lock() {
+                    s.history = history;
+                }
+                items
+            }
+            Ok(other) => return set_status(&weak, format!("Unexpected answer: {other:?}"), None),
+            Err(err) => return set_status(&weak, err.to_string(), None),
+        };
+        // Covers for items without one yet, from the art cache.
+        let missing: Vec<String> = match state.lock() {
+            Ok(s) => items
+                .iter()
+                .filter(|i| !s.covers.contains_key(&i.product_id))
+                .map(|i| i.product_id.clone())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        let decoded = tokio::task::spawn_blocking(move || {
+            missing
+                .into_iter()
+                .filter_map(|id| {
+                    let sharp = decode(art::cached(&id).cover.as_deref(), 320, 480)?;
+                    let soft = blur(&Some(sharp.clone()))?;
+                    Some((id, (sharp, soft)))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        let finished = match state.lock() {
+            Ok(mut s) => {
+                let finished = items.iter().any(|new| {
+                    new.state == "done"
+                        && s.downloads
+                            .iter()
+                            .any(|old| old.id == new.id && old.state != "done")
+                });
+                s.downloads = items;
+                s.covers.extend(decoded);
+                finished
+            }
+            Err(_) => false,
+        };
+        let weak2 = weak.clone();
+        let state2 = state.clone();
+        with_ui(&weak, move |ui| show_downloads(&ui, &state2));
+        if finished {
+            set_status(
+                &weak2,
+                "A download finished; the game is in the library",
+                None,
+            );
+            refresh_library(weak2.clone(), state.clone()).await;
+            with_ui(&weak2, move |ui| reload_store(&ui, &state, &handle2));
+        }
+    });
+}
+
+/// Reloads the catalog from xtux-service's cache, so installed marks are current (UI thread).
+fn reload_store(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle) {
+    if state.lock().is_ok_and(|s| s.catalog.is_empty()) {
+        return;
+    }
+    if let Ok(mut s) = state.lock() {
+        s.catalog.clear();
+    }
+    open_store(ui, state, handle, false);
+}
+
+/// Opens the install dialog for the store title on screen (UI thread).
+fn store_install(ui: &AppWindow, state: &Shared) {
+    if state.lock().ok().and_then(|s| s.store_current).is_none() {
+        return;
+    }
+    let settings = Settings::load().unwrap_or_default();
+    let libraries: Vec<PathBuf> = settings
+        .library_dirs
+        .iter()
+        .filter(|dir| dir.is_dir() || std::fs::create_dir_all(dir).is_ok())
+        .cloned()
+        .collect();
+    let choices: Vec<LibraryChoice> = libraries
+        .iter()
+        .map(|dir| LibraryChoice {
+            path: dir.display().to_string().into(),
+            free: free_space(dir).into(),
+        })
+        .collect();
+    if let Ok(mut s) = state.lock() {
+        s.install_libraries = libraries;
+    }
+    ui.set_install_libraries(ModelRc::new(VecModel::from(choices)));
+    ui.set_install_choice(0);
+    ui.set_install_open(true);
 }
 
 /// Licenses of all dependencies, from licenses/THIRD-PARTY-LICENSES.md (cargo-about, checked by the CI).
@@ -1177,6 +1599,16 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
                 ui.set_page(5);
                 open_store(&ui, &state, &handle, false);
             }
+            "downloads" => {
+                ui.set_page(7);
+                download_command(&ui, &state, &handle, DownloadCommand::List);
+            }
+            "install" => {
+                ui.set_store_search("digging".into());
+                filter_store(&ui, &state);
+                open_store_title(&ui, &state, &handle, 0);
+                store_install(&ui, &state);
+            }
             "store-title" => {
                 ui.set_store_search("farming".into());
                 filter_store(&ui, &state);
@@ -1244,6 +1676,8 @@ fn main() {
 
     let runtime = tokio::runtime::Runtime::new().expect("cannot start the async runtime");
     let ui = AppWindow::new().expect("cannot create the window");
+    GAMES.with(|model| ui.set_games(ModelRc::from(model.clone())));
+    STORE.with(|model| ui.set_store(ModelRc::from(model.clone())));
     let state: Shared = Arc::default();
     if let Ok(mut s) = state.lock() {
         s.handle = Some(runtime.handle().clone());
@@ -1658,6 +2092,134 @@ fn main() {
             }
         }
     });
+
+    DOWNLOAD_ROWS.with(|model| ui.set_downloads(ModelRc::from(model.clone())));
+    SHOTS.with(|model| ui.set_store_shots(ModelRc::from(model.clone())));
+    GRAPH.with(|model| ui.set_graph(ModelRc::from(model.clone())));
+
+    ui.on_store_download_toggle({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let item = state.lock().ok().and_then(|s| {
+                let title = s.catalog.get(s.store_current?)?;
+                s.downloads
+                    .iter()
+                    .rev()
+                    .find(|d| d.product_id == title.product_id && d.state != "done")
+                    .map(|d| (d.id, d.state.clone()))
+            });
+            let Some((id, state_name)) = item else { return };
+            let command = match state_name.as_str() {
+                "running" | "queued" => DownloadCommand::Pause { id },
+                "paused" | "failed" => DownloadCommand::Resume { id },
+                _ => return,
+            };
+            download_command(&ui, &state, &handle, command);
+        }
+    });
+
+    ui.on_open_downloads({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                download_command(&ui, &state, &handle, DownloadCommand::List);
+            }
+        }
+    });
+
+    ui.on_download_action({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move |id, action| {
+            let Some(ui) = weak.upgrade() else { return };
+            let id = id as u64;
+            if action == "play" {
+                let game = state.lock().ok().and_then(|s| {
+                    let item = s.downloads.iter().find(|d| d.id == id)?;
+                    library_entry(&s.all, &item.destination).map(|e| e.info.clone())
+                });
+                if let Some(game) = game {
+                    start_game(&ui, &state, &handle, game);
+                }
+                return;
+            }
+            let command = match action.as_str() {
+                "pause" => DownloadCommand::Pause { id },
+                "resume" => DownloadCommand::Resume { id },
+                "up" => DownloadCommand::Move { id, up: true },
+                "down" => DownloadCommand::Move { id, up: false },
+                "remove" => DownloadCommand::Remove { id },
+                "clear" => DownloadCommand::ClearDone,
+                _ => return,
+            };
+            download_command(&ui, &state, &handle, command);
+        }
+    });
+
+    ui.on_store_install({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                store_install(&ui, &state);
+            }
+        }
+    });
+
+    ui.on_confirm_install({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let choice = ui.get_install_choice().max(0) as usize;
+            let Some((title, library)) = state.lock().ok().and_then(|s| {
+                let title = s.catalog.get(s.store_current?)?.clone();
+                let library = s.install_libraries.get(choice)?.clone();
+                Some((title, library))
+            }) else {
+                return;
+            };
+            let Some(content_id) = title.content_id.clone() else {
+                ui.set_status("This title has no PC package to install".into());
+                return;
+            };
+            ui.set_status(format!("{} added to the downloads", title.name).into());
+            download_command(
+                &ui,
+                &state,
+                &handle,
+                DownloadCommand::Add {
+                    product_id: title.product_id,
+                    name: title.name,
+                    content_id,
+                    library,
+                },
+            );
+        }
+    });
+
+    // Progress: ask for the queue every second while it runs or its page is open.
+    let poll = slint::Timer::default();
+    poll.start(slint::TimerMode::Repeated, Duration::from_secs(1), {
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if ui.get_page() == 7 || ui.get_downloads_active() > 0 {
+                download_command(&ui, &state, &handle, DownloadCommand::List);
+            }
+        }
+    });
+    // Once at start: a queue left from last time shows its count.
+    download_command(&ui, &state, &handle, DownloadCommand::List);
 
     schedule_snapshot(&ui, &state, &handle);
     ui.run().expect("the window failed");

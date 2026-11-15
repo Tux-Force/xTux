@@ -23,6 +23,9 @@ use crate::{Error, Progress, Result};
 
 /// Package metadata cached while the install runs.
 const CACHE_FILE: &str = ".xodus-streaming-tmp.msixvc";
+/// Files finished by an install that did not complete yet, one name per line; an interrupted or paused install
+/// skips them when it runs again. Removed when the install completes.
+const FINISHED_FILE: &str = ".xtux-finished-files";
 
 /// Where the `.msixvc` package comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +189,32 @@ struct Job {
     name: String,
     target: PathBuf,
     content: SegmentFile,
+    /// Where a finished file is noted for a later run.
+    journal: PathBuf,
+    /// A partly downloaded file may continue at its last whole page (first installs only, never updates).
+    resume: bool,
+}
+
+/// Names of the files an earlier, unfinished run completed.
+fn read_finished(journal: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(journal)
+        .map(|text| text.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Notes a finished file; a single appended line, so concurrent jobs do not mix their writes.
+fn note_finished(journal: &Path, name: &str) {
+    use std::io::Write;
+    if name.contains('\n') {
+        return;
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(journal)
+    {
+        let _ = file.write_all(format!("{name}\n").as_bytes());
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -281,9 +310,13 @@ where
         .unpack(&key)
         .map_err(|e| Error::msg(format!("failed to unpack the content key: {e}")))?;
 
-    // Files whose hashes differ from the last install, or that have no hashes at all.
+    // Files whose hashes differ from the last install, or that have no hashes at all; files an interrupted run
+    // of this install finished (with their full size) are kept.
+    let journal = out.join(FINISHED_FILE);
+    let finished = read_finished(&journal);
     let mut jobs = Vec::new();
     let mut total_size: u64 = 0;
+    let mut kept: u64 = 0;
     for (name, remote) in &rfiles {
         let unchanged = lfiles.get(name).is_some_and(|local| {
             remote.data_hashs == local.data_hashs && !remote.data_hashs.is_empty()
@@ -292,7 +325,14 @@ where
             continue;
         }
         let target = safe_join(&root, name)?;
-        if target == cache_path || target == final_path {
+        if finished.contains(name)
+            && std::fs::symlink_metadata(&target)
+                .is_ok_and(|m| m.is_file() && m.len() == remote.length)
+        {
+            kept = kept.saturating_add(remote.length);
+            continue;
+        }
+        if target == cache_path || target == final_path || target == journal {
             return Err(Error::msg(format!(
                 "refusing to overwrite {name:?} from the package"
             )));
@@ -309,6 +349,8 @@ where
                 data_hashs: vec![],
                 keep_encrypted: remote.keep_encrypted,
             },
+            journal: journal.clone(),
+            resume: lfiles.is_empty(),
         });
     }
 
@@ -328,8 +370,12 @@ where
         )));
     }
 
-    progress.message("Downloading");
+    // Kept files count as done, so a resumed install shows its real progress; the totals are settled before
+    // the "Downloading" step starts, which is when clients begin to trust the byte progress.
+    counter.advance(kept);
     counter.set_remaining(total_size);
+    progress.message("Downloading");
+    counter.report();
 
     let remote_xvd = &remote_xvd;
     stream::iter(jobs.into_iter().map(Ok::<Job, Error>))
@@ -345,6 +391,7 @@ where
 
     // Only a finished install replaces the metadata of the last one, so an interrupted run
     // downloads the files it did not finish again.
+    std::fs::remove_file(&journal).ok();
     std::fs::remove_file(&final_path).ok();
     std::fs::rename(&cache_path, &final_path).map_err(|e| {
         Error::msg(format!(
@@ -455,22 +502,56 @@ async fn download_job(
     if let Some(folder) = job.target.parent() {
         std::fs::create_dir_all(folder).map_err(write_err)?;
     }
-    let mut fout = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&job.target)
-        .await
-        .map_err(write_err)?;
+    // Pages are encrypted one by one, so a partly downloaded file continues at its last whole page.
+    let page = msixvc::layout::PAGE_SIZE as u64;
+    let skip = if job.resume {
+        std::fs::symlink_metadata(&job.target)
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| m.len().min(job.content.length) / page * page)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let mut fout = if skip > 0 {
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&job.target)
+            .await
+            .map_err(write_err)?;
+        file.set_len(skip).await.map_err(write_err)?;
+        let mut file = file;
+        use tokio::io::AsyncSeekExt;
+        file.seek(std::io::SeekFrom::Start(skip))
+            .await
+            .map_err(write_err)?;
+        file
+    } else {
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&job.target)
+            .await
+            .map_err(write_err)?
+    };
+    let content = SegmentFile {
+        offset: job.content.offset + skip,
+        length: job.content.length - skip,
+        data_hashs: vec![],
+        keep_encrypted: job.content.keep_encrypted,
+    };
 
     let total = job.content.length;
     let progress = counter.progress;
-    progress.file(&job.name, 0, total);
+    // The kept part of the file counts as done.
+    counter.advance(skip);
+    progress.file(&job.name, skip, total);
     let mut last = 0;
     let on_progress = |pos: u64, _| {
         counter.advance(pos.saturating_sub(last));
         last = pos;
-        progress.file(&job.name, pos.min(total), total);
+        progress.file(&job.name, (skip + pos).min(total), total);
     };
 
     let result = match origin {
@@ -479,12 +560,12 @@ async fn download_job(
                 .await
                 .map_err(|e| Error::msg(format!("could not open {}: {e}", path.display())))?;
             remote_xvd
-                .extract_file(&mut input, &mut fout, &job.content, full_key, on_progress)
+                .extract_file(&mut input, &mut fout, &content, full_key, on_progress)
                 .await
         }
         Origin::Http(url) => {
             remote_xvd
-                .download_file_http(client, url, &mut fout, &job.content, full_key, on_progress)
+                .download_file_http(client, url, &mut fout, &content, full_key, on_progress)
                 .await
         }
     };
@@ -492,8 +573,12 @@ async fn download_job(
     fout.flush().await.map_err(write_err)?;
     progress.file(&job.name, total, total);
     progress.file_finished(&job.name);
+    note_finished(&job.journal, &job.name);
     Ok(())
 }
+
+/// The step from which [`Progress::bytes`] is the overall progress of the install; before it, metadata is read.
+pub const DOWNLOAD_STEP: &str = "Downloading";
 
 /// Overall byte progress, shared by the concurrent downloads.
 struct Counter<'p> {

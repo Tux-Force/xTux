@@ -15,6 +15,7 @@ pub mod license;
 pub mod logs;
 pub mod package;
 pub mod progress;
+pub mod queue;
 pub mod settings;
 pub mod uninstall;
 
