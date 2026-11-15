@@ -51,7 +51,7 @@ fn show_game(ui: &AppWindow, game: &GameInfo) {
     ui.set_game_wine(own.wine.unwrap_or_default().into());
     ui.set_game_prefix(path_text(&own.prefix).into());
     ui.set_game_exe(own.exe.unwrap_or_default().into());
-    ui.set_game_args(own.args.join(" ").into());
+    ui.set_game_args(own.args.join("\n").into());
     ui.set_game_env(
         own.env
             .iter()
@@ -324,8 +324,16 @@ fn main() {
         let handle = runtime.handle().clone();
         move || {
             let Some(ui) = weak.upgrade() else { return };
-            // Keep what this page does not show (market, game settings).
-            let mut settings = Settings::load().unwrap_or_default();
+            // Keep what this page does not show (market, game settings); never overwrite a file we could not read.
+            let mut settings = match Settings::load() {
+                Ok(settings) => settings,
+                Err(err) => {
+                    ui.set_status(
+                        format!("Not saved, the settings file has an error: {err}").into(),
+                    );
+                    return;
+                }
+            };
             settings.library_dirs = ui
                 .get_library_dirs()
                 .lines()
@@ -382,12 +390,22 @@ fn main() {
                 exe: non_empty(&ui.get_game_exe()),
                 args: ui
                     .get_game_args()
-                    .split_whitespace()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
                     .map(str::to_string)
                     .collect(),
                 env: parse_env(&ui.get_game_env()),
             };
-            let mut settings = Settings::load().unwrap_or_default();
+            let mut settings = match Settings::load() {
+                Ok(settings) => settings,
+                Err(err) => {
+                    ui.set_status(
+                        format!("Not saved, the settings file has an error: {err}").into(),
+                    );
+                    return;
+                }
+            };
             settings.set_game(&game.path, own);
             match settings.save() {
                 Ok(()) => ui.set_status(format!("Settings of {} saved", game.name).into()),

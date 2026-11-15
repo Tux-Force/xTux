@@ -44,8 +44,12 @@ pub struct GameSettings {
     pub env: BTreeMap<String, String>,
 }
 
+/// The same folder gives the same key however it was written (`./Game`, `Game/`, through a link).
 fn game_key(game_dir: &Path) -> String {
-    game_dir.to_string_lossy().into_owned()
+    std::fs::canonicalize(game_dir)
+        .unwrap_or_else(|_| game_dir.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn home() -> Option<PathBuf> {
@@ -183,7 +187,10 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let text = toml::to_string_pretty(self).map_err(|e| Error::msg(e.to_string()))?;
-        std::fs::write(&file, text)?;
+        // Written next to it and renamed, so a crash never leaves half a file.
+        let partial = file.with_extension("toml.partial");
+        std::fs::write(&partial, text)?;
+        std::fs::rename(&partial, &file)?;
         Ok(())
     }
 }

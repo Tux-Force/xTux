@@ -343,8 +343,8 @@ export component AppWindow inherits Window {
                         LineEdit { text <=> root.game-prefix; placeholder-text: root.prefix; }
                         Label { text: "Executable, package relative (empty: from MicrosoftGame.config)"; }
                         LineEdit { text <=> root.game-exe; placeholder-text: "x64\\Game.exe"; }
-                        Label { text: "Arguments, separated by spaces"; }
-                        LineEdit { text <=> root.game-args; }
+                        Label { text: "Arguments, one per line"; }
+                        TextEdit { text <=> root.game-args; min-height: 60px; }
                     }
                     VerticalLayout {
                         spacing: 6px;

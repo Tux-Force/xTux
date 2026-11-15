@@ -375,10 +375,21 @@ pub async fn launch(
     progress.message("Starting the game");
     let mut command = Command::new(&options.wine);
     if let Some(log) = &options.log {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        // Private: with WINEDEBUG channels, Wine's output can contain the bridge secret or tokens.
         if let Some(dir) = log.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
         }
-        let file = std::fs::File::create(log)
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(log)
             .map_err(|e| Error::msg(format!("could not create {}: {e}", log.display())))?;
         command.stdout(file.try_clone()?).stderr(file);
     }
