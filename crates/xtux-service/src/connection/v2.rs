@@ -1,7 +1,8 @@
 //! Protocol v2 (see the `xtux-protocol` crate): JSON requests with ids, responses and events.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -11,6 +12,35 @@ use xtux_protocol::frame;
 use xtux_protocol::{ClientMessage, ErrorBody, ErrorKind, Event, Request, Response, ServerMessage};
 
 use crate::activity::Activity;
+
+/// Game folders a launch or install of any client is using; they cannot be deleted meanwhile.
+static IN_USE: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
+
+/// Marks a game folder as in use until dropped.
+struct InUse(PathBuf);
+
+impl InUse {
+    fn new(path: &Path) -> Self {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if let Ok(mut set) = IN_USE.lock() {
+            set.insert(path.clone());
+        }
+        Self(path)
+    }
+
+    fn contains(path: &Path) -> bool {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        IN_USE.lock().is_ok_and(|set| set.contains(&path))
+    }
+}
+
+impl Drop for InUse {
+    fn drop(&mut self) {
+        if let Ok(mut set) = IN_USE.lock() {
+            set.remove(&self.0);
+        }
+    }
+}
 
 type Outbox = mpsc::UnboundedSender<ServerMessage>;
 
@@ -199,6 +229,12 @@ impl Job {
                 })
             }
             Request::Uninstall { path } => {
+                if InUse::contains(&path) {
+                    return Err(error_body(xtux_games::Error::msg(format!(
+                        "{} is running or being installed; stop it first",
+                        path.display()
+                    ))));
+                }
                 let settings = xtux_games::settings::Settings::load().map_err(error_body)?;
                 xtux_games::Progress::message(&progress, &format!("Deleting {}", path.display()));
                 let target = path.clone();
@@ -235,6 +271,7 @@ impl Job {
                 env,
                 args,
             } => {
+                let _in_use = InUse::new(&source);
                 // Wine's output goes to the game's log, which clients show.
                 let log = xtux_games::logs::game_log(&source);
                 if let Some(log) = &log {
@@ -308,6 +345,7 @@ impl Job {
                         xtux_games::install::Source::ContentId(id)
                     }
                 };
+                let _in_use = InUse::new(&destination);
                 let mut options = xtux_games::install::InstallOptions::new(destination.clone());
                 options.try_skip_ntfs = try_skip_ntfs;
                 options.parallel = parallel.max(1);

@@ -36,6 +36,10 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<Game> {
             continue;
         };
         for entry in entries.flatten() {
+            // Leftovers of an interrupted delete are not games any more.
+            if entry.file_name().to_string_lossy().starts_with(".xtux-deleting-") {
+                continue;
+            }
             let path = entry.path();
             if let Some(game) = inspect(&path) {
                 games.push(game);

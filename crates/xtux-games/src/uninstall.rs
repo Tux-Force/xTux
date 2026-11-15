@@ -28,15 +28,46 @@ pub fn check(game_dir: &Path, library_dirs: &[PathBuf]) -> Result<PathBuf> {
             game.display()
         )));
     }
+    // A game folder that is a mount point would take a whole filesystem with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if std::fs::metadata(&game)?.dev() != std::fs::metadata(parent)?.dev() {
+            return Err(Error::msg(format!(
+                "{} is a mount point; not deleted",
+                game.display()
+            )));
+        }
+    }
     Ok(game)
 }
 
 /// Deletes a game folder of the library with everything in it (see [`check`]).
 pub fn remove(game_dir: &Path, library_dirs: &[PathBuf]) -> Result<()> {
     let game = check(game_dir, library_dirs)?;
-    std::fs::remove_dir_all(&game).map_err(|e| {
+    // Renamed first inside its library: the game disappears at once and as a whole, and what is deleted is the
+    // folder that was checked, even if a path is swapped afterwards.
+    let name = game
+        .file_name()
+        .ok_or("a game folder has a name")?
+        .to_string_lossy();
+    let doomed = game.with_file_name(format!(".xtux-deleting-{}-{name}", std::process::id()));
+    std::fs::rename(&game, &doomed).map_err(|e| {
         // A Windows drive mounted read-only (Fast Startup, hibernation) ends here.
         Error::msg(format!("could not delete {}: {e}", game.display()))
+    })?;
+    if !std::fs::symlink_metadata(&doomed)?.is_dir() {
+        return Err(Error::msg(format!(
+            "{} changed while it was deleted",
+            game.display()
+        )));
+    }
+    std::fs::remove_dir_all(&doomed).map_err(|e| {
+        Error::msg(format!(
+            "{} is gone from the library, but deleting its files stopped: {e}; the rest is in {}",
+            game.display(),
+            doomed.display()
+        ))
     })?;
     if let Some(log) = crate::logs::game_log(&game) {
         let _ = std::fs::remove_file(log);
