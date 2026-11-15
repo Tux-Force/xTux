@@ -24,7 +24,7 @@ components; each is listed with its license, followed by the full license texts.
 
 ### Apache License 2.0 (Apache-2.0)
 
-Used by: [clang-sys 1.9.1](https://github.com/KyleMayes/clang-sys), [cryptoki-sys 0.5.0](https://github.com/parallaxsecond/rust-cryptoki), [cryptoki 0.12.0](https://github.com/parallaxsecond/rust-cryptoki), [flagset 0.4.7](https://github.com/enarx/flagset)
+Used by: [clang-sys 1.9.1](https://github.com/KyleMayes/clang-sys), [cryptoki-sys 0.5.0](https://github.com/parallaxsecond/rust-cryptoki), [cryptoki 0.12.1](https://github.com/parallaxsecond/rust-cryptoki), [flagset 0.4.7](https://github.com/enarx/flagset)
 
 ```text
 
@@ -2537,7 +2537,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ### Community Data License Agreement Permissive 2.0 (CDLA-Permissive-2.0)
 
-Used by: [webpki-root-certs 1.0.9](https://github.com/rustls/webpki-roots)
+Used by: [webpki-root-certs 1.0.12](https://github.com/rustls/webpki-roots)
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
@@ -3860,7 +3860,7 @@ THIS SOFTWARE.
 
 ### ISC License (ISC)
 
-Used by: [rustls-webpki 0.101.7](https://github.com/rustls/webpki), [rustls-webpki 0.103.15](https://github.com/rustls/webpki)
+Used by: [rustls-webpki 0.101.7](https://github.com/rustls/webpki), [rustls-webpki 0.103.17](https://github.com/rustls/webpki)
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -5727,7 +5727,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [hyper-rustls 0.24.2](https://github.com/rustls/hyper-rustls), [hyper-rustls 0.27.9](https://github.com/rustls/hyper-rustls), [rustls-native-certs 0.8.4](https://github.com/rustls/rustls-native-certs), [rustls-pemfile 1.0.4](https://github.com/rustls/pemfile), [rustls 0.21.12](https://github.com/rustls/rustls), [rustls 0.23.43](https://github.com/rustls/rustls), [sct 0.7.1](https://github.com/rustls/sct.rs)
+Used by: [hyper-rustls 0.24.2](https://github.com/rustls/hyper-rustls), [hyper-rustls 0.27.9](https://github.com/rustls/hyper-rustls), [rustls-native-certs 0.8.4](https://github.com/rustls/rustls-native-certs), [rustls-pemfile 1.0.4](https://github.com/rustls/pemfile), [rustls 0.21.12](https://github.com/rustls/rustls), [rustls 0.23.46](https://github.com/rustls/rustls), [sct 0.7.1](https://github.com/rustls/sct.rs)
 
 ```text
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
@@ -6733,7 +6733,7 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [h2 0.3.27](https://github.com/hyperium/h2), [h2 0.4.19](https://github.com/hyperium/h2)
+Used by: [h2 0.3.27](https://github.com/hyperium/h2), [h2 0.4.20](https://github.com/hyperium/h2)
 
 ```text
 Copyright (c) 2017 h2 authors
@@ -9345,7 +9345,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [crypto-bigint 0.7.5](https://github.com/RustCrypto/crypto-bigint), [sec1 0.8.1](https://github.com/RustCrypto/formats), [spki 0.8.0](https://github.com/RustCrypto/formats)
+Used by: [crypto-bigint 0.7.11](https://github.com/RustCrypto/crypto-bigint), [sec1 0.8.1](https://github.com/RustCrypto/formats), [spki 0.8.0](https://github.com/RustCrypto/formats)
 
 ```text
 Copyright (c) 2021-2026 The RustCrypto Project Developers
@@ -10077,7 +10077,7 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [ctutils 0.4.2](https://github.com/RustCrypto/utils)
+Used by: [ctutils 0.4.8](https://github.com/RustCrypto/utils)
 
 ```text
 Copyright (c) 2025-2026 The RustCrypto Project Developers
@@ -12213,7 +12213,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ### MIT License (MIT)
 
-Used by: [tokio-util 0.7.19](https://github.com/tokio-rs/tokio), [tokio 1.53.1](https://github.com/tokio-rs/tokio)
+Used by: [tokio-util 0.7.19](https://github.com/tokio-rs/tokio), [tokio 1.54.1](https://github.com/tokio-rs/tokio)
 
 ```text
 MIT License
@@ -12572,7 +12572,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [adler2 2.0.1](https://github.com/oyvindln/adler2), [anyhow 1.0.104](https://github.com/dtolnay/anyhow), [async-channel 2.5.0](https://github.com/smol-rs/async-channel), [async-executor 1.14.1](https://github.com/smol-rs/async-executor), [async-io 2.6.0](https://github.com/smol-rs/async-io), [async-lock 3.5.0](https://github.com/smol-rs/async-lock), [async-process 2.5.0](https://github.com/smol-rs/async-process), [async-signal 0.2.14](https://github.com/smol-rs/async-signal), [async-task 4.7.1](https://github.com/smol-rs/async-task), [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [atomic-waker 1.1.2](https://github.com/smol-rs/atomic-waker), [blocking 1.7.0](https://github.com/smol-rs/blocking), [concurrent-queue 2.5.0](https://github.com/smol-rs/concurrent-queue), [countme 3.0.1](https://github.com/matklad/countme), [ctrlc 3.5.2](https://github.com/Detegr/rust-ctrlc.git), [curve25519-dalek-derive 0.1.1](https://github.com/dalek-cryptography/curve25519-dalek), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [dtoa 1.0.11](https://github.com/dtolnay/dtoa), [dyn-clone 1.0.20](https://github.com/dtolnay/dyn-clone), [endi 1.1.1](https://github.com/zeenix/endi), [enumn 0.1.14](https://github.com/dtolnay/enumn), [event-listener-strategy 0.5.4](https://github.com/smol-rs/event-listener-strategy), [event-listener 5.4.2](https://github.com/smol-rs/event-listener), [fastrand 2.5.0](https://github.com/smol-rs/fastrand), [futures-lite 2.6.1](https://github.com/smol-rs/futures-lite), [group 0.13.0](https://github.com/zkcrypto/group), [group 0.14.0](https://github.com/zkcrypto/group), [hermit-abi 0.5.3](https://github.com/hermit-os/hermit-rs), [itoa 1.0.18](https://github.com/dtolnay/itoa), [linux-raw-sys 0.12.1](https://github.com/sunfishcode/linux-raw-sys), [linux-raw-sys 0.4.15](https://github.com/sunfishcode/linux-raw-sys), [minimal-lexical 0.2.1](https://github.com/Alexhuszagh/minimal-lexical), [num_enum 0.7.6](https://github.com/illicitonion/num_enum), [num_enum_derive 0.7.6](https://github.com/illicitonion/num_enum), [once_cell 1.21.4](https://github.com/matklad/once_cell), [ordered-stream 0.2.0](https://github.com/danieldg/ordered-stream), [parking 2.2.1](https://github.com/smol-rs/parking), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [piper 0.2.5](https://github.com/smol-rs/piper), [polling 3.11.0](https://github.com/smol-rs/polling), [portable-atomic-util 0.2.8](https://github.com/taiki-e/portable-atomic-util), [portable-atomic 1.15.0](https://github.com/taiki-e/portable-atomic), [prettyplease 0.2.37](https://github.com/dtolnay/prettyplease), [proc-macro-crate 1.3.1](https://github.com/bkchr/proc-macro-crate), [proc-macro-crate 2.0.2](https://github.com/bkchr/proc-macro-crate), [proc-macro-crate 3.5.0](https://github.com/bkchr/proc-macro-crate), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rowan 0.17.0](https://github.com/rust-analyzer/rowan), [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash), [rustix 0.38.44](https://github.com/bytecodealliance/rustix), [rustix 1.1.4](https://github.com/bytecodealliance/rustix), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [servo_arc 0.4.3](https://github.com/servo/stylo), [simd_cesu8 1.2.0](https://github.com/seancroach/simd_cesu8), [smol_str 0.2.2](https://github.com/rust-analyzer/smol_str), [smol_str 0.3.7](https://github.com/rust-lang/rust-analyzer/tree/master/lib/smol_str), [spin_on 0.1.1](https://crates.io/crates/spin_on), [syn 1.0.109](https://github.com/dtolnay/syn), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.4](https://github.com/dtolnay/syn), [system-deps 6.2.2](https://github.com/gdesmott/system-deps), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror-impl 2.0.20](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 2.0.20](https://github.com/dtolnay/thiserror), [typeid 1.0.3](https://github.com/dtolnay/typeid), [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident), [wasi 0.11.1+wasi-snapshot-preview1](https://github.com/bytecodealliance/wasi), [wasip2 1.0.4+wasi-0.2.12](https://github.com/bytecodealliance/wasi-rs), [wasm-streams 0.5.0](https://github.com/MattiasBuelens/wasm-streams/), [wit-bindgen 0.57.1](https://github.com/bytecodealliance/wit-bindgen), [x11-dl 2.21.0](https://github.com/AltF02/x11-rs.git), [x11 2.21.0](https://github.com/AltF02/x11-rs.git), [zbus-lockstep-macros 0.5.2](https://github.com/luukvanderduim/zbus-lockstep), [zbus-lockstep 0.5.2](https://github.com/luukvanderduim/zbus-lockstep), [zmij 1.0.23](https://github.com/dtolnay/zmij), [zvariant_utils 4.2.0](https://github.com/z-galaxy/zbus/)
+Used by: [adler2 2.0.1](https://github.com/oyvindln/adler2), [anyhow 1.0.104](https://github.com/dtolnay/anyhow), [async-channel 2.5.0](https://github.com/smol-rs/async-channel), [async-executor 1.14.1](https://github.com/smol-rs/async-executor), [async-io 2.6.0](https://github.com/smol-rs/async-io), [async-lock 3.5.0](https://github.com/smol-rs/async-lock), [async-process 2.5.0](https://github.com/smol-rs/async-process), [async-signal 0.2.14](https://github.com/smol-rs/async-signal), [async-task 4.7.1](https://github.com/smol-rs/async-task), [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [atomic-waker 1.1.2](https://github.com/smol-rs/atomic-waker), [blocking 1.7.0](https://github.com/smol-rs/blocking), [concurrent-queue 2.5.0](https://github.com/smol-rs/concurrent-queue), [countme 3.0.1](https://github.com/matklad/countme), [ctrlc 3.5.2](https://github.com/Detegr/rust-ctrlc.git), [curve25519-dalek-derive 0.1.1](https://github.com/dalek-cryptography/curve25519-dalek), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [dtoa 1.0.11](https://github.com/dtolnay/dtoa), [dyn-clone 1.0.20](https://github.com/dtolnay/dyn-clone), [endi 1.1.1](https://github.com/zeenix/endi), [enumn 0.1.14](https://github.com/dtolnay/enumn), [event-listener-strategy 0.5.4](https://github.com/smol-rs/event-listener-strategy), [event-listener 5.4.2](https://github.com/smol-rs/event-listener), [fastrand 2.5.0](https://github.com/smol-rs/fastrand), [futures-lite 2.6.1](https://github.com/smol-rs/futures-lite), [group 0.13.0](https://github.com/zkcrypto/group), [group 0.14.0](https://github.com/zkcrypto/group), [hermit-abi 0.5.3](https://github.com/hermit-os/hermit-rs), [itoa 1.0.18](https://github.com/dtolnay/itoa), [linux-raw-sys 0.12.1](https://github.com/sunfishcode/linux-raw-sys), [linux-raw-sys 0.4.15](https://github.com/sunfishcode/linux-raw-sys), [minimal-lexical 0.2.1](https://github.com/Alexhuszagh/minimal-lexical), [num_enum 0.7.6](https://github.com/illicitonion/num_enum), [num_enum_derive 0.7.6](https://github.com/illicitonion/num_enum), [once_cell 1.21.4](https://github.com/matklad/once_cell), [ordered-stream 0.2.0](https://github.com/danieldg/ordered-stream), [parking 2.2.1](https://github.com/smol-rs/parking), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [piper 0.2.5](https://github.com/smol-rs/piper), [polling 3.11.0](https://github.com/smol-rs/polling), [portable-atomic-util 0.2.8](https://github.com/taiki-e/portable-atomic-util), [portable-atomic 1.15.0](https://github.com/taiki-e/portable-atomic), [prettyplease 0.2.37](https://github.com/dtolnay/prettyplease), [proc-macro-crate 1.3.1](https://github.com/bkchr/proc-macro-crate), [proc-macro-crate 2.0.2](https://github.com/bkchr/proc-macro-crate), [proc-macro-crate 3.5.0](https://github.com/bkchr/proc-macro-crate), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rowan 0.17.0](https://github.com/rust-analyzer/rowan), [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash), [rustix 0.38.44](https://github.com/bytecodealliance/rustix), [rustix 1.1.6](https://github.com/bytecodealliance/rustix), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [servo_arc 0.4.3](https://github.com/servo/stylo), [simd_cesu8 1.2.0](https://github.com/seancroach/simd_cesu8), [smol_str 0.2.2](https://github.com/rust-analyzer/smol_str), [smol_str 0.3.7](https://github.com/rust-lang/rust-analyzer/tree/master/lib/smol_str), [spin_on 0.1.1](https://crates.io/crates/spin_on), [syn 1.0.109](https://github.com/dtolnay/syn), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.4](https://github.com/dtolnay/syn), [system-deps 6.2.2](https://github.com/gdesmott/system-deps), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror-impl 2.0.20](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 2.0.20](https://github.com/dtolnay/thiserror), [typeid 1.0.3](https://github.com/dtolnay/typeid), [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident), [wasi 0.11.1+wasi-snapshot-preview1](https://github.com/bytecodealliance/wasi), [wasip2 1.0.4+wasi-0.2.12](https://github.com/bytecodealliance/wasi-rs), [wasm-streams 0.5.0](https://github.com/MattiasBuelens/wasm-streams/), [wit-bindgen 0.57.1](https://github.com/bytecodealliance/wit-bindgen), [x11-dl 2.21.0](https://github.com/AltF02/x11-rs.git), [x11 2.21.0](https://github.com/AltF02/x11-rs.git), [zbus-lockstep-macros 0.5.2](https://github.com/luukvanderduim/zbus-lockstep), [zbus-lockstep 0.5.2](https://github.com/luukvanderduim/zbus-lockstep), [zmij 1.0.23](https://github.com/dtolnay/zmij), [zvariant_utils 4.2.0](https://github.com/z-galaxy/zbus/)
 
 ```text
 Permission is hereby granted, free of charge, to any

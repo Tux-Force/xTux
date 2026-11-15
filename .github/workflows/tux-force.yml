@@ -37,10 +37,8 @@ jobs:
         with:
           command: check licenses sources bans
 
-      # Known vulnerabilities are reported but do not block yet: several sit deep in upstream crates and need
-      # dependency upgrades of their own.
+      # Known vulnerabilities block; the few without a reachable fix are ignored with a reason in deny.toml.
       - uses: EmbarkStudios/cargo-deny-action@v2
-        continue-on-error: true
         with:
           command: check advisories
 
