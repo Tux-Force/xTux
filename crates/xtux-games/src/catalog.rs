@@ -63,12 +63,23 @@ pub struct Catalog {
     pub fetched_at: u64,
 }
 
-fn cache_file(market: &str) -> Option<PathBuf> {
+/// One cache per market and account, so another account never sees this one's games.
+fn cache_file(market: &str, account: &str) -> Option<PathBuf> {
+    use sha1::Digest;
+    let hash = sha1::Sha1::digest(account.as_bytes());
+    let short: String = hash.iter().take(6).map(|b| format!("{b:02x}")).collect();
     Some(
         crate::art::cache_dir()?
             .parent()?
-            .join(format!("catalog-{market}.json")),
+            .join(format!("catalog-{market}-{short}.json")),
     )
+}
+
+fn account(tokens: &TokenManager) -> String {
+    tokens
+        .get_user()
+        .map(|u| u.puid)
+        .unwrap_or_else(|_| "signed-out".into())
 }
 
 fn now() -> u64 {
@@ -85,31 +96,29 @@ fn valid_market(market: Option<&str>) -> String {
         .to_ascii_uppercase()
 }
 
-fn read_cache(market: &str) -> Option<Catalog> {
-    let bytes = std::fs::read(cache_file(market)?).ok()?;
+fn read_cache(market: &str, account: &str) -> Option<Catalog> {
+    let bytes = std::fs::read(cache_file(market, account)?).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
-fn write_cache(market: &str, catalog: &Catalog) {
+fn write_cache(market: &str, account: &str, catalog: &Catalog) {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let Some(file) = cache_file(market) else {
+    let Some(file) = cache_file(market, account) else {
         return;
     };
     let Some(dir) = file.parent() else { return };
     if std::fs::create_dir_all(dir).is_err() {
         return;
     }
-    let partial = file.with_extension("json.partial");
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&partial)
-        .and_then(|mut f| f.write_all(&serde_json::to_vec(catalog).unwrap_or_default()));
-    if written.is_ok() {
-        let _ = std::fs::rename(&partial, &file);
+    // A unique private temporary file (0600), renamed into place.
+    let Ok(mut temp) = tempfile::NamedTempFile::new_in(dir) else {
+        return;
+    };
+    if temp
+        .write_all(&serde_json::to_vec(catalog).unwrap_or_default())
+        .is_ok()
+    {
+        let _ = temp.persist(&file);
     }
 }
 
@@ -149,6 +158,11 @@ pub async fn owned_ids(
     market: &str,
 ) -> Result<Vec<String>> {
     let store = crate::license::get_store_tokens(client, tokens).await?;
+    // The user token travels in the body: never follow a redirect with it.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(60))
+        .build()?;
     let mut request = serde_json::json!({
         "maxPageSize": 100,
         "market": market,
@@ -318,11 +332,14 @@ fn to_title(product: Product) -> Option<Title> {
                 .any(|d| d.platform_name == "Windows.Desktop")
         });
     let package_format = pc.and_then(|p| p.package_format.clone());
-    let description = if localized.short_description.is_empty() {
-        localized.product_description.chars().take(600).collect()
+    let description: String = if localized.short_description.is_empty() {
+        localized.product_description
     } else {
         localized.short_description
-    };
+    }
+    .chars()
+    .take(1200)
+    .collect();
     Some(Title {
         windows_only: windows_only(&localized.product_title),
         installable: package_format.as_deref() == Some("MSIXVC"),
@@ -372,8 +389,9 @@ pub async fn load(
     refresh: bool,
 ) -> Result<Catalog> {
     let market = valid_market(market);
+    let account = account(tokens);
     if !refresh {
-        if let Some(cached) = read_cache(&market) {
+        if let Some(cached) = read_cache(&market, &account) {
             if now().saturating_sub(cached.fetched_at) < MAX_AGE.as_secs() {
                 return Ok(cached);
             }
@@ -403,7 +421,7 @@ pub async fn load(
         titles,
         fetched_at: now(),
     };
-    write_cache(&market, &catalog);
+    write_cache(&market, &account, &catalog);
     Ok(catalog)
 }
 

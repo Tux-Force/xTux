@@ -764,7 +764,8 @@ fn show_store(ui: &AppWindow, state: &Shared) {
         .store_filtered
         .iter()
         .take(s.store_limit)
-        .map(|&i| store_row(&s.catalog[i], s.covers.get(&s.catalog[i].product_id)))
+        .filter_map(|&i| s.catalog.get(i))
+        .map(|t| store_row(t, s.covers.get(&t.product_id)))
         .collect();
     ui.set_store_count(s.store_filtered.len() as i32);
     ui.set_store_total(s.catalog.len() as i32);
@@ -778,7 +779,7 @@ fn load_store_covers(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
             .store_filtered
             .iter()
             .take(s.store_limit)
-            .map(|&i| &s.catalog[i])
+            .filter_map(|&i| s.catalog.get(i))
             .filter(|t| !s.covers.contains_key(&t.product_id))
             .map(|t| (t.product_id.clone(), t.poster_url.clone()))
             .collect(),
@@ -855,6 +856,9 @@ fn open_store(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, r
                 let count = titles.len();
                 if let Ok(mut s) = state.lock() {
                     s.catalog = titles;
+                    // The old indices are invalid now; filter_store rebuilds them.
+                    s.store_filtered.clear();
+                    s.store_current = None;
                 }
                 with_ui(&weak, move |ui| {
                     ui.set_store_loading(false);

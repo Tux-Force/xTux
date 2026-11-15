@@ -220,7 +220,6 @@ async fn main() -> ExitCode {
     }
     let client = reqwest::ClientBuilder::new()
         .user_agent(format!("xtux-cli/{}", env!("CARGO_PKG_VERSION")))
-        .connection_verbose(true)
         .build()
         .unwrap();
     let args = CliArgs::parse();
