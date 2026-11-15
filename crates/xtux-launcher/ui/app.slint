@@ -1,7 +1,7 @@
 // xTux Launcher: library (cover grid or list), game page, settings, logs.
 // Look: glass panels over a blurred game backdrop; themes and accent colours in the global Theme.
 
-import { LineEdit, TextEdit, Palette } from "std-widgets.slint";
+import { LineEdit, TextEdit, Palette, AboutSlint } from "std-widgets.slint";
 
 export global Theme {
     // The choice; the colours below are set by the launcher (src/theme.rs, contrast checked).
@@ -33,6 +33,13 @@ export global Theme {
     in property <float> backdrop-opacity: 0.55;
     // Opacity of the veil over the backdrop at the top of the window.
     in property <float> veil-top: 0.4;
+}
+
+export struct LicenseRow {
+    name: string,
+    crates: string,
+    count: int,
+    text: string,
 }
 
 export struct GameRow {
@@ -624,6 +631,10 @@ export component AppWindow inherits Window {
     // Logs page (page 3)
     in property <string> service-log;
     in property <string> service-log-path;
+    // About page (page 4)
+    in property <string> version;
+    in property <[LicenseRow]> licenses;
+    in-out property <int> license-open: -1;
 
     callback sign-in();
     callback refresh();
@@ -639,6 +650,7 @@ export component AppWindow inherits Window {
     callback save-settings();
     callback search-edited(string);
     callback ui-changed();
+    callback open-url(string);
 
     // The std widgets follow the launcher's theme.
     public function apply-theme() {
@@ -726,6 +738,12 @@ export component AppWindow inherits Window {
                     text: "Settings";
                     active: root.page == 1;
                     clicked => { root.page = 1; }
+                }
+                NavItem {
+                    glyph: "ⓘ";
+                    text: "About";
+                    active: root.page == 4;
+                    clicked => { root.page = 4; }
                 }
                 NavItem {
                     glyph: "≡";
@@ -1180,6 +1198,116 @@ export component AppWindow inherits Window {
                                     text: "Save";
                                     clicked => { root.save-settings(); }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // About
+            if root.page == 4: PageTitle {
+                text: "About";
+                height: 48px;
+            }
+            if root.page == 4: Flickable {
+                content-height: max(self.height, about-content.preferred-height);
+                about-content := VerticalLayout {
+                    width: parent.width;
+                    spacing: 14px;
+                    alignment: start;
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 18px;
+                            Image {
+                                source: root.app-icon;
+                                width: 84px;
+                                height: 84px;
+                            }
+                            VerticalLayout {
+                                spacing: 6px;
+                                alignment: center;
+                                Heading { text: "xTux Launcher " + root.version; font-size: 22px; }
+                                Text {
+                                    text: "Free software under the GNU General Public License 3.0: you may use, study, share and change it. It comes without any warranty.";
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                Label {
+                                    text: "Part of Tux-Force, a soft fork of Xodus. Games and their artwork belong to their publishers; xTux only runs games your Microsoft account is entitled to.";
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    padding-top: 4px;
+                                    GhostButton { text: "Source code"; clicked => { root.open-url("https://github.com/Tux-Force/xTux"); } }
+                                    GhostButton { text: "Website"; clicked => { root.open-url("https://tux-force.github.io"); } }
+                                    GhostButton { text: "GPL-3.0 text"; clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); } }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                AboutSlint { width: 180px; }
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            Heading { text: "Open source components"; }
+                            Label {
+                                text: "xTux is built from these Rust crates, grouped by license. Select a license for its full text.";
+                                wrap: word-wrap;
+                            }
+                            for row[index] in root.licenses: Rectangle {
+                                height: license-line.preferred-height;
+                                border-radius: 12px;
+                                background: root.license-open == index ? Theme.accent.transparentize(80%) : license-touch.has-hover ? Theme.glass-strong : transparent;
+                                border-width: 1px;
+                                border-color: root.license-open == index ? Theme.accent : Theme.glass-border;
+                                license-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.license-open = root.license-open == index ? -1 : index; }
+                                }
+                                license-line := VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 3px;
+                                    HorizontalLayout {
+                                        Text {
+                                            text: row.name;
+                                            color: Theme.text;
+                                            font-weight: 800;
+                                        }
+                                        Rectangle { }
+                                        Text {
+                                            text: row.count + (row.count == 1 ? " crate" : " crates");
+                                            color: Theme.muted;
+                                        }
+                                    }
+                                    Text {
+                                        text: row.crates;
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                            if root.license-open >= 0: LogView {
+                                height: 360px;
+                                text: root.licenses[root.license-open].text;
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 6px;
+                            Heading { text: "Used at run time, not part of this program"; }
+                            Label {
+                                text: "Tux-Force Wine (LGPL-2.1-or-later) with xgameruntime; DXVK (zlib) and vkd3d-proton (LGPL-2.1-or-later), which xtux-cli prefix init downloads from their GitHub releases; game artwork from the Microsoft Store catalog, kept only in your local cache.";
+                                wrap: word-wrap;
                             }
                         }
                     }

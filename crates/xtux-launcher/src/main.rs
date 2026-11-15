@@ -574,6 +574,66 @@ fn set_license_problem(state: &Shared, path: &Path, problem: Option<String>) {
     }
 }
 
+/// Licenses of all dependencies, from licenses/THIRD-PARTY-LICENSES.md (cargo-about, checked by the CI).
+const THIRD_PARTY: &str = include_str!("../../../licenses/THIRD-PARTY-LICENSES.md");
+
+/// One row per license: name, crates using it, full text.
+fn license_rows() -> Vec<LicenseRow> {
+    let mut rows = Vec::new();
+    let Some(start) = THIRD_PARTY.find("## Licenses and the crates that use them") else {
+        return rows;
+    };
+    for section in THIRD_PARTY[start..].split("\n### ").skip(1) {
+        let name = section
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let crates: Vec<String> = section
+            .lines()
+            .find_map(|l| l.strip_prefix("Used by: "))
+            .unwrap_or_default()
+            .split("), ")
+            .filter_map(|link| {
+                link.strip_prefix('[')?
+                    .split(']')
+                    .next()
+                    .map(str::to_string)
+            })
+            .collect();
+        let text = section
+            .split("```text")
+            .nth(1)
+            .and_then(|t| t.split("```").next())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        rows.push(LicenseRow {
+            name: name.into(),
+            count: crates.len() as i32,
+            crates: crates.join(", ").into(),
+            text: text.into(),
+        });
+    }
+    rows.sort_by_key(|r| -r.count);
+    // The same license with different copyright lines comes as several texts; number them.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let totals: HashMap<String, usize> = rows.iter().fold(HashMap::new(), |mut m, r| {
+        *m.entry(r.name.to_string()).or_default() += 1;
+        m
+    });
+    for row in &mut rows {
+        let name = row.name.to_string();
+        if totals[&name] > 1 {
+            let n = seen.entry(name.clone()).or_default();
+            *n += 1;
+            row.name = format!("{name} · text {n} of {}", totals[&name]).into();
+        }
+    }
+    rows
+}
+
 /// Asks a running game to quit, like closing its window.
 fn stop_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, path: &Path) {
     let Some(canceller) = state.lock().ok().and_then(|s| s.running.get(path).cloned()) else {
@@ -721,6 +781,10 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
             "list" => ui.set_view("list".into()),
             "game" => open_game(&ui, &state, &handle, 0),
             "settings" => ui.set_page(1),
+            "about" => {
+                ui.set_page(4);
+                ui.set_license_open(0);
+            }
             "delete" => {
                 open_game(&ui, &state, &handle, 0);
                 ui.set_confirm_delete(true);
@@ -1089,6 +1153,32 @@ fn main() {
         }
     });
 
+    ui.set_version(env!("CARGO_PKG_VERSION").into());
+    ui.set_licenses(ModelRc::new(VecModel::from(license_rows())));
+    ui.on_open_url(|url| {
+        // Fixed https links of the About page only.
+        if url.starts_with("https://") {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(url.as_str())
+                .spawn();
+        }
+    });
+
     schedule_snapshot(&ui, &state, &handle);
     ui.run().expect("the window failed");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn third_party_licenses_parse() {
+        let rows = super::license_rows();
+        assert!(rows.len() > 5);
+        let mit = rows
+            .iter()
+            .find(|r| r.name.contains("(MIT)"))
+            .expect("MIT is used");
+        assert!(mit.count > 100);
+        assert!(mit.text.contains("Permission is hereby granted"));
+    }
 }
