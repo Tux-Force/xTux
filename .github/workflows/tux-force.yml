@@ -45,7 +45,7 @@ jobs:
           command: check advisories
 
       - name: Install cargo-about
-        run: cargo install --locked cargo-about --version 0.9.3
+        run: cargo install --locked cargo-about --version 0.9.3 --features cli
 
       - name: Third-party license list is up to date
         run: |
