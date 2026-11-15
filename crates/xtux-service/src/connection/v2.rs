@@ -252,6 +252,8 @@ impl Job {
                     .into_iter()
                     .map(|g| xtux_protocol::GameInfo {
                         license_problem: xtux_games::license::problems::of(&g.path),
+                        anticheat: g.anticheat.as_ref().map(|a| a.name.clone()),
+                        anticheat_blocks: g.anticheat.as_ref().is_some_and(|a| a.blocks),
                         name: g.name,
                         path: g.path,
                         kind: match g.kind {

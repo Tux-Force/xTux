@@ -10737,6 +10737,7 @@ dependencies = [
 name = "xtux-launcher"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "image",
  "reqwest 0.13.4",
  "slint",

@@ -54,6 +54,112 @@ struct State {
     backdrop_mode: String,
     /// Running games by folder, with what stops them.
     running: HashMap<PathBuf, Canceller>,
+    /// What the command line asked for, done once the library is loaded.
+    startup: Option<Startup>,
+    handle: Option<tokio::runtime::Handle>,
+}
+
+/// Start options, for desktop shortcuts or Steam entries.
+#[derive(clap::Parser)]
+#[command(
+    name = "xtux-launcher",
+    version,
+    about = "xTux Launcher: library, sign-in and game start of Tux-Force"
+)]
+struct Args {
+    /// Start this game right away: its name as shown in the library, its folder name or its folder path
+    #[arg(long, value_name = "GAME")]
+    play: Option<String>,
+    /// Open the page of this game
+    #[arg(long, value_name = "GAME", conflicts_with = "play")]
+    game: Option<String>,
+    /// Open a page
+    #[arg(long, value_parser = ["library", "settings", "about", "logs"], conflicts_with_all = ["play", "game"])]
+    page: Option<String>,
+}
+
+#[derive(Clone)]
+enum Startup {
+    Play(String),
+    Game(String),
+    Page(String),
+}
+
+/// The library index of `query`: a folder path, a display name or a folder name (case-insensitive).
+fn find_game(all: &[Entry], query: &str) -> Result<usize, String> {
+    let as_path = std::fs::canonicalize(query).ok();
+    let folder = |e: &Entry| {
+        e.info
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    let matching = |pick: &dyn Fn(&Entry) -> bool| -> Vec<usize> {
+        all.iter()
+            .enumerate()
+            .filter(|(_, e)| pick(e))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let mut found = Vec::new();
+    if let Some(path) = &as_path {
+        found = matching(&|e| std::fs::canonicalize(&e.info.path).ok().as_ref() == Some(path));
+    }
+    if found.is_empty() {
+        found = matching(&|e| e.info.name.eq_ignore_ascii_case(query));
+    }
+    if found.is_empty() {
+        found = matching(&|e| folder(e) == query.to_lowercase());
+    }
+    match found.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(format!("{query:?} is not in the library")),
+        _ => Err(format!(
+            "{query:?} is installed more than once; pass its folder path"
+        )),
+    }
+}
+
+/// Carries out the start option once the library is there (UI thread).
+fn run_startup(ui: &AppWindow, state: &Shared) {
+    let (startup, handle) = match state.lock() {
+        Ok(mut s) => (s.startup.take(), s.handle.clone()),
+        Err(_) => return,
+    };
+    let (Some(startup), Some(handle)) = (startup, handle) else {
+        return;
+    };
+    let all = state.lock().map(|s| s.all.clone()).unwrap_or_default();
+    match startup {
+        Startup::Page(page) => ui.set_page(match page.as_str() {
+            "settings" => 1,
+            "logs" => 3,
+            "about" => 4,
+            _ => 0,
+        }),
+        Startup::Game(query) => match find_game(&all, &query) {
+            Ok(index) => open_game(ui, state, &handle, index),
+            Err(err) => ui.set_status(err.into()),
+        },
+        Startup::Play(query) => match find_game(&all, &query) {
+            Ok(index) => {
+                open_game(ui, state, &handle, index);
+                if all[index].info.anticheat_blocks {
+                    ui.set_status(
+                        format!(
+                            "{} runs on Windows only (kernel anti-cheat)",
+                            all[index].info.name
+                        )
+                        .into(),
+                    );
+                } else {
+                    start_game(ui, state, &handle, all[index].info.clone());
+                }
+            }
+            Err(err) => ui.set_status(err.into()),
+        },
+    }
 }
 
 /// What asks for a backdrop change.
@@ -209,6 +315,8 @@ fn show_games(ui: &AppWindow, state: &Shared) {
                 windows,
                 running,
                 license_problem: license_problem.into(),
+                anticheat: entry.info.anticheat.clone().unwrap_or_default().into(),
+                anticheat_blocks: entry.info.anticheat_blocks,
                 cover,
                 cover_blur,
                 has_cover,
@@ -301,6 +409,7 @@ async fn refresh_library(ui: Weak<AppWindow>, state: Shared) {
         with_ui(&ui, move |ui| {
             show_games(&ui, &state);
             ui.set_status(format!("{count} games in the library").into());
+            run_startup(&ui, &state);
             // An ambient backdrop from the first game with art.
             let first = state
                 .lock()
@@ -417,6 +526,8 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
     );
     ui.set_game_windows(game.kind == "windows");
     ui.set_game_license_problem(game.license_problem.clone().unwrap_or_default().into());
+    ui.set_game_anticheat(game.anticheat.clone().unwrap_or_default().into());
+    ui.set_game_anticheat_blocks(game.anticheat_blocks);
     ui.set_game_running(
         state
             .lock()
@@ -713,6 +824,8 @@ fn apply_theme(ui: &AppWindow) {
     theme.set_on_accent(p.on_accent.to_slint());
     theme.set_danger(p.danger.to_slint());
     theme.set_on_danger(p.on_danger.to_slint());
+    theme.set_warning(p.warning.to_slint());
+    theme.set_on_warning(p.on_warning.to_slint());
     theme.set_backdrop_opacity(p.backdrop_opacity);
     theme.set_veil_top(p.veil_min);
     ui.invoke_apply_theme();
@@ -829,6 +942,7 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
 }
 
 fn main() {
+    let args = <Args as clap::Parser>::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
@@ -839,6 +953,15 @@ fn main() {
     let runtime = tokio::runtime::Runtime::new().expect("cannot start the async runtime");
     let ui = AppWindow::new().expect("cannot create the window");
     let state: Shared = Arc::default();
+    if let Ok(mut s) = state.lock() {
+        s.handle = Some(runtime.handle().clone());
+        s.startup = match (args.play, args.game, args.page) {
+            (Some(game), _, _) => Some(Startup::Play(game)),
+            (_, Some(game), _) => Some(Startup::Game(game)),
+            (_, _, Some(page)) => Some(Startup::Page(page)),
+            _ => None,
+        };
+    }
     let handle = runtime.handle().clone();
 
     let settings = Settings::load().unwrap_or_default();
@@ -1170,6 +1293,42 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    fn entry(name: &str, path: &str) -> super::Entry {
+        super::Entry {
+            info: xtux_protocol::GameInfo {
+                name: name.into(),
+                path: path.into(),
+                kind: "windows".into(),
+                title_id: None,
+                store_id: None,
+                license_problem: None,
+                anticheat: None,
+                anticheat_blocks: false,
+            },
+            art: Default::default(),
+            cover: None,
+            cover_blur: None,
+            logo: None,
+            backdrop: None,
+        }
+    }
+
+    #[test]
+    fn finds_games_by_name_or_folder() {
+        let all = vec![
+            entry(
+                "Farming Simulator 25 (PC)",
+                "/g/XboxGames/Farming Simulator 25 (PC)",
+            ),
+            entry("Farming Simulator 25 (PC)", "/g/XodusGames/LS25"),
+            entry("Atomfall", "/g/XboxGames/Atomfall"),
+        ];
+        assert_eq!(super::find_game(&all, "atomfall"), Ok(2));
+        assert_eq!(super::find_game(&all, "LS25"), Ok(1));
+        assert!(super::find_game(&all, "Farming Simulator 25 (PC)").is_err());
+        assert!(super::find_game(&all, "Nope").is_err());
+    }
+
     #[test]
     fn third_party_licenses_parse() {
         let rows = super::license_rows();

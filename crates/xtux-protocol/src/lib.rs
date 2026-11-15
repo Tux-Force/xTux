@@ -114,6 +114,12 @@ pub struct GameInfo {
     /// Why the last license check failed (for example not entitled); `None` when it passed or never ran.
     #[serde(default)]
     pub license_problem: Option<String>,
+    /// Anti-cheat found in the game folder, for example `Ricochet (Activision)`.
+    #[serde(default)]
+    pub anticheat: Option<String>,
+    /// The anti-cheat is a kernel driver Wine cannot load: the game runs on Windows only.
+    #[serde(default)]
+    pub anticheat_blocks: bool,
 }
 
 /// What to install from.
