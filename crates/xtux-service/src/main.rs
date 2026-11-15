@@ -11,6 +11,7 @@ use xodus::tokens::TokenManager;
 
 mod activity;
 mod connection;
+mod downloads;
 mod simple_context;
 
 const XML_MAGIC: u32 = 0x58445358;
@@ -72,6 +73,15 @@ async fn main() {
         _ = tokio::fs::remove_file(&socket_path).await;
     }
     let activity = activity::Activity::new();
+    // The download queue carries on where it stopped.
+    downloads::start(
+        reqwest::Client::builder()
+            .user_agent(format!("xtux-service/{}", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_default(),
+        tokens.clone(),
+        activity.clone(),
+    );
     let idle_timeout = std::env::var("XTUX_IDLE_TIMEOUT")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())

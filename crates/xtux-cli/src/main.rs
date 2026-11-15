@@ -98,6 +98,13 @@ enum SubCommand {
         args: Vec<String>,
     },
     #[cfg(unix)]
+    #[command(
+        about = "The download queue of xtux-service: list, add <Store ID> [library], pause|resume|remove|up|down <n>, clear"
+    )]
+    Downloads {
+        action: Vec<String>,
+    },
+    #[cfg(unix)]
     #[command(about = "List the installed games of the library folders")]
     List {
         /// Print only the game folders
@@ -184,7 +191,7 @@ fn local_only(command: &SubCommand) -> bool {
     #[cfg(unix)]
     if matches!(
         command,
-        SubCommand::List { .. } | SubCommand::Migrate { .. }
+        SubCommand::List { .. } | SubCommand::Migrate { .. } | SubCommand::Downloads { .. }
     ) {
         return true;
     }
@@ -315,6 +322,8 @@ async fn main() -> ExitCode {
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
         #[cfg(unix)]
         SubCommand::List { paths } => commands::list::run(paths),
+        #[cfg(unix)]
+        SubCommand::Downloads { action } => commands::downloads::run(action).await,
         #[cfg(unix)]
         SubCommand::Migrate { game_dir } => {
             match xtux_games::layout::migrate_xodus(std::path::Path::new(&game_dir)).await {

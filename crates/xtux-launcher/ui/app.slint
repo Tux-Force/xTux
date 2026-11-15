@@ -59,6 +59,23 @@ export struct StoreRow {
     hint: string,
 }
 
+export struct DownloadRow {
+    id: int,
+    name: string,
+    // queued | running | paused | failed | done
+    state: string,
+    progress: float,
+    detail: string,
+    cover: image,
+    cover-blur: image,
+    has-cover: bool,
+}
+
+export struct LibraryChoice {
+    path: string,
+    free: string,
+}
+
 export struct LicenseRow {
     name: string,
     crates: string,
@@ -129,7 +146,7 @@ component ShinyButton inherits Rectangle {
     in property <bool> big;
     callback clicked();
     height: big ? 48px : 36px;
-    min-width: big ? 150px : 96px;
+    min-width: max(big ? 150px : 96px, shiny-label.preferred-width + 40px);
     border-radius: big ? 24px : 18px;
     background: !enabled ? Theme.glass : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 55%, Theme.accent.darker(18%) 100%);
     drop-shadow-blur: touch.has-hover && enabled ? 22px : 10px;
@@ -145,7 +162,7 @@ component ShinyButton inherits Rectangle {
         background: @linear-gradient(180deg, #FFFFFF66 0%, #FFFFFF00 100%);
         visible: root.enabled;
     }
-    Text {
+    shiny-label := Text {
         text: root.text;
         color: root.enabled ? Theme.on-accent : Theme.muted;
         font-size: root.big ? 17px : 14px;
@@ -849,6 +866,13 @@ export component AppWindow inherits Window {
     in property <image> store-hero;
     in property <bool> has-store-hero;
     in property <image> store-hero-soft;
+    // Downloads (page 7) and the install dialog
+    in property <[DownloadRow]> downloads;
+    in property <int> downloads-active;
+    in-out property <bool> install-open;
+    in property <[LibraryChoice]> install-libraries;
+    in-out property <int> install-choice;
+    in property <bool> store-title-queued;
     // About page (page 4)
     in property <string> version;
     in property <[LicenseRow]> licenses;
@@ -875,6 +899,10 @@ export component AppWindow inherits Window {
     callback open-store-title(int);
     callback store-play();
     callback store-refresh();
+    callback store-install();
+    callback confirm-install();
+    callback open-downloads();
+    callback download-action(int, string);
 
     // The std widgets follow the launcher's theme.
     public function apply-theme() {
@@ -964,6 +992,32 @@ export component AppWindow inherits Window {
                     clicked => {
                         root.page = 5;
                         root.open-store();
+                    }
+                }
+                Rectangle {
+                    height: 42px;
+                    NavItem {
+                        glyph: "⤓";
+                        text: "Downloads";
+                        active: root.page == 7;
+                        clicked => {
+                            root.page = 7;
+                            root.open-downloads();
+                        }
+                    }
+                    if root.downloads-active > 0: Rectangle {
+                        x: parent.width - self.width - 12px;
+                        y: (parent.height - self.height) / 2;
+                        width: max(22px, count-text.preferred-width + 12px);
+                        height: 22px;
+                        border-radius: 11px;
+                        background: Theme.accent;
+                        count-text := Text {
+                            text: root.downloads-active;
+                            color: Theme.on-accent;
+                            font-size: 12px;
+                            font-weight: 800;
+                        }
                     }
                 }
                 NavItem {
@@ -1630,9 +1684,12 @@ export component AppWindow inherits Window {
                                         clicked => { root.store-play(); }
                                     }
                                     if !root.store-title.installed: ShinyButton {
-                                        text: root.store-title.windows-only != "" ? "Windows only" : root.store-title.installable ? "Install soon" : "Not supported";
+                                        text: root.store-title-queued ? "In downloads"
+                                            : root.store-title.installable ? "⤓  Install"
+                                            : root.store-title.no-package ? "No PC package" : "Not supported";
                                         big: true;
-                                        enabled: false;
+                                        enabled: root.store-title.installable && !root.store-title-queued;
+                                        clicked => { root.store-install(); }
                                     }
                                 }
                             }
@@ -1668,6 +1725,111 @@ export component AppWindow inherits Window {
                                 text: root.store-title.description;
                                 color: Theme.text;
                                 wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Downloads
+            if root.page == 7: HorizontalLayout {
+                height: 48px;
+                spacing: 10px;
+                PageTitle { text: "Downloads"; }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "Clear finished";
+                        clicked => { root.download-action(0, "clear"); }
+                    }
+                }
+            }
+            if root.page == 7 && root.downloads.length == 0: Glass {
+                height: 90px;
+                Text {
+                    text: "Nothing to download. Install a game from the Store.";
+                    color: Theme.muted;
+                }
+            }
+            if root.page == 7 && root.downloads.length > 0: dl-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: root.downloads.length * 104px + 10px;
+                for item[index] in root.downloads: Rectangle {
+                    x: 0;
+                    y: index * 104px;
+                    width: dl-scroll.visible-width - 28px;
+                    height: 94px;
+                    border-radius: 14px;
+                    background: Theme.glass;
+                    border-width: 1px;
+                    border-color: item.state == "running" ? Theme.accent : item.state == "failed" ? Theme.danger : Theme.glass-border;
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-right: 14px;
+                        spacing: 14px;
+                        Rectangle {
+                            width: 49px;
+                            border-radius: 8px;
+                            clip: true;
+                            background: Theme.base-2;
+                            SoftImage {
+                                width: parent.width;
+                                height: parent.height;
+                                sharp: item.cover;
+                                soft: item.cover-blur;
+                                loaded: item.has-cover;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: item.name;
+                                    color: Theme.text;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
+                                Rectangle { }
+                                Text {
+                                    text: item.state == "running" ? "Downloading" : item.state == "queued" ? "Waiting" : item.state == "paused" ? "Paused" : item.state == "failed" ? "Failed" : "Installed";
+                                    color: item.state == "failed" ? Theme.text : Theme.muted;
+                                    font-weight: 700;
+                                }
+                            }
+                            // Progress bar
+                            Rectangle {
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.field;
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * max(0, min(1, item.progress));
+                                    border-radius: 4px;
+                                    background: item.state == "failed" ? Theme.danger : @linear-gradient(90deg, Theme.accent.darker(10%) 0%, Theme.accent.brighter(20%) 100%);
+                                    animate width { duration: 400ms; }
+                                }
+                            }
+                            Text {
+                                text: item.detail;
+                                color: Theme.muted;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                if item.state == "running" || item.state == "queued": GhostButton { text: "❚❚"; width: 44px; clicked => { root.download-action(item.id, "pause"); } }
+                                if item.state == "paused" || item.state == "failed": GhostButton { text: "▶"; width: 44px; clicked => { root.download-action(item.id, "resume"); } }
+                                if item.state != "done": GhostButton { text: "↑"; width: 40px; clicked => { root.download-action(item.id, "up"); } }
+                                if item.state != "done": GhostButton { text: "↓"; width: 40px; clicked => { root.download-action(item.id, "down"); } }
+                                GhostButton { text: item.state == "done" ? "✓" : "✕"; width: 44px; clicked => { root.download-action(item.id, "remove"); } }
                             }
                         }
                     }
@@ -1900,6 +2062,75 @@ export component AppWindow inherits Window {
                         clicked => {
                             root.confirm-delete = false;
                             root.delete-game();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Install dialog: where the game goes.
+    if root.install-open: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(560px, parent.width - 60px);
+            height: install-dialog.preferred-height;
+            install-dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: "Install " + root.store-title.name;
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "Download size " + root.store-title.size + ". Choose the library folder; the game gets its own folder in it.";
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                for choice[index] in root.install-libraries: Rectangle {
+                    height: choice-line.preferred-height;
+                    border-radius: 12px;
+                    background: root.install-choice == index ? Theme.accent.transparentize(78%) : choice-touch.has-hover ? Theme.glass-strong : Theme.glass;
+                    border-width: 1px;
+                    border-color: root.install-choice == index ? Theme.accent : Theme.glass-border;
+                    choice-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.install-choice = index; }
+                    }
+                    choice-line := HorizontalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        Text {
+                            text: choice.path;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        Rectangle { }
+                        Text {
+                            text: choice.free;
+                            color: Theme.muted;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    GhostButton {
+                        text: "Cancel";
+                        clicked => { root.install-open = false; }
+                    }
+                    ShinyButton {
+                        text: "Add to downloads";
+                        enabled: root.install-libraries.length > 0;
+                        clicked => {
+                            root.install-open = false;
+                            root.confirm-install();
                         }
                     }
                 }

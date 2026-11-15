@@ -10740,6 +10740,7 @@ dependencies = [
  "clap",
  "image",
  "reqwest 0.13.4",
+ "rustix 1.1.6",
  "slint",
  "slint-build",
  "tokio",

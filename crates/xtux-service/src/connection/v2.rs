@@ -228,6 +228,10 @@ impl Job {
                     user,
                 })
             }
+            Request::Downloads(command) => {
+                let items = crate::downloads::command(command).map_err(error_body)?;
+                Ok(Response::Downloads { items })
+            }
             Request::Uninstall { path } => {
                 if InUse::contains(&path) {
                     return Err(error_body(xtux_games::Error::msg(format!(

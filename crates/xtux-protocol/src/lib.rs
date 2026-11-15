@@ -92,6 +92,8 @@ pub enum Request {
         #[serde(default)]
         refresh: bool,
     },
+    /// The download queue: list it or change it; answered with the queue.
+    Downloads(DownloadCommand),
     /// Deletes a game folder of the library with everything in it.
     Uninstall {
         path: PathBuf,
@@ -126,6 +128,50 @@ pub struct GameInfo {
     /// The anti-cheat is a kernel driver Wine cannot load: the game runs on Windows only.
     #[serde(default)]
     pub anticheat_blocks: bool,
+}
+
+/// A change of the download queue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum DownloadCommand {
+    List,
+    /// Queues a game into `library/<name>`; `library` must be a library folder of the settings.
+    Add {
+        product_id: String,
+        name: String,
+        content_id: String,
+        library: PathBuf,
+    },
+    Pause {
+        id: u64,
+    },
+    Resume {
+        id: u64,
+    },
+    /// Takes the item out; an unfinished download folder the queue created is deleted.
+    Remove {
+        id: u64,
+    },
+    Move {
+        id: u64,
+        up: bool,
+    },
+    ClearDone,
+}
+
+/// An item of the download queue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DownloadItem {
+    pub id: u64,
+    pub product_id: String,
+    pub name: String,
+    pub destination: PathBuf,
+    /// `queued`, `running`, `paused`, `failed` or `done`.
+    pub state: String,
+    pub done: u64,
+    pub total: Option<u64>,
+    /// Last step or error.
+    pub message: String,
 }
 
 /// A title of the store catalog.
@@ -206,6 +252,9 @@ pub enum Response {
     },
     Catalog {
         titles: Vec<CatalogTitle>,
+    },
+    Downloads {
+        items: Vec<DownloadItem>,
     },
     Cancelled,
 }
