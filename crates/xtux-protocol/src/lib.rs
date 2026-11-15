@@ -86,6 +86,10 @@ pub enum Request {
         parallel: usize,
         market: Option<String>,
     },
+    /// Deletes a game folder of the library with everything in it.
+    Uninstall {
+        path: PathBuf,
+    },
     /// Signs a user in: the daemon opens the Microsoft sign-in window in a helper process (`xtux-cli login`)
     /// with this environment (it needs the client's display) and answers with the new status.
     SignIn {
@@ -107,6 +111,9 @@ pub struct GameInfo {
     pub kind: String,
     pub title_id: Option<String>,
     pub store_id: Option<String>,
+    /// Why the last license check failed (for example not entitled); `None` when it passed or never ran.
+    #[serde(default)]
+    pub license_problem: Option<String>,
 }
 
 /// What to install from.
@@ -154,6 +161,9 @@ pub enum Response {
     },
     Library {
         games: Vec<GameInfo>,
+    },
+    Uninstalled {
+        path: PathBuf,
     },
     Cancelled,
 }

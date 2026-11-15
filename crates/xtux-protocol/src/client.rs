@@ -39,8 +39,17 @@ pub struct Canceller {
 }
 
 impl Canceller {
+    /// Cancels the request in flight. Right after a request was started it may not be sent yet: then this waits up
+    /// to ten seconds for it, so an early Stop is not lost.
     pub async fn cancel_current(&self) -> Result<(), ClientError> {
-        let target = self.current.load(Ordering::SeqCst);
+        let mut target = self.current.load(Ordering::SeqCst);
+        for _ in 0..200 {
+            if target != 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            target = self.current.load(Ordering::SeqCst);
+        }
         if target == 0 {
             return Ok(());
         }

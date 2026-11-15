@@ -18,9 +18,48 @@ pub struct Settings {
     pub prefix: Option<PathBuf>,
     /// Store market (for example `DE`); taken from the system language when not set.
     pub market: Option<String>,
+    /// Look of the launcher.
+    pub ui: UiSettings,
     /// Settings of single games, by game folder.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub games: BTreeMap<String, GameSettings>,
+}
+
+/// Look of the launcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiSettings {
+    /// `system`, `brand`, `anthracite` or `light`.
+    pub theme: String,
+    /// Dark theme used when following a dark system: `brand` or `anthracite`.
+    pub dark_variant: String,
+    /// `lime`, `emerald`, `cyan`, `violet` or `amber`.
+    pub accent: String,
+    /// Library view: `grid` or `list`.
+    pub view: String,
+    /// Load cover and hero images from the Microsoft Store catalog (sends the Store IDs of installed games).
+    pub online_art: bool,
+    /// Window background from game art: `dynamic` (follows the game under the mouse), `static` or `off`.
+    pub backdrop: String,
+    /// App icon: `mascot`, `mark`, `symbol` or `mono`.
+    pub icon: String,
+    /// Icon colours: `brand` or `accent`.
+    pub icon_colour: String,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            theme: "system".into(),
+            dark_variant: "brand".into(),
+            accent: "lime".into(),
+            view: "grid".into(),
+            online_art: true,
+            backdrop: "dynamic".into(),
+            icon: "mascot".into(),
+            icon_colour: "brand".into(),
+        }
+    }
 }
 
 /// Settings of one game; empty values fall back to the general settings.
@@ -206,6 +245,7 @@ mod tests {
             wine: Some("/opt/wine/bin/wine".into()),
             prefix: None,
             market: Some("DE".into()),
+            ui: UiSettings::default(),
             games: BTreeMap::new(),
         };
         let text = toml::to_string_pretty(&settings).unwrap();

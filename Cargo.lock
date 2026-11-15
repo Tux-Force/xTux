@@ -10716,6 +10716,7 @@ dependencies = [
  "chrono",
  "fs2",
  "futures-util",
+ "image",
  "msixvc",
  "reqwest 0.13.4",
  "rustix 1.1.4",
@@ -10736,6 +10737,8 @@ dependencies = [
 name = "xtux-launcher"
 version = "0.1.0"
 dependencies = [
+ "image",
+ "reqwest 0.13.4",
  "slint",
  "slint-build",
  "tokio",

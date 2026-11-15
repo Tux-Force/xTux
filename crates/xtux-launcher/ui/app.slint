@@ -1,35 +1,105 @@
-// xTux Launcher, milestone 1: sign-in, local library, play, settings.
+// xTux Launcher: library (cover grid or list), game page, settings, logs.
+// Look: glass panels over a blurred game backdrop; themes and accent colours in the global Theme.
 
-import { Button, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { LineEdit, TextEdit, Palette, AboutSlint } from "std-widgets.slint";
 
-export global Brand {
-    out property <color> night: #06140F;
-    out property <color> forest: #0F3B2E;
-    out property <color> forest-light: #164a3a;
-    out property <color> lime: #A3E635;
-    out property <color> emerald: #10B981;
-    out property <color> ice: #F4F7FB;
-    out property <color> mist: #8FB5A3;
+export global Theme {
+    // The choice; the colours below are set by the launcher (src/theme.rs, contrast checked).
+    // system | brand | anthracite | light
+    in-out property <string> choice: "system";
+    // brand | anthracite: the dark theme when following a dark system
+    in-out property <string> dark-variant: "brand";
+    // lime | emerald | cyan | violet | amber
+    in-out property <string> accent-name: "lime";
+    // The desktop's scheme, captured before the launcher sets its own.
+    in-out property <bool> system-dark: true;
+
+    in property <bool> light;
+    in property <color> accent: #A3E635;
+    in property <color> accent-text: #A3E635;
+    in property <color> on-accent: #06140F;
+    in property <color> danger: #DC2626;
+    in property <color> on-danger: #FFFFFF;
+    in property <color> base: #04100C;
+    in property <color> base-2: #0F3B2E;
+    in property <color> text: #F4F7FB;
+    in property <color> muted: #A9C9BA;
+    in property <color> glass: #0B2E239E;
+    in property <color> glass-strong: #082219E0;
+    in property <color> glass-border: #FFFFFF24;
+    in property <color> shine: #FFFFFF1A;
+    in property <color> shadow: #000000A8;
+    in property <color> field: #00000057;
+    in property <float> backdrop-opacity: 0.55;
+    // Opacity of the veil over the backdrop at the top of the window.
+    in property <float> veil-top: 0.4;
+}
+
+export struct LicenseRow {
+    name: string,
+    crates: string,
+    count: int,
+    text: string,
 }
 
 export struct GameRow {
     name: string,
     detail: string,
     windows: bool,
+    running: bool,
+    // Why the last license check failed; empty when it passed or never ran.
+    license-problem: string,
+    cover: image,
+    cover-blur: image,
+    has-cover: bool,
+    logo: image,
+    has-logo: bool,
 }
 
-component PrimaryButton inherits Rectangle {
+// Frosted glass: translucent fill, light edge, top shine and a soft shadow.
+component Glass inherits Rectangle {
+    in property <bool> strong;
+    border-radius: 18px;
+    background: strong ? Theme.glass-strong : Theme.glass;
+    border-width: 1px;
+    border-color: Theme.glass-border;
+    drop-shadow-blur: 28px;
+    drop-shadow-offset-y: 10px;
+    drop-shadow-color: Theme.shadow;
+    Rectangle {
+        border-radius: root.border-radius;
+        background: @linear-gradient(180deg, Theme.shine 0%, transparent 38%);
+    }
+    @children
+}
+
+component ShinyButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    in property <bool> big;
     callback clicked();
-    height: 34px;
-    min-width: 96px;
-    border-radius: 8px;
-    background: !root.enabled ? Brand.forest-light : touch.pressed ? Brand.emerald : touch.has-hover ? #b8f05a : Brand.lime;
-    label := Text {
+    height: big ? 48px : 36px;
+    min-width: big ? 150px : 96px;
+    border-radius: big ? 24px : 18px;
+    background: !enabled ? Theme.glass : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 55%, Theme.accent.darker(18%) 100%);
+    drop-shadow-blur: touch.has-hover && enabled ? 22px : 10px;
+    drop-shadow-color: enabled ? Theme.accent.transparentize(touch.has-hover ? 35% : 65%) : transparent;
+    transform-scale: touch.pressed ? 0.97 : touch.has-hover && enabled ? 1.04 : 1;
+    animate transform-scale, drop-shadow-blur { duration: 140ms; easing: ease-out; }
+    // Glossy top half.
+    Rectangle {
+        y: 1px;
+        height: parent.height / 2;
+        width: parent.width - 6px;
+        border-radius: root.border-radius;
+        background: @linear-gradient(180deg, #FFFFFF66 0%, #FFFFFF00 100%);
+        visible: root.enabled;
+    }
+    Text {
         text: root.text;
-        color: root.enabled ? Brand.night : Brand.mist;
-        font-weight: 700;
+        color: root.enabled ? Theme.on-accent : Theme.muted;
+        font-size: root.big ? 17px : 14px;
+        font-weight: 800;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -40,39 +110,458 @@ component PrimaryButton inherits Rectangle {
     }
 }
 
-component SecondaryButton inherits Rectangle {
+component GhostButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 36px;
+    min-width: 72px;
+    border-radius: 18px;
+    background: active ? Theme.accent.transparentize(75%) : touch.has-hover ? Theme.glass-strong : Theme.glass;
+    border-width: 1px;
+    border-color: active || touch.has-hover ? Theme.accent : Theme.glass-border;
+    animate background, border-color { duration: 140ms; }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-weight: root.active ? 800 : 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component DangerButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     callback clicked();
-    height: 34px;
+    height: 36px;
     min-width: 96px;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: root.enabled ? Brand.lime : Brand.forest-light;
-    background: touch.pressed ? Brand.forest-light : touch.has-hover ? Brand.forest-light.transparentize(50%) : transparent;
-    Text {
-        text: root.text;
-        color: root.enabled ? Brand.lime : Brand.mist;
-        font-weight: 700;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    border-radius: 18px;
+    background: !enabled ? Theme.glass : touch.has-hover ? Theme.danger.brighter(10%) : Theme.danger;
+    drop-shadow-blur: touch.has-hover && enabled ? 18px : 0px;
+    drop-shadow-color: Theme.danger.transparentize(50%);
+    animate background, drop-shadow-blur { duration: 140ms; }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        Text {
+            text: root.text;
+            color: root.enabled ? Theme.on-danger : Theme.muted;
+            font-weight: 800;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
     }
     touch := TouchArea {
         enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Marks a game whose last license check failed.
+component LicenseChip inherits Rectangle {
+    height: 26px;
+    width: license-row.preferred-width;
+    border-radius: 13px;
+    background: Theme.danger;
+    drop-shadow-blur: 10px;
+    drop-shadow-color: Theme.danger.transparentize(50%);
+    license-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        Text {
+            text: "⚠  No license";
+            color: Theme.on-danger;
+            font-size: 12px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Pulsing "Running" chip.
+component RunningChip inherits Rectangle {
+    height: 26px;
+    width: chip-row.preferred-width;
+    border-radius: 13px;
+    background: Theme.glass-strong;
+    border-width: 1px;
+    border-color: Theme.accent;
+    chip-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        spacing: 7px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 9px;
+                height: 9px;
+                border-radius: 4.5px;
+                background: Theme.accent;
+                opacity: 0.55 + 0.45 * sin(animation-tick() * 0.25deg / 1ms);
+                drop-shadow-blur: 8px;
+                drop-shadow-color: Theme.accent;
+            }
+        }
+        Text {
+            text: "Running";
+            color: Theme.text;
+            font-size: 12px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component Swatch inherits Rectangle {
+    in property <color> tint;
+    in property <bool> active;
+    callback clicked();
+    width: 30px;
+    height: 30px;
+    border-radius: 15px;
+    background: @linear-gradient(160deg, root.tint.brighter(30%) 0%, root.tint 60%, root.tint.darker(20%) 100%);
+    border-width: active ? 3px : 1px;
+    border-color: active ? Theme.text : Theme.glass-border;
+    drop-shadow-blur: active ? 14px : 0px;
+    drop-shadow-color: root.tint.transparentize(40%);
+    transform-scale: touch.has-hover ? 1.12 : 1;
+    animate transform-scale { duration: 120ms; }
+    touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 }
 
 component Label inherits Text {
-    color: Brand.mist;
+    color: Theme.muted;
+    font-size: 13px;
+}
+
+component Heading inherits Text {
+    color: Theme.text;
+    font-size: 18px;
+    font-weight: 800;
+}
+
+component NavItem inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <bool> active;
+    callback clicked();
+    height: 42px;
+    border-radius: 12px;
+    background: root.active ? Theme.accent.transparentize(80%) : touch.has-hover ? Theme.glass : transparent;
+    animate background { duration: 140ms; }
+    Rectangle {
+        x: 0;
+        width: 4px;
+        height: root.active ? parent.height - 16px : 0;
+        y: (parent.height - self.height) / 2;
+        border-radius: 2px;
+        background: Theme.accent;
+        animate height { duration: 160ms; easing: ease-out; }
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        spacing: 12px;
+        Text {
+            text: root.glyph;
+            color: root.active ? Theme.accent-text : Theme.muted;
+            font-size: 16px;
+            vertical-alignment: center;
+            width: 18px;
+        }
+        Text {
+            text: root.text;
+            color: root.active ? Theme.text : Theme.muted;
+            font-size: 15px;
+            font-weight: root.active ? 700 : 500;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Placeholder art: a brand gradient with the logo or the name.
+component ArtFallback inherits Rectangle {
+    in property <GameRow> game;
+    background: @linear-gradient(150deg, Theme.base-2 0%, Theme.accent.transparentize(70%) 100%);
+    if root.game.has-logo: Image {
+        source: root.game.logo;
+        width: min(parent.width, parent.height) * 0.55;
+        height: self.width;
+        image-fit: contain;
+    }
+    if !root.game.has-logo: Text {
+        text: root.game.name;
+        color: Theme.text;
+        font-size: 18px;
+        font-weight: 800;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        width: parent.width - 24px;
+    }
+}
+
+component CoverTile inherits Rectangle {
+    in property <GameRow> game;
+    in property <bool> busy;
+    callback play();
+    callback stop();
+    callback open();
+    callback hovered();
+    out property <bool> hover: touch.has-hover || play-touch.has-hover || gear-touch.has-hover;
+    property <bool> bar-up: root.hover || root.game.running;
+    changed hover => {
+        if self.hover {
+            root.hovered();
+        }
+    }
+
+    art := Rectangle {
+        height: root.width * 1.5;
+        y: 0;
+        border-radius: 16px;
+        clip: true;
+        background: Theme.base-2;
+        border-width: 1px;
+        border-color: root.hover ? Theme.accent : Theme.glass-border;
+        drop-shadow-blur: root.hover ? 34px : 16px;
+        drop-shadow-offset-y: root.hover ? 14px : 6px;
+        drop-shadow-color: root.hover ? Theme.accent.transparentize(60%) : Theme.shadow;
+        transform-scale: root.hover ? 1.04 : 1;
+        animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
+
+        if root.game.has-cover: Image {
+            source: root.game.cover;
+            width: parent.width;
+            height: parent.height;
+            image-fit: cover;
+        }
+        if !root.game.has-cover: ArtFallback {
+            game: root.game;
+            width: parent.width;
+            height: parent.height;
+        }
+        // Gloss sweep.
+        Rectangle {
+            background: @linear-gradient(135deg, #FFFFFF30 0%, #FFFFFF00 40%);
+            opacity: root.hover ? 1 : 0.5;
+            animate opacity { duration: 180ms; }
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open(); }
+        }
+        if root.game.running: RunningChip {
+            x: 10px;
+            y: 10px;
+        }
+        if !root.game.running && root.game.license-problem != "": LicenseChip {
+            x: 10px;
+            y: 10px;
+        }
+        // Frosted action bar: the blurred cover, aligned with the cover, under a glass tint.
+        bar := Rectangle {
+            y: root.bar-up ? parent.height - self.height : parent.height;
+            height: 62px;
+            clip: true;
+            animate y { duration: 180ms; easing: ease-out; }
+            if root.game.has-cover: Image {
+                source: root.game.cover-blur;
+                x: 0;
+                y: -bar.y;
+                width: art.width;
+                height: art.height;
+                image-fit: cover;
+            }
+            Rectangle {
+                background: Theme.glass;
+                border-width: 1px;
+                border-color: Theme.glass-border;
+            }
+            Rectangle {
+                background: @linear-gradient(180deg, Theme.shine 0%, transparent 70%);
+            }
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 10px;
+                Rectangle {
+                    border-radius: 19px;
+                    background: root.game.running ? Theme.danger
+                        : root.busy ? Theme.glass
+                        : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 60%, Theme.accent.darker(15%) 100%);
+                    Text {
+                        text: root.game.running ? "■  Stop" : "▶  Play";
+                        color: root.game.running ? Theme.on-danger : root.busy ? Theme.muted : Theme.on-accent;
+                        font-weight: 800;
+                    }
+                    play-touch := TouchArea {
+                        enabled: root.game.running || !root.busy;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            if root.game.running {
+                                root.stop();
+                            } else {
+                                root.play();
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 38px;
+                    border-radius: 19px;
+                    background: gear-touch.has-hover ? Theme.accent.transparentize(70%) : Theme.glass;
+                    border-width: 1px;
+                    border-color: Theme.glass-border;
+                    Text {
+                        text: "⚙";
+                        color: Theme.text;
+                        font-size: 17px;
+                    }
+                    gear-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open(); }
+                    }
+                }
+            }
+        }
+    }
+    Text {
+        y: art.height + 10px;
+        width: root.width;
+        text: root.game.name;
+        color: Theme.text;
+        font-size: 14px;
+        font-weight: 700;
+        overflow: elide;
+    }
+    Text {
+        y: art.height + 30px;
+        width: root.width;
+        text: root.game.running ? "Running"
+            : root.game.license-problem != "" ? "License check failed"
+            : root.game.windows ? "Windows install" : "xTux install";
+        color: root.game.license-problem != "" && !root.game.running ? Theme.text : Theme.muted;
+        font-size: 12px;
+    }
+}
+
+component ListRow inherits Rectangle {
+    in property <GameRow> game;
+    in property <bool> busy;
+    callback play();
+    callback stop();
+    callback open();
+    callback hovered();
+    out property <bool> hover: touch.has-hover;
+    changed hover => {
+        if self.hover {
+            root.hovered();
+        }
+    }
+    height: 76px;
+    border-radius: 14px;
+    background: root.hover ? Theme.glass-strong : Theme.glass;
+    border-width: 1px;
+    border-color: root.hover ? Theme.accent.transparentize(30%) : Theme.glass-border;
+    animate background, border-color { duration: 140ms; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
+    }
+    HorizontalLayout {
+        padding: 10px;
+        padding-right: 14px;
+        spacing: 14px;
+        Rectangle {
+            width: 56px;
+            border-radius: 10px;
+            clip: true;
+            if root.game.has-cover: Image {
+                source: root.game.cover;
+                width: parent.width;
+                height: parent.height;
+                image-fit: cover;
+            }
+            if !root.game.has-cover: ArtFallback {
+                game: root.game;
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            Text {
+                text: root.game.name;
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                text: root.game.detail;
+                color: Theme.muted;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+        if root.game.running: VerticalLayout {
+            alignment: center;
+            RunningChip { }
+        }
+        if !root.game.running && root.game.license-problem != "": VerticalLayout {
+            alignment: center;
+            LicenseChip { }
+        }
+        VerticalLayout {
+            alignment: center;
+            GhostButton {
+                text: "⚙";
+                width: 44px;
+                clicked => { root.open(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            if !root.game.running: ShinyButton {
+                text: "▶  Play";
+                width: 120px;
+                enabled: !root.busy;
+                clicked => { root.play(); }
+            }
+            if root.game.running: DangerButton {
+                text: "■  Stop";
+                width: 120px;
+                clicked => { root.stop(); }
+            }
+        }
+    }
 }
 
 component LogView inherits Rectangle {
     in property <string> text;
-    border-radius: 8px;
-    background: #030b08;
+    border-radius: 12px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: Theme.glass-border;
     TextEdit {
+        width: parent.width;
+        height: parent.height;
         text: root.text;
         read-only: true;
         font-size: 12px;
@@ -80,84 +569,21 @@ component LogView inherits Rectangle {
     }
 }
 
-component NavItem inherits Rectangle {
-    in property <string> text;
-    in property <bool> active;
-    callback clicked();
-    height: 38px;
-    border-radius: 8px;
-    background: root.active ? Brand.forest : touch.has-hover ? Brand.forest-light.transparentize(50%) : transparent;
-    Text {
-        x: 14px;
-        text: root.text;
-        color: root.active ? Brand.lime : Brand.ice;
-        font-size: 15px;
-        vertical-alignment: center;
-    }
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-}
-
-component GameCard inherits Rectangle {
-    in property <GameRow> game;
-    in property <bool> busy;
-    callback play();
-    callback open();
-    height: 72px;
-    border-radius: 12px;
-    background: Brand.forest;
-    HorizontalLayout {
-        padding: 14px;
-        spacing: 14px;
-        Rectangle {
-            width: 44px;
-            border-radius: 8px;
-            background: Brand.night;
-            Text {
-                text: root.game.windows ? "WIN" : "XTUX";
-                color: Brand.lime;
-                font-size: 10px;
-                font-weight: 700;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-        VerticalLayout {
-            alignment: center;
-            spacing: 2px;
-            Text {
-                text: root.game.name;
-                color: Brand.ice;
-                font-size: 16px;
-                font-weight: 700;
-                overflow: elide;
-            }
-            Text {
-                text: root.game.detail;
-                color: Brand.mist;
-                font-size: 12px;
-                overflow: elide;
-            }
-        }
-        SecondaryButton {
-            text: "Settings";
-            clicked => { root.open(); }
-        }
-        PrimaryButton {
-            text: "Play";
-            enabled: !root.busy;
-            clicked => { root.play(); }
-        }
-    }
+component PageTitle inherits Text {
+    color: Theme.text;
+    font-size: 30px;
+    font-weight: 900;
+    vertical-alignment: center;
 }
 
 export component AppWindow inherits Window {
     title: "xTux Launcher";
-    preferred-width: 1000px;
-    preferred-height: 640px;
-    background: Brand.night;
+    icon: root.app-icon;
+    preferred-width: 1240px;
+    preferred-height: 800px;
+    min-width: 860px;
+    min-height: 560px;
+    background: Theme.base;
     default-font-size: 14px;
 
     in property <bool> signed-in;
@@ -165,13 +591,37 @@ export component AppWindow inherits Window {
     in property <string> status: "Connecting to xtux-service…";
     in property <bool> busy;
     in property <[GameRow]> games;
+    in property <int> game-count;
+    in-out property <string> search;
+    in-out property <string> view: "grid";
+    in-out property <bool> online-art: true;
     in-out property <string> wine;
     in-out property <string> prefix;
     in-out property <string> library-dirs;
     in-out property <int> page: 0;
+    // Ambient backdrop: two layers that cross-fade.
+    in property <image> backdrop-a;
+    in property <image> backdrop-b;
+    in property <bool> show-a: true;
+    in property <bool> has-backdrop;
+    // Logo of the sidebar and the window icon, chosen in Settings.
+    in property <image> app-icon;
+    in-out property <string> icon-choice: "mascot";
+    in-out property <string> icon-colour: "brand";
+    // dynamic | static | off
+    in-out property <string> backdrop-mode: "dynamic";
+    in property <bool> game-running;
+    in property <string> game-license-problem;
+    in property <bool> game-windows;
+    in-out property <bool> confirm-delete;
     // Game page (page 2)
     in property <string> game-name;
     in property <string> game-path;
+    in property <string> game-kind;
+    in property <image> game-hero;
+    in property <bool> has-game-hero;
+    in property <image> game-logo;
+    in property <bool> has-game-logo;
     in-out property <string> game-wine;
     in-out property <string> game-prefix;
     in-out property <string> game-exe;
@@ -181,54 +631,122 @@ export component AppWindow inherits Window {
     // Logs page (page 3)
     in property <string> service-log;
     in property <string> service-log-path;
+    // About page (page 4)
+    in property <string> version;
+    in property <[LicenseRow]> licenses;
+    in-out property <int> license-open: -1;
 
     callback sign-in();
     callback refresh();
     callback play(int);
+    callback stop(int);
+    callback stop-game();
+    callback delete-game();
     callback open-game(int);
+    callback hover-game(int);
     callback play-game();
     callback save-game();
     callback refresh-logs();
     callback save-settings();
+    callback search-edited(string);
+    callback ui-changed();
+    callback open-url(string);
+
+    // The std widgets follow the launcher's theme.
+    public function apply-theme() {
+        Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
+    }
+    function pick-theme(choice: string) {
+        Theme.choice = choice;
+        root.ui-changed();
+    }
+    init => {
+        Theme.system-dark = Palette.color-scheme != ColorScheme.light;
+    }
+
+    // A click on empty space takes the focus away from text fields.
+    TouchArea {
+        clicked => { focus-sink.focus(); }
+    }
+    focus-sink := FocusScope {
+        width: 0;
+        height: 0;
+    }
+
+    // Background: brand gradient, blurred game art, a veil for legibility.
+    Rectangle {
+        background: @linear-gradient(160deg, Theme.base-2 0%, Theme.base 60%);
+    }
+    Image {
+        source: root.backdrop-a;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.has-backdrop && root.show-a ? Theme.backdrop-opacity : 0;
+        animate opacity { duration: 450ms; easing: ease-in-out; }
+    }
+    Image {
+        source: root.backdrop-b;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.has-backdrop && !root.show-a ? Theme.backdrop-opacity : 0;
+        animate opacity { duration: 450ms; easing: ease-in-out; }
+    }
+    Rectangle {
+        background: @linear-gradient(180deg, Theme.base.with-alpha(Theme.veil-top) 0%, Theme.base.transparentize(25%) 100%);
+    }
 
     HorizontalLayout {
+        padding: 14px;
+        spacing: 14px;
+
         // Sidebar
-        Rectangle {
-            width: 220px;
-            background: #0a1d16;
+        Glass {
+            width: 230px;
+            strong: true;
             VerticalLayout {
                 padding: 18px;
-                spacing: 8px;
+                spacing: 6px;
                 Image {
-                    source: @image-url("../assets/mascot.png");
-                    height: 96px;
+                    source: root.app-icon;
+                    height: 88px;
                     image-fit: contain;
                 }
                 Text {
                     text: "xTux";
-                    color: Brand.lime;
-                    font-size: 26px;
-                    font-weight: 800;
+                    color: Theme.accent-text;
+                    font-size: 28px;
+                    font-weight: 900;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: "by Tux-Force";
-                    color: Brand.emerald;
+                    color: Theme.muted;
                     font-size: 12px;
                     horizontal-alignment: center;
                 }
-                Rectangle { height: 16px; }
+                Rectangle { height: 18px; }
                 NavItem {
+                    glyph: "▦";
                     text: "Library";
-                    active: root.page == 0;
+                    active: root.page == 0 || root.page == 2;
                     clicked => { root.page = 0; }
                 }
                 NavItem {
+                    glyph: "⚙";
                     text: "Settings";
                     active: root.page == 1;
                     clicked => { root.page = 1; }
                 }
                 NavItem {
+                    glyph: "ⓘ";
+                    text: "About";
+                    active: root.page == 4;
+                    clicked => { root.page = 4; }
+                }
+                NavItem {
+                    glyph: "≡";
                     text: "Logs";
                     active: root.page == 3;
                     clicked => {
@@ -237,160 +755,679 @@ export component AppWindow inherits Window {
                     }
                 }
                 Rectangle { }
-                Text {
-                    text: root.signed-in ? "Signed in as\n" + root.user : "Not signed in";
-                    color: Brand.mist;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
-                if !root.signed-in: PrimaryButton {
-                    text: "Sign in";
-                    enabled: !root.busy;
-                    clicked => { root.sign-in(); }
+                Rectangle {
+                    height: account.preferred-height;
+                    border-radius: 12px;
+                    background: Theme.glass;
+                    border-width: 1px;
+                    border-color: Theme.glass-border;
+                    account := VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        Text {
+                            text: root.signed-in ? "Signed in as" : "Not signed in";
+                            color: Theme.muted;
+                            font-size: 12px;
+                        }
+                        if root.signed-in: Text {
+                            text: root.user;
+                            color: Theme.text;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        if !root.signed-in: ShinyButton {
+                            text: "Sign in";
+                            enabled: !root.busy;
+                            clicked => { root.sign-in(); }
+                        }
+                    }
                 }
             }
         }
 
         // Content
         VerticalLayout {
-            padding: 24px;
-            spacing: 16px;
-            HorizontalLayout {
-                spacing: 12px;
+            spacing: 12px;
+
+            // Library header
+            if root.page == 0: HorizontalLayout {
+                spacing: 10px;
+                height: 48px;
+                PageTitle { text: "Library"; }
                 Text {
-                    text: root.page == 0 ? "Library" : root.page == 1 ? "Settings" : root.page == 2 ? root.game-name : "Logs";
-                    overflow: elide;
-                    color: Brand.ice;
-                    font-size: 24px;
-                    font-weight: 700;
+                    text: root.game-count + " games";
+                    color: Theme.muted;
                     vertical-alignment: center;
                 }
                 Rectangle { }
-                if root.page == 0: PrimaryButton {
-                    text: "Refresh";
-                    enabled: !root.busy;
-                    clicked => { root.refresh(); }
-                }
-                if root.page == 2: SecondaryButton {
-                    text: "Back";
-                    clicked => { root.page = 0; }
-                }
-                if root.page == 2: PrimaryButton {
-                    text: "Play";
-                    enabled: !root.busy;
-                    clicked => { root.play-game(); }
-                }
-                if root.page == 3: PrimaryButton {
-                    text: "Refresh";
-                    clicked => { root.refresh-logs(); }
-                }
-            }
-
-            if root.page == 0: ScrollView {
                 VerticalLayout {
-                    spacing: 10px;
-                    for game[index] in root.games: GameCard {
-                        game: game;
-                        busy: root.busy;
-                        play => { root.play(index); }
-                        open => { root.open-game(index); }
+                    alignment: center;
+                    LineEdit {
+                        width: 240px;
+                        text <=> root.search;
+                        placeholder-text: "Search";
+                        edited(text) => { root.search-edited(text); }
                     }
-                    if root.games.length == 0: Text {
-                        text: "No games found. Add library folders in Settings, or install a game with xtux-cli streaming.";
-                        color: Brand.mist;
-                        wrap: word-wrap;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "▦";
+                        min-width: 44px;
+                        active: root.view == "grid";
+                        clicked => {
+                            root.view = "grid";
+                            root.ui-changed();
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "☰";
+                        min-width: 44px;
+                        active: root.view == "list";
+                        clicked => {
+                            root.view = "list";
+                            root.ui-changed();
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "↻";
+                        min-width: 44px;
+                        clicked => { root.refresh(); }
                     }
                 }
             }
 
-            if root.page == 1: VerticalLayout {
-                spacing: 8px;
-                Text { text: "Wine binary"; color: Brand.mist; }
-                LineEdit {
-                    text <=> root.wine;
-                    placeholder-text: "/path/to/tux-force-wine/bin/wine";
+            // Cover grid
+            if root.page == 0 && root.view == "grid" && root.games.length > 0: Flickable {
+                property <length> tile: 176px;
+                property <length> gap: 26px;
+                property <int> cols: max(1, floor((self.width - 16px + self.gap) / (self.tile + self.gap)));
+                property <length> row-height: self.tile * 1.5 + 54px;
+                content-height: ceil(root.games.length / self.cols) * (self.row-height + self.gap) + 24px;
+                for game[index] in root.games: CoverTile {
+                    x: 12px + mod(index, parent.cols) * (parent.tile + parent.gap);
+                    y: 14px + floor(index / parent.cols) * (parent.row-height + parent.gap);
+                    width: parent.tile;
+                    height: parent.row-height;
+                    game: game;
+                    busy: root.busy;
+                    play => { root.play(index); }
+                    stop => { root.stop(index); }
+                    open => { root.open-game(index); }
+                    hovered => { root.hover-game(index); }
                 }
-                Text { text: "Wine prefix (empty: WINEPREFIX or ~/Games/xtux-prefix)"; color: Brand.mist; }
-                LineEdit {
-                    text <=> root.prefix;
-                    placeholder-text: "~/Games/xtux-prefix";
-                }
-                Text { text: "Library folders, one per line"; color: Brand.mist; }
-                TextEdit {
-                    text <=> root.library-dirs;
-                    min-height: 120px;
-                }
-                HorizontalLayout {
-                    alignment: start;
-                    PrimaryButton {
-                        text: "Save";
-                        clicked => { root.save-settings(); }
-                    }
-                }
-                Rectangle { }
             }
 
-            if root.page == 2: VerticalLayout {
-                spacing: 8px;
-                Label { text: root.game-path; font-size: 12px; overflow: elide; }
-                HorizontalLayout {
-                    spacing: 12px;
-                    VerticalLayout {
-                        spacing: 6px;
-                        Label { text: "Wine binary (empty: general setting)"; }
-                        LineEdit { text <=> root.game-wine; placeholder-text: root.wine; }
-                        Label { text: "Wine prefix (empty: general setting)"; }
-                        LineEdit { text <=> root.game-prefix; placeholder-text: root.prefix; }
-                        Label { text: "Executable, package relative (empty: from MicrosoftGame.config)"; }
-                        LineEdit { text <=> root.game-exe; placeholder-text: "x64\\Game.exe"; }
-                        Label { text: "Arguments, one per line"; }
-                        TextEdit { text <=> root.game-args; min-height: 60px; }
-                    }
-                    VerticalLayout {
-                        spacing: 6px;
-                        Label { text: "Environment, one NAME=value per line"; }
-                        TextEdit {
-                            text <=> root.game-env;
-                            placeholder-text: "DXVK_HUD=fps";
+            // List
+            if root.page == 0 && root.view == "list" && root.games.length > 0: Flickable {
+                content-height: root.games.length * 86px + 10px;
+                for game[index] in root.games: ListRow {
+                    x: 2px;
+                    y: 4px + index * 86px;
+                    width: parent.width - 4px;
+                    game: game;
+                    busy: root.busy;
+                    play => { root.play(index); }
+                    stop => { root.stop(index); }
+                    open => { root.open-game(index); }
+                    hovered => { root.hover-game(index); }
+                }
+            }
+
+            if root.page == 0 && root.games.length == 0: Glass {
+                Text {
+                    text: root.search != "" ? "No game matches \"" + root.search + "\"." : "No games found. Add library folders in Settings, or install a game with xtux-cli streaming.";
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                    width: parent.width - 40px;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Game page
+            if root.page == 2: Flickable {
+                content-height: max(self.height, page-content.preferred-height);
+                page-content := VerticalLayout {
+                    width: parent.width;
+                    spacing: 14px;
+                    // Hero banner
+                    Rectangle {
+                        height: 280px;
+                        border-radius: 20px;
+                        clip: true;
+                        background: Theme.base-2;
+                        border-width: 1px;
+                        border-color: Theme.glass-border;
+                        if root.has-game-hero: Image {
+                            source: root.game-hero;
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: cover;
+                        }
+                        Rectangle {
+                            background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
+                        }
+                        Rectangle {
+                            background: @linear-gradient(135deg, #FFFFFF26 0%, #FFFFFF00 35%);
                         }
                         HorizontalLayout {
-                            alignment: end;
-                            PrimaryButton {
-                                text: "Save";
-                                clicked => { root.save-game(); }
+                            padding: 24px;
+                            spacing: 18px;
+                            if root.has-game-logo: VerticalLayout {
+                                alignment: end;
+                                Rectangle {
+                                    width: 96px;
+                                    height: 96px;
+                                    border-radius: 18px;
+                                    clip: true;
+                                    border-width: 1px;
+                                    border-color: Theme.glass-border;
+                                    Image {
+                                        source: root.game-logo;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        image-fit: cover;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                spacing: 4px;
+                                Text {
+                                    text: root.game-name;
+                                    color: Theme.text;
+                                    font-size: 34px;
+                                    font-weight: 900;
+                                    overflow: elide;
+                                }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    alignment: start;
+                                    Text {
+                                        text: root.game-kind;
+                                        color: Theme.muted;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.game-running: RunningChip { }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        GhostButton {
+                                            text: "← Back";
+                                            clicked => { root.page = 0; }
+                                        }
+                                    }
+                                    if !root.game-running: ShinyButton {
+                                        text: "▶  Play";
+                                        big: true;
+                                        enabled: !root.busy;
+                                        clicked => { root.play-game(); }
+                                    }
+                                    if root.game-running: DangerButton {
+                                        text: "■  Stop";
+                                        height: 48px;
+                                        min-width: 150px;
+                                        border-radius: 24px;
+                                        clicked => { root.stop-game(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.game-license-problem != "": Rectangle {
+                        border-radius: 14px;
+                        background: Theme.danger.transparentize(78%);
+                        border-width: 1px;
+                        border-color: Theme.danger;
+                        height: license-box.preferred-height;
+                        license-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            LicenseChip { }
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text {
+                                    text: "The last license check failed. The game starts again once Microsoft grants the license (Game Pass active, game owned, signed in with the right account).";
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.game-license-problem;
+                                    color: Theme.text;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 14px;
+                        Glass {
+                            VerticalLayout {
+                                padding: 18px;
+                                spacing: 6px;
+                                alignment: start;
+                                Heading { text: "Game settings"; }
+                                Label { text: "Wine binary"; }
+                                LineEdit { text <=> root.game-wine; placeholder-text: "Default: general setting"; }
+                                Label { text: "Wine prefix"; }
+                                LineEdit { text <=> root.game-prefix; placeholder-text: "Default: general setting"; }
+                                Label { text: "Executable, package relative (for example x64\\Game.exe)"; }
+                                LineEdit { text <=> root.game-exe; placeholder-text: "Default: from MicrosoftGame.config"; }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        spacing: 6px;
+                                        Label { text: "Arguments, one per line"; }
+                                        TextEdit { text <=> root.game-args; height: 70px; }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 6px;
+                                        Label { text: "Environment, NAME=value per line"; }
+                                        TextEdit {
+                                            text <=> root.game-env;
+                                            height: 70px;
+                                            placeholder-text: "for example DXVK_HUD=fps";
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    padding-top: 6px;
+                                    spacing: 10px;
+                                    GhostButton {
+                                        text: "Delete game…";
+                                        clicked => { root.confirm-delete = true; }
+                                    }
+                                    Rectangle { }
+                                    ShinyButton {
+                                        text: "Save";
+                                        clicked => { root.save-game(); }
+                                    }
+                                }
+                            }
+                        }
+                        Glass {
+                            VerticalLayout {
+                                padding: 18px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    Heading { text: "Last start"; vertical-alignment: center; }
+                                    Rectangle { }
+                                    GhostButton {
+                                        text: "↻ Reload";
+                                        clicked => { root.refresh-logs(); }
+                                    }
+                                }
+                                Label { text: root.game-path; overflow: elide; font-size: 11px; }
+                                LogView { min-height: 220px; text: root.game-log; }
                             }
                         }
                     }
                 }
-                HorizontalLayout {
-                    Label { text: "Log of the last start"; vertical-alignment: center; }
-                    Rectangle { }
-                    SecondaryButton {
-                        text: "Reload";
+            }
+
+            // Settings
+            if root.page == 1: PageTitle {
+                text: "Settings";
+                height: 48px;
+            }
+            if root.page == 1: Flickable {
+                content-height: max(self.height, settings-content.preferred-height);
+                settings-content := VerticalLayout {
+                    width: parent.width;
+                    spacing: 14px;
+                    alignment: start;
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+                            Heading { text: "Appearance"; }
+                            Label { text: "Theme"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Follow system"; active: Theme.choice == "system"; clicked => { root.pick-theme("system"); } }
+                                GhostButton { text: "Dark"; active: Theme.choice == "brand"; clicked => { root.pick-theme("brand"); } }
+                                GhostButton { text: "Anthracite"; active: Theme.choice == "anthracite"; clicked => { root.pick-theme("anthracite"); } }
+                                GhostButton { text: "Light"; active: Theme.choice == "light"; clicked => { root.pick-theme("light"); } }
+                            }
+                            if Theme.choice == "system": Label { text: "Dark theme when the system is dark"; }
+                            if Theme.choice == "system": HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Dark"; active: Theme.dark-variant == "brand"; clicked => { Theme.dark-variant = "brand"; root.ui-changed(); } }
+                                GhostButton { text: "Anthracite"; active: Theme.dark-variant == "anthracite"; clicked => { Theme.dark-variant = "anthracite"; root.ui-changed(); } }
+                            }
+                            Label { text: "Accent colour"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 12px;
+                                Swatch { tint: #A3E635; active: Theme.accent-name == "lime"; clicked => { Theme.accent-name = "lime"; root.ui-changed(); } }
+                                Swatch { tint: #10B981; active: Theme.accent-name == "emerald"; clicked => { Theme.accent-name = "emerald"; root.ui-changed(); } }
+                                Swatch { tint: #22D3EE; active: Theme.accent-name == "cyan"; clicked => { Theme.accent-name = "cyan"; root.ui-changed(); } }
+                                Swatch { tint: #A78BFA; active: Theme.accent-name == "violet"; clicked => { Theme.accent-name = "violet"; root.ui-changed(); } }
+                                Swatch { tint: #FBBF24; active: Theme.accent-name == "amber"; clicked => { Theme.accent-name = "amber"; root.ui-changed(); } }
+                            }
+                            Label { text: "Background"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Follows the game"; active: root.backdrop-mode == "dynamic"; clicked => { root.backdrop-mode = "dynamic"; root.ui-changed(); } }
+                                GhostButton { text: "Fixed"; active: root.backdrop-mode == "static"; clicked => { root.backdrop-mode = "static"; root.ui-changed(); } }
+                                GhostButton { text: "Off"; active: root.backdrop-mode == "off"; clicked => { root.backdrop-mode = "off"; root.ui-changed(); } }
+                            }
+                            Label { text: "App icon"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                for choice in [
+                                    { id: "mascot", img: @image-url("../assets/icon-mascot.png") },
+                                    { id: "mark", img: @image-url("../assets/icon-mark.png") },
+                                    { id: "symbol", img: @image-url("../assets/icon-symbol.png") },
+                                    { id: "mono", img: @image-url("../assets/icon-mono.png") },
+                                ]: Rectangle {
+                                    width: 56px;
+                                    height: 56px;
+                                    border-radius: 14px;
+                                    background: root.icon-choice == choice.id ? Theme.accent.transparentize(75%) : icon-touch.has-hover ? Theme.glass-strong : Theme.glass;
+                                    border-width: root.icon-choice == choice.id ? 2px : 1px;
+                                    border-color: root.icon-choice == choice.id ? Theme.accent : Theme.glass-border;
+                                    Image {
+                                        source: choice.img;
+                                        width: 40px;
+                                        height: 40px;
+                                        colorize: choice.id == "mono" ? Theme.text : transparent;
+                                    }
+                                    icon-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.icon-choice = choice.id;
+                                            root.ui-changed();
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    GhostButton { text: "Brand colours"; active: root.icon-colour == "brand"; clicked => { root.icon-colour = "brand"; root.ui-changed(); } }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    GhostButton { text: "Accent colour"; active: root.icon-colour == "accent"; clicked => { root.icon-colour = "accent"; root.ui-changed(); } }
+                                }
+                            }
+                            Label { text: "Game artwork"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "From the Microsoft Store"; active: root.online-art; clicked => { root.online-art = true; root.ui-changed(); root.refresh(); } }
+                                GhostButton { text: "Only from the game folder"; active: !root.online-art; clicked => { root.online-art = false; root.ui-changed(); } }
+                            }
+                            Label {
+                                text: "Covers and hero images come from the public Store catalog. xTux sends only the Store IDs of your installed games and your market, no account data; images are cached in ~/.cache/xtux/art.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 6px;
+                            Heading { text: "Games"; }
+                            Label { text: "Wine binary"; }
+                            LineEdit { text <=> root.wine; placeholder-text: "/path/to/tux-force-wine/bin/wine"; }
+                            Label { text: "Wine prefix (empty: WINEPREFIX or ~/Games/xtux-prefix)"; }
+                            LineEdit { text <=> root.prefix; placeholder-text: "~/Games/xtux-prefix"; }
+                            Label { text: "Library folders, one per line"; }
+                            TextEdit { text <=> root.library-dirs; height: 110px; }
+                            HorizontalLayout {
+                                alignment: end;
+                                padding-top: 6px;
+                                ShinyButton {
+                                    text: "Save";
+                                    clicked => { root.save-settings(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // About
+            if root.page == 4: PageTitle {
+                text: "About";
+                height: 48px;
+            }
+            if root.page == 4: Flickable {
+                content-height: max(self.height, about-content.preferred-height);
+                about-content := VerticalLayout {
+                    width: parent.width;
+                    spacing: 14px;
+                    alignment: start;
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 18px;
+                            Image {
+                                source: root.app-icon;
+                                width: 84px;
+                                height: 84px;
+                            }
+                            VerticalLayout {
+                                spacing: 6px;
+                                alignment: center;
+                                Heading { text: "xTux Launcher " + root.version; font-size: 22px; }
+                                Text {
+                                    text: "Free software under the GNU General Public License 3.0: you may use, study, share and change it. It comes without any warranty.";
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                Label {
+                                    text: "Part of Tux-Force, a soft fork of Xodus. Games and their artwork belong to their publishers; xTux only runs games your Microsoft account is entitled to.";
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    padding-top: 4px;
+                                    GhostButton { text: "Source code"; clicked => { root.open-url("https://github.com/Tux-Force/xTux"); } }
+                                    GhostButton { text: "Website"; clicked => { root.open-url("https://tux-force.github.io"); } }
+                                    GhostButton { text: "GPL-3.0 text"; clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); } }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                AboutSlint { width: 180px; }
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            Heading { text: "Open source components"; }
+                            Label {
+                                text: "xTux is built from these Rust crates, grouped by license. Select a license for its full text.";
+                                wrap: word-wrap;
+                            }
+                            for row[index] in root.licenses: Rectangle {
+                                height: license-line.preferred-height;
+                                border-radius: 12px;
+                                background: root.license-open == index ? Theme.accent.transparentize(80%) : license-touch.has-hover ? Theme.glass-strong : transparent;
+                                border-width: 1px;
+                                border-color: root.license-open == index ? Theme.accent : Theme.glass-border;
+                                license-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.license-open = root.license-open == index ? -1 : index; }
+                                }
+                                license-line := VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 3px;
+                                    HorizontalLayout {
+                                        Text {
+                                            text: row.name;
+                                            color: Theme.text;
+                                            font-weight: 800;
+                                        }
+                                        Rectangle { }
+                                        Text {
+                                            text: row.count + (row.count == 1 ? " crate" : " crates");
+                                            color: Theme.muted;
+                                        }
+                                    }
+                                    Text {
+                                        text: row.crates;
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                            if root.license-open >= 0: LogView {
+                                height: 360px;
+                                text: root.licenses[root.license-open].text;
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 6px;
+                            Heading { text: "Used at run time, not part of this program"; }
+                            Label {
+                                text: "Tux-Force Wine (LGPL-2.1-or-later) with xgameruntime; DXVK (zlib) and vkd3d-proton (LGPL-2.1-or-later), which xtux-cli prefix init downloads from their GitHub releases; game artwork from the Microsoft Store catalog, kept only in your local cache.";
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Logs
+            if root.page == 3: HorizontalLayout {
+                height: 48px;
+                spacing: 10px;
+                PageTitle { text: "Logs"; }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "↻ Reload";
                         clicked => { root.refresh-logs(); }
                     }
                 }
-                LogView { text: root.game-log; min-height: 160px; }
             }
-
-            if root.page == 3: VerticalLayout {
-                spacing: 8px;
-                Label { text: "xtux-service: " + root.service-log-path; font-size: 12px; overflow: elide; }
-                LogView { text: root.service-log; }
+            if root.page == 3: Glass {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    Label { text: "xtux-service · " + root.service-log-path; overflow: elide; }
+                    LogView { text: root.service-log; }
+                }
             }
 
             // Status bar
-            Rectangle {
-                height: 34px;
-                border-radius: 8px;
-                background: Brand.forest;
+            Glass {
+                height: 40px;
+                border-radius: 14px;
+                drop-shadow-blur: 14px;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 9px;
+                            height: 9px;
+                            border-radius: 4.5px;
+                            background: root.busy ? Theme.accent : Theme.muted;
+                            drop-shadow-blur: root.busy ? 10px : 0px;
+                            drop-shadow-color: Theme.accent;
+                        }
+                    }
+                    Text {
+                        text: root.status;
+                        color: root.busy ? Theme.text : Theme.muted;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+
+    // Delete confirmation.
+    if root.confirm-delete: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(560px, parent.width - 60px);
+            height: dialog.preferred-height;
+            dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
                 Text {
-                    x: 12px;
-                    text: root.status;
-                    color: root.busy ? Brand.lime : Brand.mist;
-                    vertical-alignment: center;
-                    overflow: elide;
-                    width: parent.width - 24px;
+                    text: "Delete " + root.game-name + "?";
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "The whole game folder is deleted from the disk. This cannot be undone:";
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.game-path;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if root.game-windows: Rectangle {
+                    border-radius: 12px;
+                    background: Theme.danger.transparentize(80%);
+                    border-width: 1px;
+                    border-color: Theme.danger;
+                    height: warning.preferred-height;
+                    warning := VerticalLayout {
+                        padding: 14px;
+                        Text {
+                            text: "This game was installed by the Windows Xbox app. Windows will show it as broken until you repair or reinstall it there. Saves in the cloud stay, local saves of the game folder are lost.";
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    GhostButton {
+                        text: "Cancel";
+                        clicked => { root.confirm-delete = false; }
+                    }
+                    DangerButton {
+                        text: "Delete";
+                        enabled: !root.game-running;
+                        clicked => {
+                            root.confirm-delete = false;
+                            root.delete-game();
+                        }
+                    }
                 }
             }
         }

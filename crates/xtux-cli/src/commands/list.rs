@@ -47,8 +47,13 @@ pub fn run(paths: bool) -> ExitCode {
             GameKind::Installed => "xTux",
             GameKind::Windows => "Xbox app",
         };
+        let license = if xtux_games::license::problems::of(&game.path).is_some() {
+            "  (license check failed)"
+        } else {
+            ""
+        };
         println!(
-            "{:<width$}  {:<8}  {:<8}  {}",
+            "{:<width$}  {:<8}  {:<8}  {}{license}",
             game.name,
             kind,
             game.title_id.as_deref().unwrap_or("-"),
