@@ -1020,11 +1020,25 @@ fn download_detail(item: &xtux_protocol::DownloadItem) -> String {
         ),
         _ => String::new(),
     };
+    let speed = if item.state == "running" && item.speed > 0 {
+        let left = item
+            .total
+            .map(|t| t.saturating_sub(item.done) / item.speed.max(1))
+            .map(|secs| match secs {
+                s if s >= 3600 => format!(" · {} h {} min left", s / 3600, (s % 3600) / 60),
+                s if s >= 60 => format!(" · {} min left", s / 60),
+                s => format!(" · {s} s left"),
+            })
+            .unwrap_or_default();
+        format!(" · {}/s{left}", size_text(Some(item.speed)))
+    } else {
+        String::new()
+    };
     match item.state.as_str() {
         "done" => format!("Installed in {}", item.destination.display()),
         "failed" => item.message.clone(),
         _ if amount.is_empty() => item.message.clone(),
-        _ => format!("{amount} · {}", item.message),
+        _ => format!("{amount}{speed} · {}", item.message),
     }
 }
 
@@ -1057,7 +1071,12 @@ fn show_downloads(ui: &AppWindow, state: &Shared) {
     let active = s
         .downloads
         .iter()
-        .filter(|i| matches!(i.state.as_str(), "queued" | "running"))
+        .filter(|i| {
+            matches!(
+                i.state.as_str(),
+                "queued" | "running" | "pausing" | "removing"
+            )
+        })
         .count();
     ui.set_downloads_active(active as i32);
     let queued = s

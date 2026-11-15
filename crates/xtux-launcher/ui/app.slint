@@ -1796,7 +1796,13 @@ export component AppWindow inherits Window {
                                 }
                                 Rectangle { }
                                 Text {
-                                    text: item.state == "running" ? "Downloading" : item.state == "queued" ? "Waiting" : item.state == "paused" ? "Paused" : item.state == "failed" ? "Failed" : "Installed";
+                                    text: item.state == "running" ? "Downloading"
+                                        : item.state == "queued" ? "Waiting"
+                                        : item.state == "pausing" ? "Pausing…"
+                                        : item.state == "removing" ? "Removing…"
+                                        : item.state == "paused" ? "Paused"
+                                        : item.state == "failed" ? "Failed" : "Installed";
+                                    opacity: item.state == "pausing" || item.state == "removing" ? 0.55 + 0.45 * sin(animation-tick() * 0.3deg / 1ms) : 1;
                                     color: item.state == "failed" ? Theme.text : Theme.muted;
                                     font-weight: 700;
                                 }
@@ -1827,9 +1833,9 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
                                 if item.state == "running" || item.state == "queued": GhostButton { text: "❚❚"; width: 44px; clicked => { root.download-action(item.id, "pause"); } }
                                 if item.state == "paused" || item.state == "failed": GhostButton { text: "▶"; width: 44px; clicked => { root.download-action(item.id, "resume"); } }
-                                if item.state != "done": GhostButton { text: "↑"; width: 40px; clicked => { root.download-action(item.id, "up"); } }
-                                if item.state != "done": GhostButton { text: "↓"; width: 40px; clicked => { root.download-action(item.id, "down"); } }
-                                GhostButton { text: item.state == "done" ? "✓" : "✕"; width: 44px; clicked => { root.download-action(item.id, "remove"); } }
+                                if item.state != "done" && item.state != "pausing" && item.state != "removing": GhostButton { text: "↑"; width: 40px; clicked => { root.download-action(item.id, "up"); } }
+                                if item.state != "done" && item.state != "pausing" && item.state != "removing": GhostButton { text: "↓"; width: 40px; clicked => { root.download-action(item.id, "down"); } }
+                                if item.state != "pausing" && item.state != "removing": GhostButton { text: item.state == "done" ? "✓" : "✕"; width: 44px; clicked => { root.download-action(item.id, "remove"); } }
                             }
                         }
                     }

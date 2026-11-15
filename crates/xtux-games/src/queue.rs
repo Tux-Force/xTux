@@ -15,6 +15,10 @@ pub enum State {
     Queued,
     Running,
     Paused,
+    /// Pause asked for; the install is stopping.
+    Pausing,
+    /// Remove asked for; the install is stopping, then the item goes.
+    Removing,
     Failed,
     Done,
 }
@@ -36,6 +40,9 @@ pub struct Item {
     pub total: Option<u64>,
     /// Last step or error.
     pub message: String,
+    /// Download speed in bytes per second while running (not saved).
+    #[serde(skip)]
+    pub speed: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,8 +83,10 @@ impl Queue {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         for item in &mut queue.items {
-            if item.state == State::Running {
-                item.state = State::Queued;
+            match item.state {
+                State::Running => item.state = State::Queued,
+                State::Pausing | State::Removing => item.state = State::Paused,
+                _ => {}
             }
         }
         queue
@@ -163,6 +172,7 @@ impl Queue {
             done: 0,
             total: None,
             message: "Waiting".into(),
+            speed: 0,
         });
         Ok(id)
     }

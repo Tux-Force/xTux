@@ -166,10 +166,13 @@ pub struct DownloadItem {
     pub product_id: String,
     pub name: String,
     pub destination: PathBuf,
-    /// `queued`, `running`, `paused`, `failed` or `done`.
+    /// `queued`, `running`, `pausing`, `removing`, `paused`, `failed` or `done`.
     pub state: String,
     pub done: u64,
     pub total: Option<u64>,
+    /// Bytes per second while running.
+    #[serde(default)]
+    pub speed: u64,
     /// Last step or error.
     pub message: String,
 }

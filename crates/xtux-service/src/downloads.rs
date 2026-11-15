@@ -52,6 +52,8 @@ fn library_dirs() -> Vec<std::path::PathBuf> {
 struct ItemProgress {
     downloads: Arc<Downloads>,
     id: u64,
+    /// Last speed sample: when, and how much was done then.
+    sample: Mutex<Option<(std::time::Instant, u64)>>,
 }
 
 impl ItemProgress {
@@ -70,9 +72,30 @@ impl Progress for ItemProgress {
     }
 
     fn bytes(&self, done: u64, total: Option<u64>) {
+        // Speed from samples at least a second apart, smoothed so it does not jump.
+        let mut speed = None;
+        if let Ok(mut sample) = self.sample.lock() {
+            let now = std::time::Instant::now();
+            match *sample {
+                Some((when, then)) if now.duration_since(when).as_secs_f64() >= 1.0 => {
+                    let seconds = now.duration_since(when).as_secs_f64();
+                    speed = Some((done.saturating_sub(then) as f64 / seconds) as u64);
+                    *sample = Some((now, done));
+                }
+                None => *sample = Some((now, done)),
+                _ => {}
+            }
+        }
         self.update(|item| {
             item.done = done;
             item.total = total;
+            if let Some(speed) = speed {
+                item.speed = if item.speed == 0 {
+                    speed
+                } else {
+                    (item.speed * 7 + speed * 3) / 10
+                };
+            }
         });
     }
 }
@@ -98,6 +121,7 @@ async fn worker(
             }
             entry.state = State::Running;
             entry.message = "Starting".into();
+            entry.speed = 0;
             let item = entry.clone();
             if let Ok(mut current) = downloads.current.lock() {
                 *current = Some(Running {
@@ -131,6 +155,7 @@ async fn worker(
         let progress = ItemProgress {
             downloads: downloads.clone(),
             id: item.id,
+            sample: Mutex::new(None),
         };
         let result = xtux_games::install::install(
             &client,
@@ -201,6 +226,8 @@ fn items(queue: &Queue) -> Vec<DownloadItem> {
                 State::Queued => "queued",
                 State::Running => "running",
                 State::Paused => "paused",
+                State::Pausing => "pausing",
+                State::Removing => "removing",
                 State::Failed => "failed",
                 State::Done => "done",
             }
@@ -208,6 +235,11 @@ fn items(queue: &Queue) -> Vec<DownloadItem> {
             done: i.done,
             total: i.total,
             message: i.message.clone(),
+            speed: if i.state == State::Running {
+                i.speed
+            } else {
+                0
+            },
         })
         .collect()
 }
@@ -246,7 +278,13 @@ pub fn command(command: DownloadCommand) -> xtux_games::Result<Vec<DownloadItem>
                 downloads.wake.notify_one();
             }
             DownloadCommand::Pause { id } => {
-                if !cancel_current(id, false) {
+                if cancel_current(id, false) {
+                    // Shown until the install has stopped writing.
+                    if let Some(item) = queue.get_mut(id) {
+                        item.state = State::Pausing;
+                        item.message = "Pausing…".into();
+                    }
+                } else {
                     if let Some(item) = queue.get_mut(id).filter(|i| i.state == State::Queued) {
                         item.state = State::Paused;
                         item.message = "Paused".into();
@@ -267,7 +305,12 @@ pub fn command(command: DownloadCommand) -> xtux_games::Result<Vec<DownloadItem>
             }
             DownloadCommand::Remove { id } => {
                 // A running item is removed by the worker once it has stopped writing.
-                if !cancel_current(id, true) {
+                if cancel_current(id, true) {
+                    if let Some(item) = queue.get_mut(id) {
+                        item.state = State::Removing;
+                        item.message = "Stopping and removing…".into();
+                    }
+                } else {
                     if let Some(item) = queue.remove(id) {
                         delete_in_background(item);
                     }

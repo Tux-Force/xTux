@@ -28,6 +28,14 @@ fn print(items: &[DownloadItem]) {
             ),
             _ => String::new(),
         };
+        let amount = if item.speed > 0 {
+            format!(
+                "{amount} {:.1} MB/s",
+                item.speed as f64 / (1u64 << 20) as f64
+            )
+        } else {
+            amount
+        };
         println!(
             "{:>3}  {:<8} {:<40} {amount:<20} {}",
             item.id,
