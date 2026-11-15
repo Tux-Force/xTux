@@ -77,8 +77,8 @@ Two password prompts can appear, neither from xTux itself:
 - **Keychain** (KWallet, GNOME Keyring): xTux keeps its Microsoft device and sign-in tokens there, so a locked keychain
   asks for its password. If it stays locked, xTux stops instead of registering the PC again.
 - **polkit, once:** registering the PC with Microsoft reads the firmware system information
-  (`/sys/firmware/dmi`, root only), as Windows sends it too. xTux explains this before the prompt; cancelling is fine,
-  and `XTUX_SKIP_SMBIOS=1` skips it.
+  (`/sys/firmware/dmi`, root only), as Windows sends it too. xTux explains this first in a dialog of its own (kdialog or zenity) with
+  Continue and Skip; cancelling is fine, and `XTUX_SKIP_SMBIOS=1` skips it.
 
 `prefix init` downloads DXVK and vkd3d-proton from their GitHub releases (or takes them from a local Proton build with
 `--from-proton`), keeps Wine's own DLLs in `xtux-builtin-backup/` and records the setup in `xtux-prefix.json`, from
