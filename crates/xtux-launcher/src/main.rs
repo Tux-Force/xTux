@@ -54,6 +54,13 @@ struct State {
     backdrop_mode: String,
     /// Running games by folder, with what stops them.
     running: HashMap<PathBuf, Canceller>,
+    /// The store catalog and which of its titles are shown.
+    catalog: Vec<xtux_protocol::CatalogTitle>,
+    store_filtered: Vec<usize>,
+    store_limit: usize,
+    store_current: Option<usize>,
+    /// Decoded store covers by Store ID.
+    covers: HashMap<String, Pixels>,
     /// What the command line asked for, done once the library is loaded.
     startup: Option<Startup>,
     handle: Option<tokio::runtime::Handle>,
@@ -74,7 +81,7 @@ struct Args {
     #[arg(long, value_name = "GAME", conflicts_with = "play")]
     game: Option<String>,
     /// Open a page
-    #[arg(long, value_parser = ["library", "settings", "about", "logs"], conflicts_with_all = ["play", "game"])]
+    #[arg(long, value_parser = ["library", "store", "settings", "about", "logs"], conflicts_with_all = ["play", "game"])]
     page: Option<String>,
 }
 
@@ -134,6 +141,10 @@ fn run_startup(ui: &AppWindow, state: &Shared) {
     match startup {
         Startup::Page(page) => ui.set_page(match page.as_str() {
             "settings" => 1,
+            "store" => {
+                open_store(ui, state, &handle, false);
+                5
+            }
             "logs" => 3,
             "about" => 4,
             _ => 0,
@@ -685,6 +696,224 @@ fn set_license_problem(state: &Shared, path: &Path, problem: Option<String>) {
     }
 }
 
+/// Titles shown at first, and added per "Show more".
+const STORE_PAGE: usize = 120;
+
+fn size_text(bytes: Option<u64>) -> String {
+    match bytes {
+        Some(b) if b >= 1 << 30 => format!("{:.1} GB", b as f64 / (1u64 << 30) as f64),
+        Some(b) if b > 0 => format!("{} MB", b >> 20),
+        _ => String::new(),
+    }
+}
+
+fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&Pixels>) -> StoreRow {
+    let (cover, has_cover) = to_image(&cover.cloned());
+    StoreRow {
+        name: title.name.clone().into(),
+        publisher: title.publisher.clone().into(),
+        category: title.category.clone().into(),
+        description: title.description.clone().into(),
+        size: size_text(title.download_size).into(),
+        cover,
+        has_cover,
+        in_game_pass: title.in_game_pass,
+        owned: title.owned,
+        installable: title.installable,
+        installed: title.installed.is_some(),
+        windows_only: title.windows_only.clone().unwrap_or_default().into(),
+    }
+}
+
+/// Applies the store filters of the window (UI thread).
+fn filter_store(ui: &AppWindow, state: &Shared) {
+    let search = ui.get_store_search().to_lowercase();
+    let source = ui.get_store_source().to_string();
+    let installable = ui.get_store_installable();
+    let hide_windows_only = ui.get_store_hide_windows_only();
+    if let Ok(mut s) = state.lock() {
+        s.store_filtered = s
+            .catalog
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                (search.is_empty()
+                    || t.name.to_lowercase().contains(&search)
+                    || t.publisher.to_lowercase().contains(&search)
+                    || t.category.to_lowercase().contains(&search))
+                    && match source.as_str() {
+                        "gamepass" => t.in_game_pass,
+                        "owned" => t.owned,
+                        "installed" => t.installed.is_some(),
+                        _ => true,
+                    }
+                    && (!installable || t.installable)
+                    && (!hide_windows_only || t.windows_only.is_none())
+            })
+            .map(|(i, _)| i)
+            .collect();
+        s.store_limit = STORE_PAGE;
+    }
+    show_store(ui, state);
+}
+
+/// Pushes the shown store titles to the window (UI thread).
+fn show_store(ui: &AppWindow, state: &Shared) {
+    let Ok(s) = state.lock() else { return };
+    let rows: Vec<StoreRow> = s
+        .store_filtered
+        .iter()
+        .take(s.store_limit)
+        .map(|&i| store_row(&s.catalog[i], s.covers.get(&s.catalog[i].product_id)))
+        .collect();
+    ui.set_store_count(s.store_filtered.len() as i32);
+    ui.set_store_total(s.catalog.len() as i32);
+    ui.set_store(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Loads the covers of the shown store titles: from the art cache, else from the Store (when allowed).
+fn load_store_covers(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle) {
+    let wanted: Vec<(String, Option<String>)> = match state.lock() {
+        Ok(s) => s
+            .store_filtered
+            .iter()
+            .take(s.store_limit)
+            .map(|&i| &s.catalog[i])
+            .filter(|t| !s.covers.contains_key(&t.product_id))
+            .map(|t| (t.product_id.clone(), t.poster_url.clone()))
+            .collect(),
+        Err(_) => return,
+    };
+    if wanted.is_empty() {
+        return;
+    }
+    let online = Settings::load().map(|s| s.ui.online_art).unwrap_or(true);
+    let weak = ui.as_weak();
+    let state = state.clone();
+    handle.spawn(async move {
+        let client = art::client(&format!("xtux-launcher/{}", env!("CARGO_PKG_VERSION")));
+        let limit = Arc::new(tokio::sync::Semaphore::new(8));
+        let mut tasks = tokio::task::JoinSet::new();
+        for (id, url) in wanted {
+            let client = client.clone();
+            let limit = limit.clone();
+            tasks.spawn(async move {
+                let _permit = limit.acquire_owned().await.ok()?;
+                let mut cover = art::cached(&id).cover;
+                if cover.is_none() && online {
+                    cover = art::fetch_from(&client, &id, url.as_deref(), None)
+                        .await
+                        .ok()?
+                        .cover;
+                }
+                let pixels =
+                    tokio::task::spawn_blocking(move || decode(cover.as_deref(), 320, 480))
+                        .await
+                        .ok()??;
+                Some((id, pixels))
+            });
+        }
+        let mut done = 0;
+        while let Some(result) = tasks.join_next().await {
+            if let Ok(Some((id, pixels))) = result {
+                if let Ok(mut s) = state.lock() {
+                    s.covers.insert(id, pixels);
+                }
+                done += 1;
+                // Show covers in batches, not one redraw per image.
+                if done % 16 == 0 {
+                    let state = state.clone();
+                    with_ui(&weak, move |ui| show_store(&ui, &state));
+                }
+            }
+        }
+        with_ui(&weak, move |ui| show_store(&ui, &state));
+    });
+}
+
+/// Opens the store, loading the catalog through xtux-service when needed (UI thread).
+fn open_store(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, refresh: bool) {
+    if !refresh && state.lock().is_ok_and(|s| !s.catalog.is_empty()) {
+        return;
+    }
+    ui.set_store_loading(true);
+    ui.set_status("Loading the store catalog…".into());
+    let weak = ui.as_weak();
+    let state = state.clone();
+    let handle2 = handle.clone();
+    handle.spawn(async move {
+        let result = ask(
+            Request::Catalog {
+                market: None,
+                refresh,
+            },
+            |_| {},
+        )
+        .await;
+        match result {
+            Ok(Response::Catalog { titles }) => {
+                let count = titles.len();
+                if let Ok(mut s) = state.lock() {
+                    s.catalog = titles;
+                }
+                with_ui(&weak, move |ui| {
+                    ui.set_store_loading(false);
+                    ui.set_status(format!("{count} titles in the store").into());
+                    filter_store(&ui, &state);
+                    load_store_covers(&ui, &state, &handle2);
+                });
+            }
+            Ok(other) => set_status(&weak, format!("Unexpected answer: {other:?}"), None),
+            Err(err) => {
+                set_status(&weak, format!("Could not load the store: {err}"), None);
+                with_ui(&weak, |ui| ui.set_store_loading(false));
+            }
+        }
+    });
+}
+
+/// Opens the page of a store title (UI thread); the hero image follows.
+fn open_store_title(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, row: usize) {
+    let Some((index, title, cover)) = state.lock().ok().and_then(|s| {
+        let index = *s.store_filtered.get(row)?;
+        let title = s.catalog.get(index)?.clone();
+        let cover = s.covers.get(&title.product_id).cloned();
+        Some((index, title, cover))
+    }) else {
+        return;
+    };
+    if let Ok(mut s) = state.lock() {
+        s.store_current = Some(index);
+    }
+    ui.set_store_title(store_row(&title, cover.as_ref()));
+    ui.set_has_store_hero(false);
+    ui.set_page(6);
+    let online = Settings::load().map(|s| s.ui.online_art).unwrap_or(true);
+    let weak = ui.as_weak();
+    let state = state.clone();
+    handle.spawn(async move {
+        let mut hero = art::cached(&title.product_id).hero;
+        if hero.is_none() && online {
+            let client = art::client(&format!("xtux-launcher/{}", env!("CARGO_PKG_VERSION")));
+            hero = art::fetch_from(&client, &title.product_id, None, title.hero_url.as_deref())
+                .await
+                .ok()
+                .and_then(|a| a.hero);
+        }
+        let pixels = tokio::task::spawn_blocking(move || decode(hero.as_deref(), 1920, 1080))
+            .await
+            .ok()
+            .flatten();
+        with_ui(&weak, move |ui| {
+            if state.lock().ok().and_then(|s| s.store_current) == Some(index) {
+                let (hero, has_hero) = to_image(&pixels);
+                ui.set_store_hero(hero);
+                ui.set_has_store_hero(has_hero);
+            }
+        });
+    });
+}
+
 /// Licenses of all dependencies, from licenses/THIRD-PARTY-LICENSES.md (cargo-about, checked by the CI).
 const THIRD_PARTY: &str = include_str!("../../../licenses/THIRD-PARTY-LICENSES.md");
 
@@ -894,6 +1123,15 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
             "list" => ui.set_view("list".into()),
             "game" => open_game(&ui, &state, &handle, 0),
             "settings" => ui.set_page(1),
+            "store" => {
+                ui.set_page(5);
+                open_store(&ui, &state, &handle, false);
+            }
+            "store-title" => {
+                ui.set_store_search("farming".into());
+                filter_store(&ui, &state);
+                open_store_title(&ui, &state, &handle, 0);
+            }
             "about" => {
                 ui.set_page(4);
                 ui.set_license_open(0);
@@ -919,7 +1157,11 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
         }
         let weak = weak.clone();
         let file = file.clone();
-        slint::Timer::single_shot(Duration::from_secs(2), move || {
+        let delay = std::env::var("XTUX_SNAPSHOT_DELAY")
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(2);
+        slint::Timer::single_shot(Duration::from_secs(delay), move || {
             if let Some(ui) = weak.upgrade() {
                 match ui.window().take_snapshot() {
                     Ok(shot) => {
@@ -1284,6 +1526,84 @@ fn main() {
             let _ = std::process::Command::new("xdg-open")
                 .arg(url.as_str())
                 .spawn();
+        }
+    });
+
+    ui.on_open_store({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                open_store(&ui, &state, &handle, false);
+            }
+        }
+    });
+
+    ui.on_store_refresh({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                open_store(&ui, &state, &handle, true);
+            }
+        }
+    });
+
+    ui.on_store_filter_changed({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                filter_store(&ui, &state);
+                load_store_covers(&ui, &state, &handle);
+            }
+        }
+    });
+
+    ui.on_store_more({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if let Ok(mut s) = state.lock() {
+                s.store_limit += STORE_PAGE;
+            }
+            show_store(&ui, &state);
+            load_store_covers(&ui, &state, &handle);
+        }
+    });
+
+    ui.on_open_store_title({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move |row| {
+            if let Some(ui) = weak.upgrade() {
+                open_store_title(&ui, &state, &handle, row as usize);
+            }
+        }
+    });
+
+    ui.on_store_play({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let game = state.lock().ok().and_then(|s| {
+                let path = s.catalog.get(s.store_current?)?.installed.clone()?;
+                s.all
+                    .iter()
+                    .find(|e| e.info.path == path)
+                    .map(|e| e.info.clone())
+            });
+            if let Some(game) = game {
+                start_game(&ui, &state, &handle, game);
+            }
         }
     });
 

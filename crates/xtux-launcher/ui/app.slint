@@ -37,6 +37,22 @@ export global Theme {
     in property <float> veil-top: 0.4;
 }
 
+export struct StoreRow {
+    name: string,
+    publisher: string,
+    category: string,
+    description: string,
+    size: string,
+    cover: image,
+    has-cover: bool,
+    in-game-pass: bool,
+    owned: bool,
+    installable: bool,
+    installed: bool,
+    // Known kernel anti-cheat; empty when none is known.
+    windows-only: string,
+}
+
 export struct LicenseRow {
     name: string,
     crates: string,
@@ -210,6 +226,99 @@ component AntiCheatChip inherits Rectangle {
             font-weight: 800;
             vertical-alignment: center;
         }
+    }
+}
+
+// Small label chip on store tiles.
+component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> fill;
+    in property <color> ink;
+    height: 22px;
+    width: badge-row.preferred-width;
+    border-radius: 11px;
+    background: root.fill;
+    badge-row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-size: 11px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component StoreTile inherits Rectangle {
+    in property <StoreRow> title;
+    callback open();
+    property <bool> hover: touch.has-hover;
+    art := Rectangle {
+        height: root.width * 1.5;
+        y: 0;
+        border-radius: 16px;
+        clip: true;
+        background: Theme.base-2;
+        border-width: 1px;
+        border-color: root.hover ? Theme.accent : Theme.glass-border;
+        drop-shadow-blur: root.hover ? 30px : 14px;
+        drop-shadow-offset-y: root.hover ? 12px : 5px;
+        drop-shadow-color: root.hover ? Theme.accent.transparentize(60%) : Theme.shadow;
+        transform-scale: root.hover ? 1.04 : 1;
+        animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
+        if root.title.has-cover: Image {
+            source: root.title.cover;
+            width: parent.width;
+            height: parent.height;
+            image-fit: cover;
+        }
+        if !root.title.has-cover: Rectangle {
+            background: @linear-gradient(150deg, Theme.base-2 0%, Theme.accent.transparentize(70%) 100%);
+            Text {
+                text: root.title.name;
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 800;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                width: parent.width - 24px;
+            }
+        }
+        Rectangle {
+            background: @linear-gradient(135deg, #FFFFFF30 0%, #FFFFFF00 40%);
+            opacity: root.hover ? 1 : 0.5;
+        }
+        VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            alignment: start;
+            if root.title.installed: HorizontalLayout { alignment: start; Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; } }
+            if root.title.windows-only != "": HorizontalLayout { alignment: start; Badge { text: "⛔ Windows only"; fill: Theme.danger; ink: Theme.on-danger; } }
+            if root.title.windows-only == "" && !root.title.installable: HorizontalLayout { alignment: start; Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; } }
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open(); }
+        }
+    }
+    Text {
+        y: art.height + 10px;
+        width: root.width;
+        text: root.title.name;
+        color: Theme.text;
+        font-size: 14px;
+        font-weight: 700;
+        overflow: elide;
+    }
+    Text {
+        y: art.height + 30px;
+        width: root.width;
+        text: (root.title.owned ? "Owned" : root.title.in-game-pass ? "Game Pass" : "") + (root.title.size != "" ? " · " + root.title.size : "");
+        color: Theme.muted;
+        font-size: 12px;
+        overflow: elide;
     }
 }
 
@@ -670,6 +779,18 @@ export component AppWindow inherits Window {
     // Logs page (page 3)
     in property <string> service-log;
     in property <string> service-log-path;
+    // Store (page 5) and a store title (page 6)
+    in property <[StoreRow]> store;
+    in property <int> store-count;
+    in property <int> store-total;
+    in property <bool> store-loading;
+    in-out property <string> store-search;
+    in-out property <string> store-source: "all";
+    in-out property <bool> store-installable;
+    in-out property <bool> store-hide-windows-only;
+    in property <StoreRow> store-title;
+    in property <image> store-hero;
+    in property <bool> has-store-hero;
     // About page (page 4)
     in property <string> version;
     in property <[LicenseRow]> licenses;
@@ -690,6 +811,12 @@ export component AppWindow inherits Window {
     callback search-edited(string);
     callback ui-changed();
     callback open-url(string);
+    callback open-store();
+    callback store-filter-changed();
+    callback store-more();
+    callback open-store-title(int);
+    callback store-play();
+    callback store-refresh();
 
     // The std widgets follow the launcher's theme.
     public function apply-theme() {
@@ -771,6 +898,15 @@ export component AppWindow inherits Window {
                     text: "Library";
                     active: root.page == 0 || root.page == 2;
                     clicked => { root.page = 0; }
+                }
+                NavItem {
+                    glyph: "🛒";
+                    text: "Store";
+                    active: root.page == 5 || root.page == 6;
+                    clicked => {
+                        root.page = 5;
+                        root.open-store();
+                    }
                 }
                 NavItem {
                     glyph: "⚙";
@@ -1256,6 +1392,184 @@ export component AppWindow inherits Window {
                                     text: "Save";
                                     clicked => { root.save-settings(); }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Store
+            if root.page == 5: HorizontalLayout {
+                spacing: 10px;
+                height: 48px;
+                PageTitle { text: "Store"; }
+                Text {
+                    text: root.store-loading ? "Loading…" : root.store-count + " of " + root.store-total + " titles";
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    LineEdit {
+                        width: 240px;
+                        text <=> root.store-search;
+                        placeholder-text: "Search the store";
+                        edited => { root.store-filter-changed(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "↻";
+                        min-width: 44px;
+                        clicked => { root.store-refresh(); }
+                    }
+                }
+            }
+            if root.page == 5: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                GhostButton { text: "All"; active: root.store-source == "all"; clicked => { root.store-source = "all"; root.store-filter-changed(); } }
+                GhostButton { text: "Game Pass"; active: root.store-source == "gamepass"; clicked => { root.store-source = "gamepass"; root.store-filter-changed(); } }
+                GhostButton { text: "Owned"; active: root.store-source == "owned"; clicked => { root.store-source = "owned"; root.store-filter-changed(); } }
+                GhostButton { text: "Installed"; active: root.store-source == "installed"; clicked => { root.store-source = "installed"; root.store-filter-changed(); } }
+                Rectangle { width: 12px; }
+                GhostButton { text: "Installable only"; active: root.store-installable; clicked => { root.store-installable = !root.store-installable; root.store-filter-changed(); } }
+                GhostButton { text: "Hide Windows only"; active: root.store-hide-windows-only; clicked => { root.store-hide-windows-only = !root.store-hide-windows-only; root.store-filter-changed(); } }
+            }
+            if root.page == 5: Flickable {
+                property <length> tile: 160px;
+                property <length> gap: 24px;
+                property <int> cols: max(1, floor((self.width - 16px + self.gap) / (self.tile + self.gap)));
+                property <length> row-height: self.tile * 1.5 + 54px;
+                property <length> grid-height: ceil(root.store.length / self.cols) * (self.row-height + self.gap);
+                content-height: self.grid-height + 90px;
+                for title[index] in root.store: StoreTile {
+                    x: 12px + mod(index, parent.cols) * (parent.tile + parent.gap);
+                    y: 14px + floor(index / parent.cols) * (parent.row-height + parent.gap);
+                    width: parent.tile;
+                    height: parent.row-height;
+                    title: title;
+                    open => { root.open-store-title(index); }
+                }
+                if root.store.length < root.store-count: GhostButton {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.grid-height + 24px;
+                    text: "Show more";
+                    clicked => { root.store-more(); }
+                }
+            }
+
+            // Store title
+            if root.page == 6: Flickable {
+                content-height: max(self.height, title-content.preferred-height);
+                title-content := VerticalLayout {
+                    width: parent.width;
+                    spacing: 14px;
+                    alignment: start;
+                    Rectangle {
+                        height: 300px;
+                        border-radius: 20px;
+                        clip: true;
+                        background: Theme.base-2;
+                        border-width: 1px;
+                        border-color: Theme.glass-border;
+                        if root.has-store-hero: Image {
+                            source: root.store-hero;
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: cover;
+                        }
+                        Rectangle {
+                            background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
+                        }
+                        HorizontalLayout {
+                            padding: 24px;
+                            spacing: 18px;
+                            if root.store-title.has-cover: VerticalLayout {
+                                alignment: end;
+                                Rectangle {
+                                    width: 100px;
+                                    height: 150px;
+                                    border-radius: 12px;
+                                    clip: true;
+                                    border-width: 1px;
+                                    border-color: Theme.glass-border;
+                                    Image {
+                                        source: root.store-title.cover;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        image-fit: cover;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                spacing: 4px;
+                                Text {
+                                    text: root.store-title.name;
+                                    color: Theme.text;
+                                    font-size: 32px;
+                                    font-weight: 900;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: root.store-title.publisher + (root.store-title.category != "" ? " · " + root.store-title.category : "") + (root.store-title.size != "" ? " · " + root.store-title.size : "");
+                                    color: Theme.muted;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        GhostButton {
+                                            text: "← Store";
+                                            clicked => { root.page = 5; }
+                                        }
+                                    }
+                                    if root.store-title.installed: ShinyButton {
+                                        text: "▶  Play";
+                                        big: true;
+                                        enabled: !root.busy && root.store-title.windows-only == "";
+                                        clicked => { root.store-play(); }
+                                    }
+                                    if !root.store-title.installed: ShinyButton {
+                                        text: root.store-title.windows-only != "" ? "Windows only" : root.store-title.installable ? "Install soon" : "Not supported";
+                                        big: true;
+                                        enabled: false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                if root.store-title.in-game-pass: Badge { text: "Game Pass"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.owned: Badge { text: "Owned"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.installed: Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.windows-only != "": Badge { text: "⛔ Windows only"; fill: Theme.danger; ink: Theme.on-danger; }
+                                if root.store-title.windows-only == "" && !root.store-title.installable: Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; }
+                            }
+                            Text {
+                                text: root.store-title.description;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                            Label {
+                                text: root.store-title.windows-only != ""
+                                    ? "Known to use the kernel anti-cheat " + root.store-title.windows-only + ", which Wine cannot load: it runs on Windows only."
+                                    : root.store-title.installable
+                                    ? "A GDK game xTux can install. Whether it runs on Linux is not tested yet unless it is marked."
+                                    : "Not a GDK package (for example an older UWP app or a game with its own launcher); xTux cannot install it.";
+                                wrap: word-wrap;
                             }
                         }
                     }
