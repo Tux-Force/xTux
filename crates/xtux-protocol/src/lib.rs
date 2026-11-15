@@ -86,6 +86,12 @@ pub enum Request {
         parallel: usize,
         market: Option<String>,
     },
+    /// The store catalog: PC Game Pass and the games the account owns (cached for a day unless `refresh`).
+    Catalog {
+        market: Option<String>,
+        #[serde(default)]
+        refresh: bool,
+    },
     /// Deletes a game folder of the library with everything in it.
     Uninstall {
         path: PathBuf,
@@ -120,6 +126,33 @@ pub struct GameInfo {
     /// The anti-cheat is a kernel driver Wine cannot load: the game runs on Windows only.
     #[serde(default)]
     pub anticheat_blocks: bool,
+}
+
+/// A title of the store catalog.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogTitle {
+    /// Store ID.
+    pub product_id: String,
+    pub name: String,
+    pub publisher: String,
+    pub description: String,
+    pub category: String,
+    /// Content ID of the PC package (what an install downloads).
+    pub content_id: Option<String>,
+    pub download_size: Option<u64>,
+    pub poster_url: Option<String>,
+    pub hero_url: Option<String>,
+    pub in_game_pass: bool,
+    pub owned: bool,
+    /// A GDK package xTux can install.
+    pub installable: bool,
+    /// Format of the PC package (`MSIXVC`, `EAppx`, `Appx` …); `None` when the Store lists no PC package.
+    #[serde(default)]
+    pub package_format: Option<String>,
+    /// Kernel anti-cheat guessed from xTux's own title list (only when turned on in the settings).
+    pub windows_only: Option<String>,
+    /// Folder of the installed game, when it is in the library.
+    pub installed: Option<PathBuf>,
 }
 
 /// What to install from.
@@ -170,6 +203,9 @@ pub enum Response {
     },
     Uninstalled {
         path: PathBuf,
+    },
+    Catalog {
+        titles: Vec<CatalogTitle>,
     },
     Cancelled,
 }

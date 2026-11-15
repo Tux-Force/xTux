@@ -246,6 +246,47 @@ impl Job {
                 .map_err(error_body)?;
                 Ok(Response::Uninstalled { path })
             }
+            Request::Catalog { market, refresh } => {
+                let settings = xtux_games::settings::Settings::load().unwrap_or_default();
+                let market = market.or(settings.market.clone());
+                let catalog = xtux_games::catalog::load(
+                    &self.client,
+                    &self.tokens,
+                    market.as_deref(),
+                    refresh,
+                )
+                .await
+                .map_err(error_body)?;
+                // Installed games by Store ID.
+                let installed: HashMap<String, PathBuf> =
+                    xtux_games::library::scan(&settings.library_dirs)
+                        .into_iter()
+                        .filter_map(|g| Some((g.store_id?.to_uppercase(), g.path)))
+                        .collect();
+                let titles = catalog
+                    .titles
+                    .into_iter()
+                    .map(|t| xtux_protocol::CatalogTitle {
+                        installed: installed.get(&t.product_id.to_uppercase()).cloned(),
+                        product_id: t.product_id,
+                        name: t.name,
+                        publisher: t.publisher,
+                        description: t.description,
+                        category: t.category,
+                        content_id: t.content_id,
+                        download_size: t.download_size,
+                        poster_url: t.poster_url,
+                        hero_url: t.hero_url,
+                        in_game_pass: t.in_game_pass,
+                        owned: t.owned,
+                        installable: t.installable,
+                        package_format: t.package_format,
+                        // xTux's own title list is a guess: only when the user asked for it.
+                        windows_only: t.windows_only.filter(|_| settings.ui.anticheat_guess),
+                    })
+                    .collect();
+                Ok(Response::Catalog { titles })
+            }
             Request::Library => {
                 let settings = xtux_games::settings::Settings::load().map_err(error_body)?;
                 let games = xtux_games::library::scan(&settings.library_dirs)

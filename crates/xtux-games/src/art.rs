@@ -351,6 +351,36 @@ pub async fn fetch(
     }
 }
 
+/// Cover and hero of a catalog title from URLs the catalog gave, into the cache (only missing ones); for titles
+/// that are not installed yet. Returns what is cached then.
+pub async fn fetch_from(
+    client: &reqwest::Client,
+    store_id: &str,
+    cover_url: Option<&str>,
+    hero_url: Option<&str>,
+) -> Result<Artwork> {
+    if !is_store_id(store_id) {
+        return Err(Error::msg(format!("{store_id:?} is not a Store ID")));
+    }
+    let have = cached(store_id);
+    let dir = cache_dir()
+        .ok_or("cannot determine the cache folder")?
+        .join(store_id);
+    std::fs::create_dir_all(&dir)?;
+    if have.cover.is_none() {
+        if let Some(url) = cover_url.and_then(|u| image_url(u, "w=480&h=720&q=88&mode=scale")) {
+            save_download(client, &url, &dir.join("cover.jpg"), None).await?;
+        }
+    }
+    if have.hero.is_none() || have.backdrop.is_none() {
+        if let Some(url) = hero_url.and_then(|u| image_url(u, "w=1920&h=1080&q=85&mode=scale")) {
+            let backdrop = dir.join("backdrop.jpg");
+            save_download(client, &url, &dir.join("hero.jpg"), Some(&backdrop)).await?;
+        }
+    }
+    Ok(cached(store_id))
+}
+
 /// Downloads an image into the cache, and its blurred backdrop when asked for.
 async fn save_download(
     client: &reqwest::Client,

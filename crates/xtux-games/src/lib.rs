@@ -5,6 +5,7 @@
 pub mod anticheat;
 pub mod art;
 mod cancel;
+pub mod catalog;
 pub mod download;
 pub mod error;
 pub mod install;

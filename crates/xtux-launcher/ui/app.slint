@@ -1,7 +1,7 @@
 // xTux Launcher: library (cover grid or list), game page, settings, logs.
 // Look: glass panels over a blurred game backdrop; themes and accent colours in the global Theme.
 
-import { LineEdit, TextEdit, Palette, AboutSlint } from "std-widgets.slint";
+import { LineEdit, TextEdit, Palette, ScrollView } from "std-widgets.slint";
 
 export global Theme {
     // The choice; the colours below are set by the launcher (src/theme.rs, contrast checked).
@@ -35,6 +35,27 @@ export global Theme {
     in property <float> backdrop-opacity: 0.55;
     // Opacity of the veil over the backdrop at the top of the window.
     in property <float> veil-top: 0.4;
+}
+
+export struct StoreRow {
+    name: string,
+    publisher: string,
+    category: string,
+    description: string,
+    size: string,
+    cover: image,
+    has-cover: bool,
+    in-game-pass: bool,
+    owned: bool,
+    installable: bool,
+    installed: bool,
+    // The Store lists no PC package (other launcher, or not offered for PC here).
+    no-package: bool,
+    package-format: string,
+    // Kernel anti-cheat guessed from xTux's list (opt-in); empty otherwise.
+    windows-only: string,
+    // What the labels mean, shown on hover.
+    hint: string,
 }
 
 export struct LicenseRow {
@@ -210,6 +231,117 @@ component AntiCheatChip inherits Rectangle {
             font-weight: 800;
             vertical-alignment: center;
         }
+    }
+}
+
+// Small label chip on store tiles.
+component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> fill;
+    in property <color> ink;
+    height: 22px;
+    width: badge-row.preferred-width;
+    border-radius: 11px;
+    background: root.fill;
+    badge-row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-size: 11px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component StoreTile inherits Rectangle {
+    in property <StoreRow> title;
+    callback open();
+    property <bool> hover: touch.has-hover;
+    art := Rectangle {
+        height: root.width * 1.5;
+        y: 0;
+        border-radius: 16px;
+        clip: true;
+        background: Theme.base-2;
+        border-width: 1px;
+        border-color: root.hover ? Theme.accent : Theme.glass-border;
+        drop-shadow-blur: root.hover ? 30px : 14px;
+        drop-shadow-offset-y: root.hover ? 12px : 5px;
+        drop-shadow-color: root.hover ? Theme.accent.transparentize(60%) : Theme.shadow;
+        transform-scale: root.hover ? 1.04 : 1;
+        animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
+        if root.title.has-cover: Image {
+            source: root.title.cover;
+            width: parent.width;
+            height: parent.height;
+            image-fit: cover;
+        }
+        if !root.title.has-cover: Rectangle {
+            background: @linear-gradient(150deg, Theme.base-2 0%, Theme.accent.transparentize(70%) 100%);
+            Text {
+                text: root.title.name;
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 800;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                width: parent.width - 24px;
+            }
+        }
+        Rectangle {
+            background: @linear-gradient(135deg, #FFFFFF30 0%, #FFFFFF00 40%);
+            opacity: root.hover ? 1 : 0.5;
+        }
+        VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            alignment: start;
+            if root.title.installed: HorizontalLayout { alignment: start; Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; } }
+            if root.title.windows-only != "": HorizontalLayout { alignment: start; Badge { text: "Likely Windows only"; fill: Theme.danger; ink: Theme.on-danger; } }
+            if root.title.windows-only == "" && !root.title.installable && !root.title.no-package: HorizontalLayout { alignment: start; Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; } }
+            if root.title.windows-only == "" && root.title.no-package: HorizontalLayout { alignment: start; Badge { text: "No PC package"; fill: Theme.glass-strong; ink: Theme.text; } }
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open(); }
+        }
+        // On hover: what the labels mean, on frosted glass (only titles with a label).
+        if root.title.hint != "": Rectangle {
+            y: root.hover ? parent.height - self.height : parent.height;
+            height: hint-text.preferred-height + 20px;
+            background: Theme.glass-strong;
+            border-width: 1px;
+            border-color: Theme.glass-border;
+            animate y { duration: 180ms; easing: ease-out; }
+            hint-text := Text {
+                x: 10px;
+                width: parent.width - 20px;
+                text: root.title.hint;
+                color: Theme.text;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+    }
+    Text {
+        y: art.height + 10px;
+        width: root.width;
+        text: root.title.name;
+        color: Theme.text;
+        font-size: 14px;
+        font-weight: 700;
+        overflow: elide;
+    }
+    Text {
+        y: art.height + 30px;
+        width: root.width;
+        text: (root.title.owned ? "Owned" : root.title.in-game-pass ? "Game Pass" : "") + (root.title.size != "" ? " · " + root.title.size : "");
+        color: Theme.muted;
+        font-size: 12px;
+        overflow: elide;
     }
 }
 
@@ -670,6 +802,22 @@ export component AppWindow inherits Window {
     // Logs page (page 3)
     in property <string> service-log;
     in property <string> service-log-path;
+    // Store (page 5) and a store title (page 6)
+    in property <[StoreRow]> store;
+    in property <int> store-count;
+    in property <int> store-total;
+    in property <bool> store-loading;
+    in-out property <string> store-search;
+    in-out property <string> store-source: "all";
+    in-out property <bool> store-installable;
+    in-out property <bool> store-hide-windows-only;
+    in-out property <bool> anticheat-guess;
+    // Scroll positions kept while a game or title page is open.
+    in-out property <length> library-scroll;
+    in-out property <length> store-scroll;
+    in property <StoreRow> store-title;
+    in property <image> store-hero;
+    in property <bool> has-store-hero;
     // About page (page 4)
     in property <string> version;
     in property <[LicenseRow]> licenses;
@@ -690,6 +838,12 @@ export component AppWindow inherits Window {
     callback search-edited(string);
     callback ui-changed();
     callback open-url(string);
+    callback open-store();
+    callback store-filter-changed();
+    callback store-more();
+    callback open-store-title(int);
+    callback store-play();
+    callback store-refresh();
 
     // The std widgets follow the launcher's theme.
     public function apply-theme() {
@@ -771,6 +925,15 @@ export component AppWindow inherits Window {
                     text: "Library";
                     active: root.page == 0 || root.page == 2;
                     clicked => { root.page = 0; }
+                }
+                NavItem {
+                    glyph: "🛒";
+                    text: "Store";
+                    active: root.page == 5 || root.page == 6;
+                    clicked => {
+                        root.page = 5;
+                        root.open-store();
+                    }
                 }
                 NavItem {
                     glyph: "⚙";
@@ -883,17 +1046,20 @@ export component AppWindow inherits Window {
             }
 
             // Cover grid
-            if root.page == 0 && root.view == "grid" && root.games.length > 0: Flickable {
+            if root.page == 0 && root.view == "grid" && root.games.length > 0: lib-grid := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-y <=> root.library-scroll;
+                content-width: self.visible-width;
                 property <length> tile: 176px;
                 property <length> gap: 26px;
-                property <int> cols: max(1, floor((self.width - 16px + self.gap) / (self.tile + self.gap)));
+                property <int> cols: max(1, floor((self.visible-width - 16px + self.gap) / (self.tile + self.gap)));
                 property <length> row-height: self.tile * 1.5 + 54px;
                 content-height: ceil(root.games.length / self.cols) * (self.row-height + self.gap) + 24px;
                 for game[index] in root.games: CoverTile {
-                    x: 12px + mod(index, parent.cols) * (parent.tile + parent.gap);
-                    y: 14px + floor(index / parent.cols) * (parent.row-height + parent.gap);
-                    width: parent.tile;
-                    height: parent.row-height;
+                    x: 12px + mod(index, lib-grid.cols) * (lib-grid.tile + lib-grid.gap);
+                    y: 14px + floor(index / lib-grid.cols) * (lib-grid.row-height + lib-grid.gap);
+                    width: lib-grid.tile;
+                    height: lib-grid.row-height;
                     game: game;
                     busy: root.busy;
                     play => { root.play(index); }
@@ -904,12 +1070,15 @@ export component AppWindow inherits Window {
             }
 
             // List
-            if root.page == 0 && root.view == "list" && root.games.length > 0: Flickable {
+            if root.page == 0 && root.view == "list" && root.games.length > 0: lib-list := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-y <=> root.library-scroll;
+                content-width: self.visible-width;
                 content-height: root.games.length * 86px + 10px;
                 for game[index] in root.games: ListRow {
                     x: 2px;
                     y: 4px + index * 86px;
-                    width: parent.width - 4px;
+                    width: lib-list.visible-width - 18px;
                     game: game;
                     busy: root.busy;
                     play => { root.play(index); }
@@ -930,10 +1099,14 @@ export component AppWindow inherits Window {
             }
 
             // Game page
-            if root.page == 2: Flickable {
-                content-height: max(self.height, page-content.preferred-height);
+            if root.page == 2: game-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, page-content.preferred-height);
                 page-content := VerticalLayout {
-                    width: parent.width;
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: game-scroll.visible-width - 16px;
                     spacing: 14px;
                     // Hero banner
                     Rectangle {
@@ -1140,10 +1313,14 @@ export component AppWindow inherits Window {
                 text: "Settings";
                 height: 48px;
             }
-            if root.page == 1: Flickable {
-                content-height: max(self.height, settings-content.preferred-height);
+            if root.page == 1: settings-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, settings-content.preferred-height);
                 settings-content := VerticalLayout {
-                    width: parent.width;
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: settings-scroll.visible-width - 16px;
                     spacing: 14px;
                     alignment: start;
                     Glass {
@@ -1224,6 +1401,18 @@ export component AppWindow inherits Window {
                                     GhostButton { text: "Accent colour"; active: root.icon-colour == "accent"; clicked => { root.icon-colour = "accent"; root.ui-changed(); } }
                                 }
                             }
+                            Label { text: "Store: guess kernel anti-cheat"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Off"; active: !root.anticheat-guess; clicked => { root.anticheat-guess = false; root.ui-changed(); root.store-refresh(); } }
+                                GhostButton { text: "From xTux's own list"; active: root.anticheat-guess; clicked => { root.anticheat-guess = true; root.ui-changed(); root.store-refresh(); } }
+                            }
+                            Label {
+                                text: "The list matches title names (for example Call of Duty, EA SPORTS FC) and is not verified per title. Installed games are always checked by their files.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
                             Label { text: "Game artwork"; }
                             HorizontalLayout {
                                 alignment: start;
@@ -1262,15 +1451,209 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // Store
+            if root.page == 5: HorizontalLayout {
+                spacing: 10px;
+                height: 48px;
+                PageTitle { text: "Store"; }
+                Text {
+                    text: root.store-loading ? "Loading…" : root.store-count + " of " + root.store-total + " titles";
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    LineEdit {
+                        width: 240px;
+                        text <=> root.store-search;
+                        placeholder-text: "Search the store";
+                        edited => { root.store-filter-changed(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "↻";
+                        min-width: 44px;
+                        clicked => { root.store-refresh(); }
+                    }
+                }
+            }
+            if root.page == 5: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                GhostButton { text: "All"; active: root.store-source == "all"; clicked => { root.store-source = "all"; root.store-filter-changed(); } }
+                GhostButton { text: "Game Pass"; active: root.store-source == "gamepass"; clicked => { root.store-source = "gamepass"; root.store-filter-changed(); } }
+                GhostButton { text: "Owned"; active: root.store-source == "owned"; clicked => { root.store-source = "owned"; root.store-filter-changed(); } }
+                GhostButton { text: "Installed"; active: root.store-source == "installed"; clicked => { root.store-source = "installed"; root.store-filter-changed(); } }
+                Rectangle { width: 12px; }
+                GhostButton { text: "Installable only"; active: root.store-installable; clicked => { root.store-installable = !root.store-installable; root.store-filter-changed(); } }
+                if root.anticheat-guess: GhostButton { text: "Hide likely Windows only"; active: root.store-hide-windows-only; clicked => { root.store-hide-windows-only = !root.store-hide-windows-only; root.store-filter-changed(); } }
+            }
+            if root.page == 5: store-grid := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-y <=> root.store-scroll;
+                content-width: self.visible-width;
+                property <length> tile: 160px;
+                property <length> gap: 24px;
+                property <int> cols: max(1, floor((self.visible-width - 16px + self.gap) / (self.tile + self.gap)));
+                property <length> row-height: self.tile * 1.5 + 54px;
+                property <length> grid-height: ceil(root.store.length / self.cols) * (self.row-height + self.gap);
+                content-height: self.grid-height + 90px;
+                for title[index] in root.store: StoreTile {
+                    x: 12px + mod(index, store-grid.cols) * (store-grid.tile + store-grid.gap);
+                    y: 14px + floor(index / store-grid.cols) * (store-grid.row-height + store-grid.gap);
+                    width: store-grid.tile;
+                    height: store-grid.row-height;
+                    title: title;
+                    open => { root.open-store-title(index); }
+                }
+                if root.store.length < root.store-count: GhostButton {
+                    x: (store-grid.visible-width - self.width) / 2;
+                    y: store-grid.grid-height + 24px;
+                    text: "Show more";
+                    clicked => { root.store-more(); }
+                }
+            }
+
+            // Store title
+            if root.page == 6: title-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, title-content.preferred-height);
+                title-content := VerticalLayout {
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: title-scroll.visible-width - 16px;
+                    spacing: 14px;
+                    alignment: start;
+                    Rectangle {
+                        height: 300px;
+                        border-radius: 20px;
+                        clip: true;
+                        background: Theme.base-2;
+                        border-width: 1px;
+                        border-color: Theme.glass-border;
+                        if root.has-store-hero: Image {
+                            source: root.store-hero;
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: cover;
+                        }
+                        Rectangle {
+                            background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
+                        }
+                        HorizontalLayout {
+                            padding: 24px;
+                            spacing: 18px;
+                            if root.store-title.has-cover: VerticalLayout {
+                                alignment: end;
+                                Rectangle {
+                                    width: 100px;
+                                    height: 150px;
+                                    border-radius: 12px;
+                                    clip: true;
+                                    border-width: 1px;
+                                    border-color: Theme.glass-border;
+                                    Image {
+                                        source: root.store-title.cover;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        image-fit: cover;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                spacing: 4px;
+                                Text {
+                                    text: root.store-title.name;
+                                    color: Theme.text;
+                                    font-size: 32px;
+                                    font-weight: 900;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: root.store-title.publisher + (root.store-title.category != "" ? " · " + root.store-title.category : "") + (root.store-title.size != "" ? " · " + root.store-title.size : "");
+                                    color: Theme.muted;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        GhostButton {
+                                            text: "← Store";
+                                            clicked => { root.page = 5; }
+                                        }
+                                    }
+                                    if root.store-title.installed: ShinyButton {
+                                        text: "▶  Play";
+                                        big: true;
+                                        enabled: !root.busy && root.store-title.windows-only == "";
+                                        clicked => { root.store-play(); }
+                                    }
+                                    if !root.store-title.installed: ShinyButton {
+                                        text: root.store-title.windows-only != "" ? "Windows only" : root.store-title.installable ? "Install soon" : "Not supported";
+                                        big: true;
+                                        enabled: false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                if root.store-title.in-game-pass: Badge { text: "Game Pass"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.owned: Badge { text: "Owned"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.installed: Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.windows-only != "": Badge { text: "Likely Windows only"; fill: Theme.danger; ink: Theme.on-danger; }
+                                if root.store-title.windows-only == "" && !root.store-title.installable && !root.store-title.no-package: Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; }
+                                if root.store-title.windows-only == "" && root.store-title.no-package: Badge { text: "No PC package"; fill: Theme.glass-strong; ink: Theme.text; }
+                            }
+                            Text {
+                                color: Theme.text;
+                                font-weight: 700;
+                                text: root.store-title.windows-only != ""
+                                    ? "xTux's own list (a guess, not verified for this title) says it uses the kernel anti-cheat " + root.store-title.windows-only + ", which Wine cannot load. Turn the list off in Settings."
+                                    : root.store-title.installable
+                                    ? "A GDK game (MSIXVC package) xTux can install. Whether it runs on Linux is not tested yet unless it is marked."
+                                    : root.store-title.no-package
+                                    ? "The Store lists no PC package for this title. Such games usually install through another launcher (Ubisoft Connect, EA app, Steam) after you claim them, or are only offered for consoles here; xTux cannot install them."
+                                    : "Its PC package is an older UWP app package (" + root.store-title.package-format + "), not a GDK game. xTux cannot install these (yet).";
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.store-title.description;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+
             // About
             if root.page == 4: PageTitle {
                 text: "About";
                 height: 48px;
             }
-            if root.page == 4: Flickable {
-                content-height: max(self.height, about-content.preferred-height);
+            if root.page == 4: about-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, about-content.preferred-height);
                 about-content := VerticalLayout {
-                    width: parent.width;
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: about-scroll.visible-width - 16px;
                     spacing: 14px;
                     alignment: start;
                     Glass {
@@ -1292,6 +1675,10 @@ export component AppWindow inherits Window {
                                     wrap: word-wrap;
                                 }
                                 Label {
+                                    text: "Built with the Slint UI toolkit (used under GPL-3.0), Rust and tokio; all components are listed below.";
+                                    wrap: word-wrap;
+                                }
+                                Label {
                                     text: "Part of Tux-Force, a soft fork of Xodus. Games and their artwork belong to their publishers; xTux only runs games your Microsoft account is entitled to.";
                                     wrap: word-wrap;
                                 }
@@ -1303,10 +1690,6 @@ export component AppWindow inherits Window {
                                     GhostButton { text: "Website"; clicked => { root.open-url("https://tux-force.github.io"); } }
                                     GhostButton { text: "GPL-3.0 text"; clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); } }
                                 }
-                            }
-                            VerticalLayout {
-                                alignment: center;
-                                AboutSlint { width: 180px; }
                             }
                         }
                     }
