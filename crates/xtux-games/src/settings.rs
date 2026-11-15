@@ -1,5 +1,6 @@
 //! User settings shared by xTux clients: `$XDG_CONFIG_HOME/xtux/settings.toml` (`~/.config/xtux/settings.toml`).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,34 @@ pub struct Settings {
     pub prefix: Option<PathBuf>,
     /// Store market (for example `DE`); taken from the system language when not set.
     pub market: Option<String>,
+    /// Settings of single games, by game folder.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub games: BTreeMap<String, GameSettings>,
+}
+
+/// Settings of one game; empty values fall back to the general settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GameSettings {
+    /// Wine binary for this game.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wine: Option<String>,
+    /// Wine prefix for this game.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<PathBuf>,
+    /// Executable to start, package relative (for example `x64\Game.exe`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
+    /// Command line arguments for the game.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Extra environment variables for the game.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+fn game_key(game_dir: &Path) -> String {
+    game_dir.to_string_lossy().into_owned()
 }
 
 fn home() -> Option<PathBuf> {
@@ -123,6 +152,31 @@ impl Settings {
         Ok(settings)
     }
 
+    /// The own settings of the game in `game_dir` (empty when it has none).
+    pub fn game(&self, game_dir: &Path) -> GameSettings {
+        self.games
+            .get(&game_key(game_dir))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Stores the settings of a game; empty settings remove its entry.
+    pub fn set_game(&mut self, game_dir: &Path, game: GameSettings) {
+        if game == GameSettings::default() {
+            self.games.remove(&game_key(game_dir));
+        } else {
+            self.games.insert(game_key(game_dir), game);
+        }
+    }
+
+    /// The settings a game starts with: its own, then the general ones for Wine and the prefix.
+    pub fn effective(&self, game_dir: &Path) -> GameSettings {
+        let mut game = self.game(game_dir);
+        game.wine = game.wine.or_else(|| self.wine.clone());
+        game.prefix = game.prefix.or_else(|| self.prefix.clone());
+        game
+    }
+
     pub fn save(&self) -> Result<()> {
         let file = path().ok_or("cannot determine the settings folder")?;
         if let Some(dir) = file.parent() {
@@ -145,9 +199,42 @@ mod tests {
             wine: Some("/opt/wine/bin/wine".into()),
             prefix: None,
             market: Some("DE".into()),
+            games: BTreeMap::new(),
         };
         let text = toml::to_string_pretty(&settings).unwrap();
         assert_eq!(toml::from_str::<Settings>(&text).unwrap(), settings);
         assert_eq!(toml::from_str::<Settings>("").unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn game_settings_override_the_general_ones() {
+        let mut settings = Settings {
+            wine: Some("/opt/wine".into()),
+            prefix: Some("/prefix".into()),
+            ..Settings::default()
+        };
+        let game = Path::new("/games/LS25");
+        settings.set_game(
+            game,
+            GameSettings {
+                prefix: Some("/ls25-prefix".into()),
+                args: vec!["-skipIntro".into()],
+                env: BTreeMap::from([("DXVK_HUD".into(), "fps".into())]),
+                ..GameSettings::default()
+            },
+        );
+        let text = toml::to_string_pretty(&settings).unwrap();
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(back, settings);
+        let effective = back.effective(game);
+        assert_eq!(effective.wine.as_deref(), Some("/opt/wine"));
+        assert_eq!(effective.prefix, Some(PathBuf::from("/ls25-prefix")));
+        assert_eq!(
+            back.effective(Path::new("/other")).args,
+            Vec::<String>::new()
+        );
+
+        settings.set_game(game, GameSettings::default());
+        assert!(settings.games.is_empty());
     }
 }

@@ -40,6 +40,10 @@ pub struct LaunchOptions {
     /// Environment for the game on top of this process' environment, for example the client's `WINEPREFIX`
     /// when the daemon starts the game. These values also count as "set by the user" for the defaults below.
     pub env: Vec<(String, String)>,
+    /// Command line arguments for the game.
+    pub args: Vec<String>,
+    /// File for Wine's output (overwritten); `None` keeps this process' stdout and stderr.
+    pub log: Option<PathBuf>,
 }
 
 type Cleanup = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -369,8 +373,18 @@ pub async fn launch(
     }
 
     progress.message("Starting the game");
-    let child = Command::new(&options.wine)
+    let mut command = Command::new(&options.wine);
+    if let Some(log) = &options.log {
+        if let Some(dir) = log.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let file = std::fs::File::create(log)
+            .map_err(|e| Error::msg(format!("could not create {}: {e}", log.display())))?;
+        command.stdout(file.try_clone()?).stderr(file);
+    }
+    let child = command
         .arg(nt_entry)
+        .args(&options.args)
         .envs(env)
         .envs(options.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .env("WINE_DLL_FILE_MAP", file_map)

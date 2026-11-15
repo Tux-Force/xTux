@@ -221,13 +221,24 @@ impl Job {
                 exe,
                 market,
                 env,
+                args,
             } => {
+                // Wine's output goes to the game's log, which clients show.
+                let log = xtux_games::logs::game_log(&source);
+                if let Some(log) = &log {
+                    xtux_games::Progress::message(
+                        &progress,
+                        &format!("Game log: {}", log.display()),
+                    );
+                }
                 let options = xtux_games::run::LaunchOptions {
                     source,
                     wine,
                     exe,
                     market,
                     env,
+                    args,
+                    log,
                 };
                 let game = xtux_games::run::launch(&self.client, &self.tokens, options, &progress)
                     .await

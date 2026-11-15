@@ -67,6 +67,9 @@ pub enum Request {
         /// Extra environment for the game, for example `WINEPREFIX`.
         #[serde(default)]
         env: Vec<(String, String)>,
+        /// Command line arguments for the game.
+        #[serde(default)]
+        args: Vec<String>,
     },
     /// Prepares a Wine prefix (DXVK, vkd3d-proton, certificates).
     PrefixInit {

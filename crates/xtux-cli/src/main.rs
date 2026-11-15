@@ -88,10 +88,14 @@ enum SubCommand {
         source: String,
         /// Wine binary, defaults to the one in the settings
         wine: Option<String>,
+        /// Executable to start, package relative; overrides the game settings
         #[arg(short, long)]
         exe: Option<String>,
         #[arg(short, long)]
         market: Option<String>,
+        /// Arguments for the game, after `--`; replace those of the game settings
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     #[cfg(unix)]
     #[command(about = "List the installed games of the library folders")]
@@ -355,38 +359,16 @@ async fn main() -> ExitCode {
             wine,
             exe,
             market,
+            args,
         } => {
             // Windows Xbox app installs and xTux installs are read in place (xtux_games::layout).
-            let settings = xtux_games::settings::Settings::load().unwrap_or_default();
-            let source = match commands::list::resolve(&source) {
-                Ok(source) => source,
+            match commands::run::prepare(source, wine, exe, market, args) {
+                Ok(options) => commands::run::run(&client, &tokens, options).await,
                 Err(err) => {
                     eprintln!("{err}");
-                    return ExitCode::FAILURE;
+                    ExitCode::FAILURE
                 }
-            };
-            let Some(wine) = wine.or(settings.wine) else {
-                eprintln!("No Wine binary given and none set in the settings");
-                return ExitCode::FAILURE;
-            };
-            let mut env = Vec::new();
-            if let (None, Some(prefix)) = (std::env::var_os("WINEPREFIX"), settings.prefix) {
-                env.push((
-                    "WINEPREFIX".to_string(),
-                    prefix.to_string_lossy().into_owned(),
-                ));
             }
-            let market = market.or(settings.market);
-            commands::run::run(
-                &client,
-                &tokens,
-                source.to_string_lossy().into_owned(),
-                wine,
-                exe,
-                market,
-                env,
-            )
-            .await
         }
         SubCommand::Clep { action } => match action {
             ClepAction::Generate {
