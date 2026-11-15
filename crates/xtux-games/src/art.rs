@@ -381,6 +381,14 @@ pub async fn fetch_from(
     Ok(cached(store_id))
 }
 
+/// Cache file name of a screenshot, from its URL, so a changed list never shows an old image at a new place.
+pub fn screenshot_file(url: &str) -> String {
+    use sha1::Digest;
+    let hash = sha1::Sha1::digest(url.as_bytes());
+    let short: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("shot-{short}.jpg")
+}
+
 /// Screenshot `index` (0..8) of a catalog title from the URL the catalog gave, into the cache. Returns its file.
 pub async fn fetch_screenshot(
     client: &reqwest::Client,
@@ -394,7 +402,7 @@ pub async fn fetch_screenshot(
     let dir = cache_dir()
         .ok_or("cannot determine the cache folder")?
         .join(store_id);
-    let path = dir.join(format!("shot-{index}.jpg"));
+    let path = dir.join(screenshot_file(url));
     if path.is_file() {
         return Ok(path);
     }

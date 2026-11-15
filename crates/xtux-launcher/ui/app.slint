@@ -69,6 +69,9 @@ export struct DownloadRow {
     state: string,
     progress: float,
     detail: string,
+    // Finished and in the library: it can be played from here.
+    playable: bool,
+    running: bool,
     cover: image,
     cover-blur: image,
     has-cover: bool,
@@ -2011,6 +2014,8 @@ export component AppWindow inherits Window {
                             alignment: center;
                             HorizontalLayout {
                                 spacing: 6px;
+                                if item.playable && !item.running: ShinyButton { text: "▶  Play"; enabled: !root.busy; clicked => { root.download-action(item.id, "play"); } }
+                                if item.playable && item.running: RunningChip { }
                                 if item.state == "running" || item.state == "queued": GhostButton { text: "❚❚"; width: 44px; clicked => { root.download-action(item.id, "pause"); } }
                                 if item.state == "paused" || item.state == "failed": GhostButton { text: "▶"; width: 44px; clicked => { root.download-action(item.id, "resume"); } }
                                 if item.state != "done" && item.state != "pausing" && item.state != "removing": GhostButton { text: "↑"; width: 40px; clicked => { root.download-action(item.id, "up"); } }

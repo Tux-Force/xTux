@@ -1076,6 +1076,14 @@ fn download_detail(item: &xtux_protocol::DownloadItem) -> String {
     }
 }
 
+/// The library game installed in `folder`.
+fn library_entry<'a>(all: &'a [Entry], folder: &Path) -> Option<&'a Entry> {
+    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+    all.iter().find(|e| {
+        e.info.path == folder || std::fs::canonicalize(&e.info.path).is_ok_and(|p| p == folder)
+    })
+}
+
 /// Pushes the download queue to the window (UI thread).
 /// Bytes per second as text, also below a megabyte.
 fn rate_text(bytes: u64) -> String {
@@ -1149,7 +1157,7 @@ fn load_screenshots(
     handle.spawn(async move {
         let client = art::client(&format!("xtux-launcher/{}", env!("CARGO_PKG_VERSION")));
         for (index, url) in urls.into_iter().take(8).enumerate() {
-            let cached = art::cache_dir().map(|d| d.join(&id).join(format!("shot-{index}.jpg")));
+            let cached = art::cache_dir().map(|d| d.join(&id).join(art::screenshot_file(&url)));
             let path = match cached.filter(|p| p.is_file()) {
                 Some(path) => Some(path),
                 None if online => art::fetch_screenshot(&client, &id, index, &url).await.ok(),
@@ -1221,6 +1229,10 @@ fn show_downloads(ui: &AppWindow, state: &Shared) {
                     _ => 0.0,
                 },
                 detail: download_detail(item).into(),
+                playable: item.state == "done"
+                    && library_entry(&s.all, &item.destination).is_some(),
+                running: library_entry(&s.all, &item.destination)
+                    .is_some_and(|e| s.running.contains_key(&e.info.path)),
                 cover: cover_image,
                 cover_blur,
                 has_cover,
@@ -1349,6 +1361,9 @@ fn reload_store(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle)
 
 /// Opens the install dialog for the store title on screen (UI thread).
 fn store_install(ui: &AppWindow, state: &Shared) {
+    if state.lock().ok().and_then(|s| s.store_current).is_none() {
+        return;
+    }
     let settings = Settings::load().unwrap_or_default();
     let libraries: Vec<PathBuf> = settings
         .library_dirs
@@ -2124,6 +2139,16 @@ fn main() {
         move |id, action| {
             let Some(ui) = weak.upgrade() else { return };
             let id = id as u64;
+            if action == "play" {
+                let game = state.lock().ok().and_then(|s| {
+                    let item = s.downloads.iter().find(|d| d.id == id)?;
+                    library_entry(&s.all, &item.destination).map(|e| e.info.clone())
+                });
+                if let Some(game) = game {
+                    start_game(&ui, &state, &handle, game);
+                }
+                return;
+            }
             let command = match action.as_str() {
                 "pause" => DownloadCommand::Pause { id },
                 "resume" => DownloadCommand::Resume { id },
