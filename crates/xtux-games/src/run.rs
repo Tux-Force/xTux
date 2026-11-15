@@ -226,6 +226,39 @@ async fn identity_env(
 }
 
 /// Reads the package, fetches the license, decrypts the executables and starts the game in Wine.
+/// Which add-ons belong to the game in `source`: those naming its Store ID, or a product it belongs to (from the
+/// Store catalog; skipped when the catalog cannot be reached quickly).
+async fn addon_scope(client: &reqwest::Client, source: &Path) -> crate::packages::Scope {
+    let settings = crate::settings::Settings::load().unwrap_or_default();
+    let Some(store_id) = crate::library::inspect(source)
+        .and_then(|g| g.store_id)
+        .filter(|s| crate::art::is_store_id(s))
+    else {
+        return crate::packages::Scope::default();
+    };
+    let market = settings
+        .market
+        .filter(|m| m.len() == 2 && m.chars().all(|c| c.is_ascii_alphabetic()))
+        .unwrap_or_else(|| "US".to_string());
+    let mut store_ids = vec![store_id.to_uppercase()];
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::catalog::details(client, &store_ids, &market),
+    )
+    .await
+    {
+        Ok(Ok(titles)) => store_ids.extend(titles.into_iter().flat_map(|t| t.parents)),
+        Ok(Err(err)) => tracing::warn!("no catalog entry for {store_id}: {err}"),
+        Err(_) => tracing::warn!("the catalog did not answer for {store_id}"),
+    }
+    store_ids.sort();
+    store_ids.dedup();
+    crate::packages::Scope {
+        library_dirs: settings.library_dirs,
+        store_ids,
+    }
+}
+
 pub async fn launch(
     client: &reqwest::Client,
     tokens: &TokenManager,
@@ -364,7 +397,12 @@ pub async fn launch(
     env.extend(compatibility_env(&options.env));
 
     // Answers GDK calls that need the Microsoft services, see bridge.rs.
-    match crate::bridge::start(client.clone(), tokens.clone()).await {
+    let scope = addon_scope(client, &options.source).await;
+    let market = options
+        .market
+        .clone()
+        .unwrap_or_else(|| "neutral".to_string());
+    match crate::bridge::start(client.clone(), tokens.clone(), scope, market).await {
         Ok(bridge) => {
             env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
             env.push(("XODUS_BRIDGE_SECRET", bridge.secret));

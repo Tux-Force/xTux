@@ -264,36 +264,36 @@ impl Job {
                 )
                 .await
                 .map_err(error_body)?;
-                // Installed games by Store ID.
+                // Installed games and add-ons by Store ID.
                 let installed: HashMap<String, PathBuf> =
-                    xtux_games::library::scan(&settings.library_dirs)
+                    xtux_games::library::scan_all(&settings.library_dirs)
                         .into_iter()
                         .filter_map(|g| Some((g.store_id?.to_uppercase(), g.path)))
                         .collect();
-                let titles = catalog
-                    .titles
-                    .into_iter()
-                    .map(|t| xtux_protocol::CatalogTitle {
-                        installed: installed.get(&t.product_id.to_uppercase()).cloned(),
-                        product_id: t.product_id,
-                        name: t.name,
-                        publisher: t.publisher,
-                        description: t.description,
-                        category: t.category,
-                        content_id: t.content_id,
-                        download_size: t.download_size,
-                        poster_url: t.poster_url,
-                        hero_url: t.hero_url,
-                        screenshots: t.screenshots,
-                        in_game_pass: t.in_game_pass,
-                        owned: t.owned,
-                        installable: t.installable,
-                        package_format: t.package_format,
-                        // xTux's own title list is a guess: only when the user asked for it.
-                        windows_only: t.windows_only.filter(|_| settings.ui.anticheat_guess),
-                    })
-                    .collect();
-                Ok(Response::Catalog { titles })
+                let convert = |t: xtux_games::catalog::Title| xtux_protocol::CatalogTitle {
+                    installed: installed.get(&t.product_id.to_uppercase()).cloned(),
+                    product_id: t.product_id,
+                    name: t.name,
+                    publisher: t.publisher,
+                    description: t.description,
+                    category: t.category,
+                    content_id: t.content_id,
+                    download_size: t.download_size,
+                    poster_url: t.poster_url,
+                    hero_url: t.hero_url,
+                    screenshots: t.screenshots,
+                    in_game_pass: t.in_game_pass,
+                    owned: t.owned,
+                    installable: t.installable,
+                    package_format: t.package_format,
+                    // xTux's own title list is a guess: only when the user asked for it.
+                    windows_only: t.windows_only.filter(|_| settings.ui.anticheat_guess),
+                    parents: t.parents,
+                    addon_parents: t.addon_parents,
+                };
+                let titles = catalog.titles.into_iter().map(convert).collect();
+                let addons = catalog.addons.into_iter().map(convert).collect();
+                Ok(Response::Catalog { titles, addons })
             }
             Request::Library => {
                 let settings = xtux_games::settings::Settings::load().map_err(error_body)?;

@@ -73,7 +73,10 @@ pub async fn run(action: Vec<String>) -> ExitCode {
             })
             .await
             {
-                Ok(Response::Catalog { titles }) => titles,
+                // Games and add-ons alike: an add-on installs into a folder of its own.
+                Ok(Response::Catalog { titles, addons }) => {
+                    titles.into_iter().chain(addons).collect::<Vec<_>>()
+                }
                 Ok(other) => {
                     eprintln!("unexpected answer: {other:?}");
                     return ExitCode::FAILURE;

@@ -21,6 +21,17 @@
 //!   With an MSA app id the token comes from a title-bound session (device, title and user
 //!   token, like on Windows) and signed endpoints get a signature; without one it is a
 //!   user-only token.
+//!
+//! `POST /packages`
+//!   Answers the installed add-ons (DLC) of the game, see packages.rs for the format.
+//!
+//! `POST /packages/wait`
+//!   body: the generation of the list the runtime knows. Answers the list once it changed, or the
+//!   current one after a while (long poll); the runtime then asks again.
+//!
+//! `POST /store/package-license`
+//!   body: the content id of an installed add-on of the game. Answers `1` when the user holds a
+//!   license for it (asked once per run from the licensing service), 403 otherwise.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -40,6 +51,7 @@ use xodus::models::xgameruntime::xuser::UserIdentity;
 use xodus::tokens::TokenManager;
 
 use crate::license::get_store_tokens;
+use crate::packages;
 
 const MAX_REQUEST: usize = 1024 * 1024;
 /// XSTS tokens are valid for many hours; refresh well before that.
@@ -57,6 +69,12 @@ struct State {
     sessions: Mutex<HashMap<String, TitleSession>>,
     /// Title-bound XSTS tokens per `client_id:title_id:relying_party`.
     title_xsts: Mutex<HashMap<String, XstsToken>>,
+    /// Which add-ons belong to the game.
+    scope: packages::Scope,
+    /// Store market for licenses.
+    market: String,
+    /// Add-on license checks by content id.
+    package_licenses: Mutex<HashMap<String, bool>>,
 }
 
 pub struct Bridge {
@@ -64,8 +82,14 @@ pub struct Bridge {
     pub secret: String,
 }
 
-/// Starts the bridge on 127.0.0.1 with a random port. It runs until the process exits.
-pub async fn start(client: reqwest::Client, tokens: TokenManager) -> std::io::Result<Bridge> {
+/// Starts the bridge on 127.0.0.1 with a random port. It runs until the process exits. `scope` tells which add-ons
+/// belong to the game, `market` is the Store market for their licenses.
+pub async fn start(
+    client: reqwest::Client,
+    tokens: TokenManager,
+    scope: packages::Scope,
+    market: String,
+) -> std::io::Result<Bridge> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     let secret = random_secret()?;
@@ -78,6 +102,9 @@ pub async fn start(client: reqwest::Client, tokens: TokenManager) -> std::io::Re
         xsts: Mutex::new(HashMap::new()),
         sessions: Mutex::new(HashMap::new()),
         title_xsts: Mutex::new(HashMap::new()),
+        scope,
+        market,
+        package_licenses: Mutex::new(HashMap::new()),
     });
     tokio::spawn(async move {
         loop {
@@ -219,6 +246,28 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
                 respond(&mut stream, "502 Bad Gateway", &err).await
             }
         },
+        ("POST", "/packages") => {
+            let scope = state.scope.clone();
+            let list =
+                tokio::task::spawn_blocking(move || packages::encode(&packages::list(&scope)))
+                    .await
+                    .unwrap_or_default();
+            respond(&mut stream, "200 OK", &list).await
+        }
+        ("POST", "/packages/wait") => {
+            let list = packages::wait(&state.scope, request.body.trim()).await;
+            respond(&mut stream, "200 OK", &list).await
+        }
+        ("POST", "/store/package-license") => {
+            match package_license(state, request.body.trim()).await {
+                Ok(true) => respond(&mut stream, "200 OK", "1").await,
+                Ok(false) => respond(&mut stream, "403 Forbidden", "not entitled").await,
+                Err(err) => {
+                    tracing::warn!("add-on license check failed: {err}");
+                    respond(&mut stream, "502 Bad Gateway", &err).await
+                }
+            }
+        }
         _ => respond(&mut stream, "404 Not Found", "unknown endpoint").await,
     }
 }
@@ -265,6 +314,43 @@ async fn license_token(
     )
     .await
     .map_err(|err| err.to_string())
+}
+
+/// Whether the user holds a license for the installed add-on `content_id` of the game. Only add-ons of the game are
+/// checked, so the game cannot use the bridge to probe other products.
+async fn package_license(state: &State, content_id: &str) -> Result<bool, String> {
+    let content_id = content_id.to_uppercase();
+    if !crate::layout::is_content_id(&content_id) {
+        return Err("not a content id".to_string());
+    }
+    let mut cache = state.package_licenses.lock().await;
+    if let Some(valid) = cache.get(&content_id) {
+        return Ok(*valid);
+    }
+    let scope = state.scope.clone();
+    let installed = tokio::task::spawn_blocking(move || packages::list(&scope))
+        .await
+        .map_err(|e| e.to_string())?;
+    if !installed.iter().any(|p| p.content_id == content_id) {
+        return Ok(false);
+    }
+    let valid = match crate::license::get_license(
+        &state.client,
+        &state.tokens,
+        content_id.clone(),
+        state.market.clone(),
+    )
+    .await
+    {
+        Ok(_) => true,
+        Err(crate::Error::NotEntitled(description)) => {
+            tracing::info!("no license for add-on {content_id}: {description}");
+            false
+        }
+        Err(err) => return Err(err.to_string()),
+    };
+    cache.insert(content_id, valid);
+    Ok(valid)
 }
 
 async fn fetch_endpoints(

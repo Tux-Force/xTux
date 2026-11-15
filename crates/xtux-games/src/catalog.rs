@@ -1,5 +1,5 @@
 //! The store catalog: PC Game Pass titles and the games the signed in account owns, with what xTux can do with
-//! them.
+//! them, plus the add-ons (DLC) the account owns that have a PC package.
 //!
 //! Game Pass lists come from the public Game Pass catalog, owned games from the Store collections service (with the
 //! account's tokens), details from the public Store display catalog. The result is cached for a day in
@@ -58,17 +58,37 @@ pub struct Title {
     pub installable: bool,
     /// Kernel anti-cheat known for this title: it runs on Windows only.
     pub windows_only: Option<String>,
+    /// Products this one belongs to (the catalog's `Parent` and `Extends` relations), for example the product
+    /// group of all editions of a game. Add-ons name these as their parent.
+    #[serde(default)]
+    pub parents: Vec<String>,
+    /// For an add-on: the products it adds to (the catalog's `addOnParent` relation). Empty for games.
+    #[serde(default)]
+    pub addon_parents: Vec<String>,
+}
+
+impl Title {
+    /// Whether `addon` adds to this game: its parent is this product or one this product belongs to.
+    pub fn has_addon(&self, addon: &Title) -> bool {
+        addon
+            .addon_parents
+            .iter()
+            .any(|p| *p == self.product_id || self.parents.contains(p))
+    }
 }
 
 /// Bumped when a cached catalog lacks fields a newer xTux shows (2: screenshots, 3: screenshots without
-/// the Xbox copies).
-const CACHE_VERSION: u32 = 3;
+/// the Xbox copies, 4: add-ons).
+const CACHE_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
     #[serde(default)]
     pub version: u32,
     pub titles: Vec<Title>,
+    /// Add-ons (DLC) the account owns that have a PC package xTux can install.
+    #[serde(default)]
+    pub addons: Vec<Title>,
     /// Seconds since the Unix epoch when it was loaded.
     pub fetched_at: u64,
 }
@@ -161,12 +181,20 @@ pub async fn game_pass_ids(client: &reqwest::Client, market: &str) -> Result<Vec
         .collect())
 }
 
-/// Product IDs of the games the signed in account owns (Store collections service).
+/// Product IDs the signed in account owns (Store collections service).
+#[derive(Debug, Default)]
+pub struct Owned {
+    pub games: Vec<String>,
+    /// Durables: add-ons, with or without a package.
+    pub durables: Vec<String>,
+}
+
+/// Product IDs of the games and durables the signed in account owns (Store collections service).
 pub async fn owned_ids(
     client: &reqwest::Client,
     tokens: &TokenManager,
     market: &str,
-) -> Result<Vec<String>> {
+) -> Result<Owned> {
     let store = crate::license::get_store_tokens(client, tokens).await?;
     // The user token travels in the body: never follow a redirect with it.
     let client = reqwest::Client::builder()
@@ -186,7 +214,8 @@ pub async fn owned_ids(
         "expandSatisfyingItems": false,
         "excludeDuplicates": true,
     });
-    let mut ids = BTreeSet::new();
+    let mut games = BTreeSet::new();
+    let mut durables = BTreeSet::new();
     // A safety limit: 100 pages of 100 items.
     for _ in 0..100 {
         let answer: serde_json::Value = serde_json::from_slice(
@@ -203,8 +232,17 @@ pub async fn owned_ids(
         .map_err(|e| Error::msg(format!("unexpected collections answer: {e}")))?;
         for item in answer["items"].as_array().into_iter().flatten() {
             let id = item["productId"].as_str().unwrap_or_default();
-            if item["productKind"] == "Game" && crate::art::is_store_id(id) {
-                ids.insert(id.to_string());
+            if !crate::art::is_store_id(id) {
+                continue;
+            }
+            match item["productKind"].as_str() {
+                Some("Game") => {
+                    games.insert(id.to_string());
+                }
+                Some("Durable") => {
+                    durables.insert(id.to_string());
+                }
+                _ => {}
             }
         }
         match answer["continuationToken"].as_str() {
@@ -212,7 +250,10 @@ pub async fn owned_ids(
             None => break,
         }
     }
-    Ok(ids.into_iter().collect())
+    Ok(Owned {
+        games: games.into_iter().collect(),
+        durables: durables.into_iter().collect(),
+    })
 }
 
 /// The catalog sends `null` for some texts; they count as empty.
@@ -238,6 +279,43 @@ struct Product {
     properties: Option<ProductProperties>,
     #[serde(default)]
     display_sku_availabilities: Vec<SkuAvailability>,
+    #[serde(default)]
+    market_properties: Vec<MarketProperties>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct MarketProperties {
+    #[serde(default)]
+    related_products: Vec<RelatedProduct>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct RelatedProduct {
+    #[serde(default, deserialize_with = "text")]
+    related_product_id: String,
+    #[serde(default, deserialize_with = "text")]
+    relationship_type: String,
+}
+
+/// Related product IDs of the given relationship types (checked Store IDs only).
+fn related(product: &Product, types: &[&str]) -> Vec<String> {
+    let mut ids: Vec<String> = product
+        .market_properties
+        .iter()
+        .flat_map(|m| m.related_products.iter())
+        .filter(|r| {
+            types
+                .iter()
+                .any(|t| r.relationship_type.eq_ignore_ascii_case(t))
+        })
+        .map(|r| r.related_product_id.clone())
+        .filter(|id| crate::art::is_store_id(id))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 #[derive(Deserialize)]
@@ -353,6 +431,8 @@ fn windows_only(name: &str) -> Option<String> {
 }
 
 fn to_title(product: Product) -> Option<Title> {
+    let parents = related(&product, &["Parent", "Extends"]);
+    let addon_parents = related(&product, &["addOnParent"]);
     let localized = product.localized_properties.into_iter().next()?;
     // The package for Windows PCs; consoles have their own.
     let pc = product
@@ -394,6 +474,8 @@ fn to_title(product: Product) -> Option<Title> {
         screenshots: screenshots(&localized.images),
         in_game_pass: false,
         owned: false,
+        parents,
+        addon_parents,
     })
 }
 
@@ -434,13 +516,14 @@ pub async fn load(
         }
     }
     let game_pass: BTreeSet<String> = game_pass_ids(client, &market).await?.into_iter().collect();
-    let owned: BTreeSet<String> = match owned_ids(client, tokens, &market).await {
-        Ok(ids) => ids.into_iter().collect(),
+    let owned_all = match owned_ids(client, tokens, &market).await {
+        Ok(owned) => owned,
         Err(err) => {
             tracing::warn!("owned games not loaded: {err}");
-            BTreeSet::new()
+            Owned::default()
         }
     };
+    let owned: BTreeSet<String> = owned_all.games.into_iter().collect();
     let ids: Vec<String> = game_pass.union(&owned).cloned().collect();
     let mut by_id: BTreeMap<String, Title> = details(client, &ids, &market)
         .await?
@@ -453,9 +536,26 @@ pub async fn load(
     }
     let mut titles: Vec<Title> = by_id.into_values().collect();
     titles.sort_by_key(|t| t.name.to_lowercase());
+    // Only add-ons with a package to install; durables without one only unlock content of the game.
+    let mut addons: Vec<Title> = match details(client, &owned_all.durables, &market).await {
+        Ok(addons) => addons
+            .into_iter()
+            .filter(|a| a.installable && !a.addon_parents.is_empty())
+            .map(|mut a| {
+                a.owned = true;
+                a
+            })
+            .collect(),
+        Err(err) => {
+            tracing::warn!("owned add-ons not loaded: {err}");
+            Vec::new()
+        }
+    };
+    addons.sort_by_key(|t| t.name.to_lowercase());
     let catalog = Catalog {
         version: CACHE_VERSION,
         titles,
+        addons,
         fetched_at: now(),
     };
     write_cache(&market, &account, &catalog);
@@ -493,6 +593,30 @@ mod tests {
             Some("https://store-images.s-microsoft.com/image/a")
         );
         assert_eq!(title.windows_only, None);
+    }
+
+    const ADDON: &str = r#"{"Products":[{"ProductId":"9PCR7TSM1S96",
+        "LocalizedProperties":[{"ProductTitle":"Rally Adventure","PublisherName":"Xbox Game Studios"}],
+        "MarketProperties":[{"RelatedProducts":[
+            {"RelatedProductId":"9NNX1VVR3KNQ","RelationshipType":"addOnParent"},
+            {"RelatedProductId":"9MZ0SR207MG8","RelationshipType":"Bundle"}]}],
+        "DisplaySkuAvailabilities":[{"Sku":{"Properties":{"Packages":[
+            {"ContentId":"f5c7afff-c1ee-4a6d-a5e0-96b6da5ec721","PackageFormat":"MSIXVC","PlatformDependencies":[{"PlatformName":"Windows.Desktop"}]}
+        ]}}}]},
+        {"ProductId":"9NKX70BBCDRN","LocalizedProperties":[{"ProductTitle":"Game"}],
+        "MarketProperties":[{"RelatedProducts":[{"RelatedProductId":"9NNX1VVR3KNQ","RelationshipType":"Parent"}]}]}]}"#;
+
+    #[test]
+    fn relates_addons_to_games() {
+        let products: Products = serde_json::from_str(ADDON).unwrap();
+        let mut titles = products.products.into_iter().filter_map(to_title);
+        let addon = titles.next().unwrap();
+        let game = titles.next().unwrap();
+        assert_eq!(addon.addon_parents, vec!["9NNX1VVR3KNQ"]);
+        assert!(addon.installable);
+        assert_eq!(game.parents, vec!["9NNX1VVR3KNQ"]);
+        assert!(game.has_addon(&addon));
+        assert!(!addon.has_addon(&game));
     }
 
     #[test]

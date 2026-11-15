@@ -213,6 +213,22 @@ pub struct CatalogTitle {
     pub windows_only: Option<String>,
     /// Folder of the installed game, when it is in the library.
     pub installed: Option<PathBuf>,
+    /// Products this one belongs to (for example the product group of all editions).
+    #[serde(default)]
+    pub parents: Vec<String>,
+    /// For an add-on: the products it adds to. A game's add-ons name its `product_id` or one of its `parents`.
+    #[serde(default)]
+    pub addon_parents: Vec<String>,
+}
+
+impl CatalogTitle {
+    /// Whether `addon` adds to this game.
+    pub fn has_addon(&self, addon: &CatalogTitle) -> bool {
+        addon
+            .addon_parents
+            .iter()
+            .any(|p| *p == self.product_id || self.parents.contains(p))
+    }
 }
 
 /// What to install from.
@@ -266,6 +282,9 @@ pub enum Response {
     },
     Catalog {
         titles: Vec<CatalogTitle>,
+        /// Add-ons (DLC) the account owns that have a PC package.
+        #[serde(default)]
+        addons: Vec<CatalogTitle>,
     },
     Downloads {
         items: Vec<DownloadItem>,

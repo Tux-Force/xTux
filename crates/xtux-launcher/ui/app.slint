@@ -77,6 +77,14 @@ export struct DownloadRow {
     has-cover: bool,
 }
 
+// An add-on (DLC) of the store title the account owns.
+export struct AddonRow {
+    name: string,
+    size: string,
+    // install | queued | installed
+    state: string,
+}
+
 export struct GraphPoint {
     // Share of the graph's top value, 0 to 1.
     network: float,
@@ -939,6 +947,8 @@ export component AppWindow inherits Window {
     in-out property <int> install-choice;
     in property <bool> store-title-queued;
     in property <[ShotRow]> store-shots;
+    // Owned add-ons of the store title with a PC package.
+    in property <[AddonRow]> store-addons;
     in-out property <int> shot-open: -1;
     // Download history graph: one point per second, oldest first, and its label.
     in property <[GraphPoint]> graph;
@@ -971,6 +981,7 @@ export component AppWindow inherits Window {
     callback store-refresh();
     callback store-install();
     callback store-download-toggle();
+    callback store-addon-install(int);
     callback open-shot(int);
     callback confirm-install();
     callback open-downloads();
@@ -1861,6 +1872,42 @@ export component AppWindow inherits Window {
                                 text: root.store-title.description;
                                 color: Theme.text;
                                 wrap: word-wrap;
+                            }
+                        }
+                    }
+                    if root.store-addons.length > 0: Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            Heading { text: "Your add-ons"; }
+                            Text {
+                                text: "Add-ons install into a folder of their own next to the game. A running game notices a new add-on without a restart.";
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            for addon[index] in root.store-addons: HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text { text: addon.name; color: Theme.text; font-weight: 700; wrap: word-wrap; }
+                                    if addon.size != "": Text { text: addon.size; color: Theme.muted; font-size: 12px; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    if addon.state == "installed": Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; }
+                                    if addon.state == "queued": GhostButton {
+                                        text: "In downloads";
+                                        clicked => {
+                                            root.page = 7;
+                                            root.open-downloads();
+                                        }
+                                    }
+                                    if addon.state == "install": GhostButton {
+                                        text: "⤓  Install";
+                                        clicked => { root.store-addon-install(index); }
+                                    }
+                                }
                             }
                         }
                     }

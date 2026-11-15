@@ -2,6 +2,9 @@
 //!
 //! A library folder holds one folder per game, either streamed or downloaded by xTux (with a `.xodus-streaming.msixvc`
 //! package file) or installed by the Windows Xbox app (with `Content/` and a package file named by a GUID).
+//!
+//! Add-ons (DLC) use the same layout in a folder of their own. Their `MicrosoftGame.config` names the Store IDs of
+//! the games they belong to in `<AllowedProducts>`; that is how they are told apart from games and matched to them.
 
 use std::path::{Path, PathBuf};
 
@@ -27,10 +30,50 @@ pub struct Game {
     pub store_id: Option<String>,
     /// Anti-cheat found in the game folder.
     pub anticheat: Option<crate::anticheat::AntiCheat>,
+    /// For an add-on: Store IDs of the games it belongs to (`<AllowedProducts>`); empty for games.
+    #[serde(default)]
+    pub allowed_products: Vec<String>,
+    /// `Version` of `<Identity>`, for example `1.0.2.0`.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// `PublisherDisplayName` of `<ShellVisuals>`.
+    #[serde(default)]
+    pub publisher: Option<String>,
 }
 
-/// Finds the games in `dirs`, sorted by name. Unreadable folders are skipped.
+impl Game {
+    pub fn is_addon(&self) -> bool {
+        !self.allowed_products.is_empty()
+    }
+}
+
+/// Finds the games in `dirs` (without add-ons), sorted by name. Unreadable folders are skipped.
 pub fn scan(dirs: &[PathBuf]) -> Vec<Game> {
+    let mut games = scan_all(dirs);
+    games.retain(|g| !g.is_addon());
+    games
+}
+
+/// Finds the add-ons in `dirs`, sorted by name.
+pub fn scan_addons(dirs: &[PathBuf]) -> Vec<Game> {
+    let mut addons = scan_all(dirs);
+    addons.retain(Game::is_addon);
+    addons
+}
+
+/// The installed add-ons of the game with these Store IDs (its own and the products it belongs to).
+pub fn addons_of(dirs: &[PathBuf], store_ids: &[String]) -> Vec<Game> {
+    let mut addons = scan_addons(dirs);
+    addons.retain(|a| {
+        a.allowed_products
+            .iter()
+            .any(|p| store_ids.iter().any(|s| s.eq_ignore_ascii_case(p)))
+    });
+    addons
+}
+
+/// Games and add-ons in `dirs`, sorted by name.
+pub fn scan_all(dirs: &[PathBuf]) -> Vec<Game> {
     let mut games = Vec::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -85,6 +128,30 @@ pub fn inspect(path: &Path) -> Option<Game> {
         title_id: config.as_deref().and_then(|c| element(c, "TitleId")),
         store_id: config.as_deref().and_then(|c| element(c, "StoreId")),
         anticheat,
+        allowed_products: config
+            .as_deref()
+            .and_then(|c| section(c, "AllowedProducts"))
+            .map(|s| {
+                elements(s, "AllowedProduct")
+                    .into_iter()
+                    .filter(|id| crate::art::is_store_id(id))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        version: config
+            .as_deref()
+            .and_then(|c| attribute(c, "Identity", "Version"))
+            .filter(|v| v.len() <= 32 && v.chars().all(|c| c.is_ascii_digit() || c == '.')),
+        publisher: config
+            .as_deref()
+            .and_then(|c| attribute(c, "ShellVisuals", "PublisherDisplayName"))
+            .map(|n| {
+                n.chars()
+                    .filter(|c| !c.is_control())
+                    .take(200)
+                    .collect::<String>()
+            })
+            .filter(|n| !n.is_empty() && !n.starts_with("ms-resource:")),
     })
 }
 
@@ -119,6 +186,28 @@ fn element(xml: &str, tag: &str) -> Option<String> {
     Some(xml[start..end].trim().to_string())
 }
 
+/// Inner text of the first `<tag>...</tag>`, untrimmed.
+fn section<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
+    let start = xml.find(&format!("<{tag}>"))? + tag.len() + 2;
+    let end = xml[start..].find(&format!("</{tag}>"))? + start;
+    Some(&xml[start..end])
+}
+
+/// Texts of all `<tag>...</tag>`.
+fn elements(xml: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut found = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find(&open) {
+        rest = &rest[start + open.len()..];
+        let Some(end) = rest.find(&close) else { break };
+        found.push(rest[..end].trim().to_string());
+        rest = &rest[end + close.len()..];
+    }
+    found
+}
+
 /// Value of `attr` on the first `<tag ...>`.
 pub(crate) fn attribute(xml: &str, tag: &str, attr: &str) -> Option<String> {
     let start = xml.find(&format!("<{tag}"))?;
@@ -146,6 +235,37 @@ mod tests {
             Some("Farming Simulator 25")
         );
         assert_eq!(element(CONFIG, "Missing"), None);
+    }
+
+    const ADDON_CONFIG: &str = r#"<Game configVersion="1"><Identity Name="Dlc" Publisher="CN=X" Version="1.2.0.0"/>
+        <ShellVisuals DefaultDisplayName="Rally" PublisherDisplayName="Studio"/><StoreId>9PCR7TSM1S96</StoreId>
+        <AllowedProducts>
+          <AllowedProduct>9NNX1VVR3KNQ</AllowedProduct>
+          <AllowedProduct> 9NKX70BBCDRN </AllowedProduct>
+          <AllowedProduct>../bad</AllowedProduct>
+        </AllowedProducts></Game>"#;
+
+    #[test]
+    fn tells_addons_from_games() {
+        let root = tempfile::tempdir().unwrap();
+        for (name, config) in [("Game A", CONFIG), ("Rally", ADDON_CONFIG)] {
+            let dir = root.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join(crate::run::PACKAGE_FILE), b"").unwrap();
+            std::fs::write(dir.join("MicrosoftGame.config"), config).unwrap();
+        }
+        let dirs = [root.path().to_path_buf()];
+        assert_eq!(scan(&dirs).len(), 1);
+        let addons = scan_addons(&dirs);
+        assert_eq!(addons.len(), 1);
+        assert_eq!(
+            addons[0].allowed_products,
+            vec!["9NNX1VVR3KNQ", "9NKX70BBCDRN"]
+        );
+        assert_eq!(addons[0].version.as_deref(), Some("1.2.0.0"));
+        assert_eq!(addons[0].publisher.as_deref(), Some("Studio"));
+        assert_eq!(addons_of(&dirs, &["9nkx70bbcdrn".into()]).len(), 1);
+        assert!(addons_of(&dirs, &["9NXN8GF8N9ZQ".into()]).is_empty());
     }
 
     #[test]

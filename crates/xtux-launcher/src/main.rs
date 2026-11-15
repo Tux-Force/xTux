@@ -31,6 +31,7 @@ thread_local! {
     static STORE: std::rc::Rc<VecModel<StoreRow>> = std::rc::Rc::new(VecModel::default());
     static DOWNLOAD_ROWS: std::rc::Rc<VecModel<DownloadRow>> = std::rc::Rc::new(VecModel::default());
     static SHOTS: std::rc::Rc<VecModel<ShotRow>> = std::rc::Rc::new(VecModel::default());
+    static ADDONS: std::rc::Rc<VecModel<AddonRow>> = std::rc::Rc::new(VecModel::default());
     static GRAPH: std::rc::Rc<VecModel<GraphPoint>> = std::rc::Rc::new(VecModel::default());
     /// Counts gallery loads, so screenshots of a title left meanwhile are dropped.
     static SHOT_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -82,6 +83,8 @@ struct State {
     running: HashMap<PathBuf, Canceller>,
     /// The store catalog and which of its titles are shown.
     catalog: Vec<xtux_protocol::CatalogTitle>,
+    /// Owned add-ons with a PC package; shown on the page of their game.
+    addons: Vec<xtux_protocol::CatalogTitle>,
     store_filtered: Vec<usize>,
     store_limit: usize,
     store_current: Option<usize>,
@@ -960,10 +963,11 @@ fn open_store(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, r
         )
         .await;
         match result {
-            Ok(Response::Catalog { titles }) => {
+            Ok(Response::Catalog { titles, addons }) => {
                 let count = titles.len();
                 if let Ok(mut s) = state.lock() {
                     s.catalog = titles;
+                    s.addons = addons;
                     // The old indices are invalid now; filter_store rebuilds them.
                     s.store_filtered.clear();
                     s.store_current = None;
@@ -1002,6 +1006,7 @@ fn open_store_title(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Han
         Err(_) => Vec::new(),
     };
     ui.set_store_title(store_row(&title, cover.as_ref(), &downloads));
+    show_addons(state);
     load_screenshots(ui, &title, handle);
     ui.set_has_store_hero(false);
     ui.set_page(6);
@@ -1210,6 +1215,7 @@ fn show_downloads(ui: &AppWindow, state: &Shared) {
     }) {
         ui.set_store_title(row);
     }
+    show_addons(state);
     let Ok(s) = state.lock() else { return };
     show_graph(ui, &s.history);
     let rows: Vec<DownloadRow> = s
@@ -1357,6 +1363,99 @@ fn reload_store(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle)
         s.catalog.clear();
     }
     open_store(ui, state, handle, false);
+}
+
+/// The owned add-ons of the store title on screen.
+fn current_addons(s: &State) -> Vec<xtux_protocol::CatalogTitle> {
+    let Some(title) = s.store_current.and_then(|i| s.catalog.get(i)) else {
+        return Vec::new();
+    };
+    s.addons
+        .iter()
+        .filter(|a| title.has_addon(a))
+        .cloned()
+        .collect()
+}
+
+/// Shows the add-ons of the store title on screen (UI thread).
+fn show_addons(state: &Shared) {
+    let Ok(s) = state.lock() else { return };
+    let rows: Vec<AddonRow> = current_addons(&s)
+        .iter()
+        .map(|a| AddonRow {
+            name: a.name.clone().into(),
+            size: a
+                .download_size
+                .map(|b| size_text(Some(b)))
+                .unwrap_or_default()
+                .into(),
+            state: if a.installed.is_some() {
+                "installed"
+            } else if s
+                .downloads
+                .iter()
+                .any(|d| d.product_id == a.product_id && d.state != "done")
+            {
+                "queued"
+            } else {
+                "install"
+            }
+            .into(),
+        })
+        .collect();
+    drop(s);
+    ADDONS.with(|model| update_rows(model, rows));
+}
+
+/// Queues add-on `index` of the store title on screen, into the library folder of its game (or the first one).
+fn store_addon_install(
+    ui: &AppWindow,
+    state: &Shared,
+    handle: &tokio::runtime::Handle,
+    index: usize,
+) {
+    let Some((addon, game_dir)) = state.lock().ok().and_then(|s| {
+        let addon = current_addons(&s).into_iter().nth(index)?;
+        let game_dir = s
+            .store_current
+            .and_then(|i| s.catalog.get(i))
+            .and_then(|t| t.installed.clone());
+        Some((addon, game_dir))
+    }) else {
+        return;
+    };
+    let Some(content_id) = addon.content_id.clone() else {
+        ui.set_status("This add-on has no PC package to install".into());
+        return;
+    };
+    let settings = Settings::load().unwrap_or_default();
+    let library = game_dir
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(|parent| settings.library_dirs.iter().find(|d| d.as_path() == parent))
+        .or_else(|| {
+            settings
+                .library_dirs
+                .iter()
+                .find(|dir| dir.is_dir() || std::fs::create_dir_all(dir).is_ok())
+        })
+        .cloned();
+    let Some(library) = library else {
+        ui.set_status("No library folder to install into; add one in Settings".into());
+        return;
+    };
+    ui.set_status(format!("{} added to the downloads", addon.name).into());
+    download_command(
+        ui,
+        state,
+        handle,
+        DownloadCommand::Add {
+            product_id: addon.product_id,
+            name: addon.name,
+            content_id,
+            library,
+        },
+    );
 }
 
 /// Opens the install dialog for the store title on screen (UI thread).
@@ -2095,6 +2194,18 @@ fn main() {
 
     DOWNLOAD_ROWS.with(|model| ui.set_downloads(ModelRc::from(model.clone())));
     SHOTS.with(|model| ui.set_store_shots(ModelRc::from(model.clone())));
+    ADDONS.with(|model| ui.set_store_addons(ModelRc::from(model.clone())));
+
+    ui.on_store_addon_install({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move |index| {
+            if let (Some(ui), Ok(index)) = (weak.upgrade(), usize::try_from(index)) {
+                store_addon_install(&ui, &state, &handle, index);
+            }
+        }
+    });
     GRAPH.with(|model| ui.set_graph(ModelRc::from(model.clone())));
 
     ui.on_store_download_toggle({
