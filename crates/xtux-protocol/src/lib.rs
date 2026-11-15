@@ -86,6 +86,10 @@ pub enum Request {
         parallel: usize,
         market: Option<String>,
     },
+    /// Deletes a game folder of the library with everything in it.
+    Uninstall {
+        path: PathBuf,
+    },
     /// Signs a user in: the daemon opens the Microsoft sign-in window in a helper process (`xtux-cli login`)
     /// with this environment (it needs the client's display) and answers with the new status.
     SignIn {
@@ -154,6 +158,9 @@ pub enum Response {
     },
     Library {
         games: Vec<GameInfo>,
+    },
+    Uninstalled {
+        path: PathBuf,
     },
     Cancelled,
 }

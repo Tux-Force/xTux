@@ -39,6 +39,12 @@ pub struct UiSettings {
     pub view: String,
     /// Load cover and hero images from the Microsoft Store catalog (sends the Store IDs of installed games).
     pub online_art: bool,
+    /// Window background from game art: `dynamic` (follows the game under the mouse), `static` or `off`.
+    pub backdrop: String,
+    /// App icon: `mascot`, `mark`, `symbol` or `mono`.
+    pub icon: String,
+    /// Icon colours: `brand` or `accent`.
+    pub icon_colour: String,
 }
 
 impl Default for UiSettings {
@@ -49,6 +55,9 @@ impl Default for UiSettings {
             accent: "lime".into(),
             view: "grid".into(),
             online_art: true,
+            backdrop: "dynamic".into(),
+            icon: "mascot".into(),
+            icon_colour: "brand".into(),
         }
     }
 }

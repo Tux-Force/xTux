@@ -4,6 +4,7 @@
 import { LineEdit, TextEdit, Palette } from "std-widgets.slint";
 
 export global Theme {
+    // The choice; the colours below are set by the launcher (src/theme.rs, contrast checked).
     // system | brand | anthracite | light
     in-out property <string> choice: "system";
     // brand | anthracite: the dark theme when following a dark system
@@ -13,33 +14,34 @@ export global Theme {
     // The desktop's scheme, captured before the launcher sets its own.
     in-out property <bool> system-dark: true;
 
-    out property <bool> light: choice == "light" || (choice == "system" && !system-dark);
-    out property <bool> anthracite: !light && (choice == "anthracite" || (choice == "system" && dark-variant == "anthracite"));
-
-    out property <color> accent: accent-name == "emerald" ? #10B981
-        : accent-name == "cyan" ? #22D3EE
-        : accent-name == "violet" ? #A78BFA
-        : accent-name == "amber" ? #FBBF24
-        : #A3E635;
-    out property <color> on-accent: #06140F;
-    out property <color> base: light ? #DCE7E1 : anthracite ? #0A0B0D : #04100C;
-    out property <color> base-2: light ? #F4F8F6 : anthracite ? #1A1C21 : #0F3B2E;
-    out property <color> text: light ? #0B1A14 : #F4F7FB;
-    out property <color> muted: light ? #45604F : anthracite ? #9BA1A9 : #8FB5A3;
-    out property <color> glass: light ? #FFFFFF8C : anthracite ? #1D1F2499 : #0B2E2380;
-    out property <color> glass-strong: light ? #FFFFFFD0 : anthracite ? #1A1C21E6 : #082219E0;
-    out property <color> glass-border: light ? #FFFFFFE0 : #FFFFFF24;
-    out property <color> shine: light ? #FFFFFF99 : #FFFFFF1A;
-    out property <color> shadow: light ? #0B1A1430 : #000000A8;
-    out property <color> field: light ? #FFFFFFB0 : #00000055;
-    out property <float> backdrop-opacity: light ? 0.45 : 0.6;
+    in property <bool> light;
+    in property <color> accent: #A3E635;
+    in property <color> accent-text: #A3E635;
+    in property <color> on-accent: #06140F;
+    in property <color> danger: #DC2626;
+    in property <color> on-danger: #FFFFFF;
+    in property <color> base: #04100C;
+    in property <color> base-2: #0F3B2E;
+    in property <color> text: #F4F7FB;
+    in property <color> muted: #A9C9BA;
+    in property <color> glass: #0B2E239E;
+    in property <color> glass-strong: #082219E0;
+    in property <color> glass-border: #FFFFFF24;
+    in property <color> shine: #FFFFFF1A;
+    in property <color> shadow: #000000A8;
+    in property <color> field: #00000057;
+    in property <float> backdrop-opacity: 0.55;
+    // Opacity of the veil over the backdrop at the top of the window.
+    in property <float> veil-top: 0.4;
 }
 
 export struct GameRow {
     name: string,
     detail: string,
     windows: bool,
+    running: bool,
     cover: image,
+    cover-blur: image,
     has-cover: bool,
     logo: image,
     has-logo: bool,
@@ -115,8 +117,8 @@ component GhostButton inherits Rectangle {
         padding-right: 14px;
         Text {
             text: root.text;
-            color: root.active ? Theme.accent : Theme.text;
-            font-weight: 700;
+            color: Theme.text;
+            font-weight: root.active ? 800 : 700;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
@@ -124,6 +126,69 @@ component GhostButton inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+}
+
+component DangerButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 36px;
+    min-width: 96px;
+    border-radius: 18px;
+    background: !enabled ? Theme.glass : touch.has-hover ? Theme.danger.brighter(10%) : Theme.danger;
+    drop-shadow-blur: touch.has-hover && enabled ? 18px : 0px;
+    drop-shadow-color: Theme.danger.transparentize(50%);
+    animate background, drop-shadow-blur { duration: 140ms; }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        Text {
+            text: root.text;
+            color: root.enabled ? Theme.on-danger : Theme.muted;
+            font-weight: 800;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Pulsing "Running" chip.
+component RunningChip inherits Rectangle {
+    height: 26px;
+    width: chip-row.preferred-width;
+    border-radius: 13px;
+    background: Theme.glass-strong;
+    border-width: 1px;
+    border-color: Theme.accent;
+    chip-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        spacing: 7px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 9px;
+                height: 9px;
+                border-radius: 4.5px;
+                background: Theme.accent;
+                opacity: 0.55 + 0.45 * sin(animation-tick() * 0.25deg / 1ms);
+                drop-shadow-blur: 8px;
+                drop-shadow-color: Theme.accent;
+            }
+        }
+        Text {
+            text: "Running";
+            color: Theme.text;
+            font-size: 12px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
     }
 }
 
@@ -181,7 +246,7 @@ component NavItem inherits Rectangle {
         spacing: 12px;
         Text {
             text: root.glyph;
-            color: root.active ? Theme.accent : Theme.muted;
+            color: root.active ? Theme.accent-text : Theme.muted;
             font-size: 16px;
             vertical-alignment: center;
             width: 18px;
@@ -225,9 +290,11 @@ component CoverTile inherits Rectangle {
     in property <GameRow> game;
     in property <bool> busy;
     callback play();
+    callback stop();
     callback open();
     callback hovered();
     out property <bool> hover: touch.has-hover || play-touch.has-hover || gear-touch.has-hover;
+    property <bool> bar-up: root.hover || root.game.running;
     changed hover => {
         if self.hover {
             root.hovered();
@@ -269,29 +336,55 @@ component CoverTile inherits Rectangle {
             mouse-cursor: pointer;
             clicked => { root.open(); }
         }
-        // Glass action bar.
-        Rectangle {
-            y: root.hover ? parent.height - self.height : parent.height;
+        if root.game.running: RunningChip {
+            x: 10px;
+            y: 10px;
+        }
+        // Frosted action bar: the blurred cover, aligned with the cover, under a glass tint.
+        bar := Rectangle {
+            y: root.bar-up ? parent.height - self.height : parent.height;
             height: 62px;
-            background: Theme.glass-strong;
-            border-width: 1px;
-            border-color: Theme.glass-border;
+            clip: true;
             animate y { duration: 180ms; easing: ease-out; }
+            if root.game.has-cover: Image {
+                source: root.game.cover-blur;
+                x: 0;
+                y: -bar.y;
+                width: art.width;
+                height: art.height;
+                image-fit: cover;
+            }
+            Rectangle {
+                background: Theme.glass;
+                border-width: 1px;
+                border-color: Theme.glass-border;
+            }
+            Rectangle {
+                background: @linear-gradient(180deg, Theme.shine 0%, transparent 70%);
+            }
             HorizontalLayout {
                 padding: 12px;
                 spacing: 10px;
                 Rectangle {
                     border-radius: 19px;
-                    background: root.busy ? Theme.glass : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 60%, Theme.accent.darker(15%) 100%);
+                    background: root.game.running ? Theme.danger
+                        : root.busy ? Theme.glass
+                        : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 60%, Theme.accent.darker(15%) 100%);
                     Text {
-                        text: "▶  Play";
-                        color: root.busy ? Theme.muted : Theme.on-accent;
+                        text: root.game.running ? "■  Stop" : "▶  Play";
+                        color: root.game.running ? Theme.on-danger : root.busy ? Theme.muted : Theme.on-accent;
                         font-weight: 800;
                     }
                     play-touch := TouchArea {
-                        enabled: !root.busy;
+                        enabled: root.game.running || !root.busy;
                         mouse-cursor: pointer;
-                        clicked => { root.play(); }
+                        clicked => {
+                            if root.game.running {
+                                root.stop();
+                            } else {
+                                root.play();
+                            }
+                        }
                     }
                 }
                 Rectangle {
@@ -325,7 +418,7 @@ component CoverTile inherits Rectangle {
     Text {
         y: art.height + 30px;
         width: root.width;
-        text: root.game.windows ? "Windows install" : "xTux install";
+        text: root.game.running ? "Running" : root.game.windows ? "Windows install" : "xTux install";
         color: Theme.muted;
         font-size: 12px;
     }
@@ -335,6 +428,7 @@ component ListRow inherits Rectangle {
     in property <GameRow> game;
     in property <bool> busy;
     callback play();
+    callback stop();
     callback open();
     callback hovered();
     out property <bool> hover: touch.has-hover;
@@ -390,6 +484,10 @@ component ListRow inherits Rectangle {
                 overflow: elide;
             }
         }
+        if root.game.running: VerticalLayout {
+            alignment: center;
+            RunningChip { }
+        }
         VerticalLayout {
             alignment: center;
             GhostButton {
@@ -400,11 +498,16 @@ component ListRow inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            ShinyButton {
+            if !root.game.running: ShinyButton {
                 text: "▶  Play";
                 width: 120px;
                 enabled: !root.busy;
                 clicked => { root.play(); }
+            }
+            if root.game.running: DangerButton {
+                text: "■  Stop";
+                width: 120px;
+                clicked => { root.stop(); }
             }
         }
     }
@@ -435,6 +538,7 @@ component PageTitle inherits Text {
 
 export component AppWindow inherits Window {
     title: "xTux Launcher";
+    icon: root.app-icon;
     preferred-width: 1240px;
     preferred-height: 800px;
     min-width: 860px;
@@ -460,6 +564,15 @@ export component AppWindow inherits Window {
     in property <image> backdrop-b;
     in property <bool> show-a: true;
     in property <bool> has-backdrop;
+    // Logo of the sidebar and the window icon, chosen in Settings.
+    in property <image> app-icon;
+    in-out property <string> icon-choice: "mascot";
+    in-out property <string> icon-colour: "brand";
+    // dynamic | static | off
+    in-out property <string> backdrop-mode: "dynamic";
+    in property <bool> game-running;
+    in property <bool> game-windows;
+    in-out property <bool> confirm-delete;
     // Game page (page 2)
     in property <string> game-name;
     in property <string> game-path;
@@ -481,6 +594,9 @@ export component AppWindow inherits Window {
     callback sign-in();
     callback refresh();
     callback play(int);
+    callback stop(int);
+    callback stop-game();
+    callback delete-game();
     callback open-game(int);
     callback hover-game(int);
     callback play-game();
@@ -496,11 +612,19 @@ export component AppWindow inherits Window {
     }
     function pick-theme(choice: string) {
         Theme.choice = choice;
-        root.apply-theme();
         root.ui-changed();
     }
     init => {
         Theme.system-dark = Palette.color-scheme != ColorScheme.light;
+    }
+
+    // A click on empty space takes the focus away from text fields.
+    TouchArea {
+        clicked => { focus-sink.focus(); }
+    }
+    focus-sink := FocusScope {
+        width: 0;
+        height: 0;
     }
 
     // Background: brand gradient, blurred game art, a veil for legibility.
@@ -524,7 +648,7 @@ export component AppWindow inherits Window {
         animate opacity { duration: 450ms; easing: ease-in-out; }
     }
     Rectangle {
-        background: @linear-gradient(180deg, Theme.base.transparentize(70%) 0%, Theme.base.transparentize(25%) 100%);
+        background: @linear-gradient(180deg, Theme.base.with-alpha(Theme.veil-top) 0%, Theme.base.transparentize(25%) 100%);
     }
 
     HorizontalLayout {
@@ -539,13 +663,13 @@ export component AppWindow inherits Window {
                 padding: 18px;
                 spacing: 6px;
                 Image {
-                    source: @image-url("../assets/mascot.png");
+                    source: root.app-icon;
                     height: 88px;
                     image-fit: contain;
                 }
                 Text {
                     text: "xTux";
-                    color: Theme.accent;
+                    color: Theme.accent-text;
                     font-size: 28px;
                     font-weight: 900;
                     horizontal-alignment: center;
@@ -682,6 +806,7 @@ export component AppWindow inherits Window {
                     game: game;
                     busy: root.busy;
                     play => { root.play(index); }
+                    stop => { root.stop(index); }
                     open => { root.open-game(index); }
                     hovered => { root.hover-game(index); }
                 }
@@ -697,6 +822,7 @@ export component AppWindow inherits Window {
                     game: game;
                     busy: root.busy;
                     play => { root.play(index); }
+                    stop => { root.stop(index); }
                     open => { root.open-game(index); }
                     hovered => { root.hover-game(index); }
                 }
@@ -768,9 +894,15 @@ export component AppWindow inherits Window {
                                     font-weight: 900;
                                     overflow: elide;
                                 }
-                                Text {
-                                    text: root.game-kind;
-                                    color: Theme.muted;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    alignment: start;
+                                    Text {
+                                        text: root.game-kind;
+                                        color: Theme.muted;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.game-running: RunningChip { }
                                 }
                             }
                             VerticalLayout {
@@ -784,11 +916,18 @@ export component AppWindow inherits Window {
                                             clicked => { root.page = 0; }
                                         }
                                     }
-                                    ShinyButton {
+                                    if !root.game-running: ShinyButton {
                                         text: "▶  Play";
                                         big: true;
                                         enabled: !root.busy;
                                         clicked => { root.play-game(); }
+                                    }
+                                    if root.game-running: DangerButton {
+                                        text: "■  Stop";
+                                        height: 48px;
+                                        min-width: 150px;
+                                        border-radius: 24px;
+                                        clicked => { root.stop-game(); }
                                     }
                                 }
                             }
@@ -826,8 +965,13 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 HorizontalLayout {
-                                    alignment: end;
                                     padding-top: 6px;
+                                    spacing: 10px;
+                                    GhostButton {
+                                        text: "Delete game…";
+                                        clicked => { root.confirm-delete = true; }
+                                    }
+                                    Rectangle { }
                                     ShinyButton {
                                         text: "Save";
                                         clicked => { root.save-game(); }
@@ -896,6 +1040,53 @@ export component AppWindow inherits Window {
                                 Swatch { tint: #22D3EE; active: Theme.accent-name == "cyan"; clicked => { Theme.accent-name = "cyan"; root.ui-changed(); } }
                                 Swatch { tint: #A78BFA; active: Theme.accent-name == "violet"; clicked => { Theme.accent-name = "violet"; root.ui-changed(); } }
                                 Swatch { tint: #FBBF24; active: Theme.accent-name == "amber"; clicked => { Theme.accent-name = "amber"; root.ui-changed(); } }
+                            }
+                            Label { text: "Background"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Follows the game"; active: root.backdrop-mode == "dynamic"; clicked => { root.backdrop-mode = "dynamic"; root.ui-changed(); } }
+                                GhostButton { text: "Fixed"; active: root.backdrop-mode == "static"; clicked => { root.backdrop-mode = "static"; root.ui-changed(); } }
+                                GhostButton { text: "Off"; active: root.backdrop-mode == "off"; clicked => { root.backdrop-mode = "off"; root.ui-changed(); } }
+                            }
+                            Label { text: "App icon"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                for choice in [
+                                    { id: "mascot", img: @image-url("../assets/icon-mascot.png") },
+                                    { id: "mark", img: @image-url("../assets/icon-mark.png") },
+                                    { id: "symbol", img: @image-url("../assets/icon-symbol.png") },
+                                    { id: "mono", img: @image-url("../assets/icon-mono.png") },
+                                ]: Rectangle {
+                                    width: 56px;
+                                    height: 56px;
+                                    border-radius: 14px;
+                                    background: root.icon-choice == choice.id ? Theme.accent.transparentize(75%) : icon-touch.has-hover ? Theme.glass-strong : Theme.glass;
+                                    border-width: root.icon-choice == choice.id ? 2px : 1px;
+                                    border-color: root.icon-choice == choice.id ? Theme.accent : Theme.glass-border;
+                                    Image {
+                                        source: choice.img;
+                                        width: 40px;
+                                        height: 40px;
+                                        colorize: choice.id == "mono" ? Theme.text : transparent;
+                                    }
+                                    icon-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.icon-choice = choice.id;
+                                            root.ui-changed();
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    GhostButton { text: "Brand colours"; active: root.icon-colour == "brand"; clicked => { root.icon-colour = "brand"; root.ui-changed(); } }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    GhostButton { text: "Accent colour"; active: root.icon-colour == "accent"; clicked => { root.icon-colour = "accent"; root.ui-changed(); } }
+                                }
                             }
                             Label { text: "Game artwork"; }
                             HorizontalLayout {
@@ -983,6 +1174,71 @@ export component AppWindow inherits Window {
                         color: root.busy ? Theme.text : Theme.muted;
                         vertical-alignment: center;
                         overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+
+    // Delete confirmation.
+    if root.confirm-delete: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(560px, parent.width - 60px);
+            height: dialog.preferred-height;
+            dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: "Delete " + root.game-name + "?";
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "The whole game folder is deleted from the disk. This cannot be undone:";
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.game-path;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if root.game-windows: Rectangle {
+                    border-radius: 12px;
+                    background: Theme.danger.transparentize(80%);
+                    border-width: 1px;
+                    border-color: Theme.danger;
+                    height: warning.preferred-height;
+                    warning := VerticalLayout {
+                        padding: 14px;
+                        Text {
+                            text: "This game was installed by the Windows Xbox app. Windows will show it as broken until you repair or reinstall it there. Saves in the cloud stay, local saves of the game folder are lost.";
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    GhostButton {
+                        text: "Cancel";
+                        clicked => { root.confirm-delete = false; }
+                    }
+                    DangerButton {
+                        text: "Delete";
+                        enabled: !root.game-running;
+                        clicked => {
+                            root.confirm-delete = false;
+                            root.delete-game();
+                        }
                     }
                 }
             }

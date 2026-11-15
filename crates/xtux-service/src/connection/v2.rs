@@ -198,6 +198,18 @@ impl Job {
                     user,
                 })
             }
+            Request::Uninstall { path } => {
+                let settings = xtux_games::settings::Settings::load().map_err(error_body)?;
+                xtux_games::Progress::message(&progress, &format!("Deleting {}", path.display()));
+                let target = path.clone();
+                tokio::task::spawn_blocking(move || {
+                    xtux_games::uninstall::remove(&target, &settings.library_dirs)
+                })
+                .await
+                .map_err(|e| error_body(xtux_games::Error::msg(e.to_string())))?
+                .map_err(error_body)?;
+                Ok(Response::Uninstalled { path })
+            }
             Request::Library => {
                 let settings = xtux_games::settings::Settings::load().map_err(error_body)?;
                 let games = xtux_games::library::scan(&settings.library_dirs)

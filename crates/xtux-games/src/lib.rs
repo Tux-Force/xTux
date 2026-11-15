@@ -14,6 +14,7 @@ pub mod logs;
 pub mod package;
 pub mod progress;
 pub mod settings;
+pub mod uninstall;
 
 #[cfg(unix)]
 pub mod bridge;
