@@ -1,17 +1,17 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-dark-bg.png" />
-    <img src="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-light-bg.png" alt="Tux-Force" width="420" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://tux-force.github.io/brand/logo-horizontal-dark-bg.png" />
+    <img src="https://tux-force.github.io/brand/logo-horizontal-light-bg.png" alt="Tux-Force" width="420" />
   </picture>
 </p>
 
 <h1 align="center">xTux</h1>
 <p align="center">Play the PC games you own or subscribe to on Linux — with real licenses, no cracks.</p>
-<p align="center"><a href="https://github.com/Tux-Force">Tux-Force</a> · soft fork of <a href="https://github.com/xodus-gaming/xodus">Xodus</a></p>
+<p align="center"><a href="https://tux-force.github.io">Website</a> · <a href="https://github.com/Tux-Force">Tux-Force</a> · soft fork of <a href="https://github.com/xodus-gaming/xodus">Xodus</a></p>
 
 > [!CAUTION]
 > This is an unofficial community project - use at your own risk. It is not affiliated with, endorsed by, or sponsored
-> by Microsoft or XBOX; all trademarks, product names, and company names or logos mentioned herein are the property
+> by Microsoft or Xbox; all trademarks, product names, and company names or logos mentioned herein are the property
 > of their respective owners.
 
 ## What is xTux?
@@ -41,48 +41,18 @@ contributions (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main
 The matching runtime and Wine changes live in [Tux-Force/xgameruntime](https://github.com/Tux-Force/xgameruntime)
 and [Tux-Force/wine](https://github.com/Tux-Force/wine).
 
-## Current state
+## Using xTux
 
-| Game | State |
-|---|---|
-| Farming Simulator 25 | Plays: menus, saves, ModHub, Xbox Live (achievements, presence, real-time) and clean exit |
-| Microsoft Flight Simulator 2024 | Signs in and reaches its services, then fails on its own backend (under investigation) |
+Guides, the compatibility list and downloads are on the website, **https://tux-force.github.io**:
 
-The command line tool is **xTux-cli** (`xtux-cli`) and the daemon **xTux-service** (`xtux-service`); the core library
-keeps its upstream name `xodus`.
+- [Quick start](https://tux-force.github.io/guide/quick-start/) and [installation](https://tux-force.github.io/guide/installation/)
+- [Running games](https://tux-force.github.io/guide/running-games/): `xtux-cli list`, `run` by name, Windows installs, `migrate`
+- [Sign-in and password prompts](https://tux-force.github.io/guide/sign-in/), [troubleshooting](https://tux-force.github.io/guide/troubleshooting/)
+- [Compatibility](https://tux-force.github.io/compatibility/) and [architecture](https://tux-force.github.io/project/architecture/)
 
-## Quick start
-
-```bash
-# sign in once
-xtux-cli login
-# prepare a prefix: DXVK, vkd3d-proton and the Microsoft root certificates games expect
-xtux-cli prefix init /path/to/tux-force-wine/wine --prefix ~/Games/xtux-prefix
-# run a game installed by the Windows Xbox app, or a folder downloaded with xtux-cli
-WINEPREFIX=~/Games/xtux-prefix xtux-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
-# or by name, with Wine, prefix and market from ~/.config/xtux/settings.toml
-xtux-cli list
-xtux-cli run "Farming Simulator 25 (PC)"
-```
-
-Shell completion (game names for `run`): add `source <(COMPLETE=zsh xtux-cli)` to `~/.zshrc`, or
-`source <(COMPLETE=bash xtux-cli)` to `~/.bashrc`.
-
-`run` and `prefix init` go through the daemon `xtux-service`, which `xtux-cli` starts on demand and which exits
-after five idle minutes (`XTUX_IDLE_TIMEOUT` in seconds, `0` keeps it running). Its log, including the game bridge, is
-in `~/.local/state/xtux/service.log`. `XTUX_DIRECT=1` runs a command inside `xtux-cli` instead, without the daemon.
-
-Two password prompts can appear, neither from xTux itself:
-
-- **Keychain** (KWallet, GNOME Keyring): xTux keeps its Microsoft device and sign-in tokens there, so a locked keychain
-  asks for its password. If it stays locked, xTux stops instead of registering the PC again.
-- **polkit, once:** registering the PC with Microsoft reads the firmware system information
-  (`/sys/firmware/dmi`, root only), as Windows sends it too. xTux explains this first in a dialog of its own (kdialog or zenity) with
-  Continue and Skip; cancelling is fine, and `XTUX_SKIP_SMBIOS=1` skips it.
-
-`prefix init` downloads DXVK and vkd3d-proton from their GitHub releases (or takes them from a local Proton build with
-`--from-proton`), keeps Wine's own DLLs in `xtux-builtin-backup/` and records the setup in `xtux-prefix.json`, from
-which `run` takes the DLL overrides.
+`xtux-cli --help` lists all commands. The command line tool is **xTux-cli** (`xtux-cli`), the daemon **xTux-service**
+(`xtux-service`) and the graphical front end the **xTux Launcher** (`xtux-launcher`); the core library keeps its
+upstream name `xodus`.
 
 ## Building
 
@@ -97,7 +67,7 @@ The project structure is as follows.
 ```
 
 > [!NOTE]
-> xtux-service aims to become a main point of integration. All xodus clients will connect to it to interact with games and XBOX services.
+> xtux-service aims to become a main point of integration. All xodus clients will connect to it to interact with games and Xbox services.
 
 ### Prerequisites
 
@@ -138,33 +108,6 @@ RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console
 >
 > See https://en.wikipedia.org/wiki/AES_instruction_set for a list of compatible CPUs (every processor from
 > 2011 onwards should be supported).
-
-### CLI Usage
-
-```
-Usage: xtux-cli <COMMAND>
-
-Commands:
-  download       Download msixvc or xsp files for a given game
-  license        Dump CIKs for use with XvdTool
-  extract        Extract locally stored msixvc file
-  extract-eappx  Extract a locally stored EAppx/EMSIX package (research task, see issue #91)
-  login          
-  logout         
-  streaming      Download and extract the game through streaming algorithm
-  link           Link a game installed by the Windows Xbox app so it can be run from Linux without copying
-  run            Run a game with the Tux-Force Wine build
-  list           List the installed games of the library folders
-  migrate        Move an install from the old Xodus layout into the Windows Xbox app layout
-  prefix         Prepare a Wine prefix for GDK games (DXVK, vkd3d-proton, root certificates)
-  clep           Generate or decrypt base64-encoded CLEP challenge data
-  sp-license     Decode SPLicenseBlock
-  help           Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-```
 
 ## Special Thanks
 
