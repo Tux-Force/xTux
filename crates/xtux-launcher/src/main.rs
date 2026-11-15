@@ -79,7 +79,7 @@ fn parse_env(text: &str) -> BTreeMap<String, String> {
 
 /// Decodes an image file, scaled down to fit `max_w` × `max_h`.
 fn decode(path: Option<&Path>, max_w: u32, max_h: u32) -> Option<Pixels> {
-    let image = image::open(path?).ok()?;
+    let image = art::open_image(path?).ok()?;
     let image = if image.width() > max_w || image.height() > max_h {
         image.thumbnail(max_w, max_h)
     } else {
@@ -261,17 +261,15 @@ async fn refresh_library(ui: Weak<AppWindow>, state: Shared) {
             }
         });
     }
-    if missing.is_empty() {
+    // Opt-out in Settings: the catalog learns the Store IDs of installed games.
+    let online = Settings::load().map(|s| s.ui.online_art).unwrap_or(true);
+    if missing.is_empty() || !online {
         return;
     }
 
     // Catalog art: public Store data, only the Store ID and market are sent.
     let market = Settings::load().ok().and_then(|s| s.market);
-    let client = reqwest::Client::builder()
-        .user_agent(format!("xtux-launcher/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_default();
+    let client = art::client(&format!("xtux-launcher/{}", env!("CARGO_PKG_VERSION")));
     let mut fetched = false;
     for id in missing {
         match art::fetch(&client, &id, market.as_deref()).await {
@@ -526,6 +524,7 @@ fn main() {
         theme.set_dark_variant(settings.ui.dark_variant.clone().into());
         theme.set_accent_name(settings.ui.accent.clone().into());
         ui.set_view(settings.ui.view.clone().into());
+        ui.set_online_art(settings.ui.online_art);
         ui.invoke_apply_theme();
     }
     ui.set_wine(settings.wine.clone().unwrap_or_default().into());
@@ -625,6 +624,7 @@ fn main() {
             settings.ui.dark_variant = theme.get_dark_variant().into();
             settings.ui.accent = theme.get_accent_name().into();
             settings.ui.view = ui.get_view().into();
+            settings.ui.online_art = ui.get_online_art();
             if let Err(err) = settings.save() {
                 ui.set_status(format!("Could not save the settings: {err}").into());
             }

@@ -450,6 +450,7 @@ export component AppWindow inherits Window {
     in property <int> game-count;
     in-out property <string> search;
     in-out property <string> view: "grid";
+    in-out property <bool> online-art: true;
     in-out property <string> wine;
     in-out property <string> prefix;
     in-out property <string> library-dirs;
@@ -895,6 +896,18 @@ export component AppWindow inherits Window {
                                 Swatch { tint: #22D3EE; active: Theme.accent-name == "cyan"; clicked => { Theme.accent-name = "cyan"; root.ui-changed(); } }
                                 Swatch { tint: #A78BFA; active: Theme.accent-name == "violet"; clicked => { Theme.accent-name = "violet"; root.ui-changed(); } }
                                 Swatch { tint: #FBBF24; active: Theme.accent-name == "amber"; clicked => { Theme.accent-name = "amber"; root.ui-changed(); } }
+                            }
+                            Label { text: "Game artwork"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "From the Microsoft Store"; active: root.online-art; clicked => { root.online-art = true; root.ui-changed(); root.refresh(); } }
+                                GhostButton { text: "Only from the game folder"; active: !root.online-art; clicked => { root.online-art = false; root.ui-changed(); } }
+                            }
+                            Label {
+                                text: "Covers and hero images come from the public Store catalog. xTux sends only the Store IDs of your installed games and your market, no account data; images are cached in ~/.cache/xtux/art.";
+                                wrap: word-wrap;
+                                font-size: 12px;
                             }
                         }
                     }

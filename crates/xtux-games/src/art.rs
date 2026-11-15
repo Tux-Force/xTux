@@ -10,8 +10,66 @@ use serde::Deserialize;
 
 use crate::{Error, Result};
 
-/// Largest image download; catalog images at the requested sizes are far smaller.
+/// Largest image file read or downloaded; catalog images at the requested sizes are far smaller.
 const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Largest catalog answer.
+const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+/// Hosts art requests may reach, also through redirects.
+const HOSTS: [&str; 2] = [
+    "displaycatalog.mp.microsoft.com",
+    "store-images.s-microsoft.com",
+];
+
+/// HTTP client for art: https to the Store hosts only, also when redirected.
+pub fn client(user_agent: &str) -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(user_agent)
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let url = attempt.url();
+            if attempt.previous().len() < 5
+                && url.scheme() == "https"
+                && url.host_str().is_some_and(|h| HOSTS.contains(&h))
+            {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .unwrap_or_default()
+}
+
+/// Decoding limits: no image of the Store or a game folder needs more.
+fn limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    limits
+}
+
+fn decode_bytes(bytes: &[u8]) -> Result<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| Error::msg(format!("not an image: {e}")))?;
+    reader.limits(limits());
+    reader
+        .decode()
+        .map_err(|e| Error::msg(format!("not an image: {e}")))
+}
+
+/// Opens an image file with size and decoding limits; regular files only.
+pub fn open_image(path: &Path) -> Result<image::DynamicImage> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file() || meta.len() as usize > MAX_IMAGE_BYTES {
+        return Err(Error::msg(format!(
+            "{} is not a usable image file",
+            path.display()
+        )));
+    }
+    decode_bytes(&std::fs::read(path)?)
+}
 
 /// Images of one game; `None` where there is none.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -89,7 +147,10 @@ pub fn local(game_dir: &Path) -> Artwork {
         {
             return None;
         }
-        existing(layout.root.join(relative))
+        // Stays inside the game folder also through links.
+        let root = std::fs::canonicalize(&layout.root).ok()?;
+        let path = std::fs::canonicalize(layout.root.join(relative)).ok()?;
+        path.starts_with(&root).then_some(path).and_then(existing)
     };
     let logo = image("Square480x480Logo")
         .or_else(|| image("Square150x150Logo"))
@@ -148,33 +209,36 @@ fn image_url(uri: &str, query: &str) -> Option<String> {
         .then(|| format!("{}?{query}", url.split('?').next().unwrap_or(&url)))
 }
 
-async fn download(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
-    let response = client.get(url).send().await?.error_for_status()?;
-    if response
-        .content_length()
-        .is_some_and(|l| l as usize > MAX_IMAGE_BYTES)
-    {
-        return Err(Error::msg("image too large"));
+/// Downloads at most `max` bytes, also when the server sends no length.
+async fn download(client: &reqwest::Client, url: &str, max: usize) -> Result<Vec<u8>> {
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    if response.content_length().is_some_and(|l| l as usize > max) {
+        return Err(Error::msg("answer too large"));
     }
-    let bytes = response.bytes().await?;
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(Error::msg("image too large"));
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > max {
+            return Err(Error::msg("answer too large"));
+        }
+        bytes.extend_from_slice(&chunk);
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
-/// Writes next to the target and renames, so readers never see half an image.
+/// Writes a temporary file next to the target and renames it, so readers never see half an image and two writers
+/// never mix their files.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let partial = path.with_extension("partial");
-    std::fs::write(&partial, bytes)?;
-    std::fs::rename(&partial, path)?;
+    use std::io::Write;
+    let dir = path.parent().ok_or("no folder for the image")?;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    file.write_all(bytes)?;
+    file.persist(path).map_err(|e| Error::Io(e.error))?;
     Ok(())
 }
 
 /// Decodes `bytes` and stores them as `path` (JPEG or PNG by extension), so only valid images reach the cache.
 fn store_image(bytes: &[u8], path: &Path) -> Result<image::DynamicImage> {
-    let image =
-        image::load_from_memory(bytes).map_err(|e| Error::msg(format!("not an image: {e}")))?;
+    let image = decode_bytes(bytes)?;
     let format = if path.extension().is_some_and(|e| e == "png") {
         image::ImageFormat::Png
     } else {
@@ -225,16 +289,13 @@ pub async fn fetch(
     let market = market
         .filter(|m| m.len() == 2 && m.chars().all(|c| c.is_ascii_alphabetic()))
         .unwrap_or("US");
-    let catalog: Catalog = client
-        // Both values are checked letters and digits, so they need no escaping.
-        .get(format!(
-            "https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds={store_id}&market={market}&languages=en-US,neutral"
-        ))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    // Both values are checked letters and digits, so they need no escaping.
+    let url = format!(
+        "https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds={store_id}&market={market}&languages=en-US,neutral"
+    );
+    let catalog: Catalog =
+        serde_json::from_slice(&download(client, &url, MAX_CATALOG_BYTES).await?)
+            .map_err(|e| Error::msg(format!("unexpected catalog answer: {e}")))?;
     let images: Vec<CatalogImage> = catalog
         .products
         .into_iter()
@@ -248,28 +309,60 @@ pub async fn fetch(
             .map(|i| i.uri.clone())
     };
 
+    // Each image on its own: one failing does not stop the others.
+    let mut failed = None;
     if have.cover.is_none() {
         if let Some(url) =
             find(&["Poster", "BoxArt"]).and_then(|u| image_url(&u, "w=480&h=720&q=88&mode=scale"))
         {
-            store_image(&download(client, &url).await?, &dir.join("cover.jpg"))?;
+            if let Err(err) = save_download(client, &url, &dir.join("cover.jpg"), None).await {
+                failed = Some(err);
+            }
         }
     }
     if have.hero.is_none() || have.backdrop.is_none() {
         let hero_uri = find(&["SuperHeroArt", "TitledHeroArt", "Screenshot"]);
         if let Some(url) = hero_uri.and_then(|u| image_url(&u, "w=1920&h=1080&q=85&mode=scale")) {
-            let hero = store_image(&download(client, &url).await?, &dir.join("hero.jpg"))?;
-            store_backdrop(&hero, &dir.join("backdrop.jpg"))?;
+            let backdrop = dir.join("backdrop.jpg");
+            if let Err(err) =
+                save_download(client, &url, &dir.join("hero.jpg"), Some(&backdrop)).await
+            {
+                failed = Some(err);
+            }
         }
     }
     if have.logo.is_none() {
         if let Some(url) =
             find(&["Logo", "BoxArt"]).and_then(|u| image_url(&u, "w=300&h=300&q=90&mode=scale"))
         {
-            store_image(&download(client, &url).await?, &dir.join("logo.png"))?;
+            if let Err(err) = save_download(client, &url, &dir.join("logo.png"), None).await {
+                failed = Some(err);
+            }
         }
     }
-    Ok(cached(store_id))
+    let art = cached(store_id);
+    match failed {
+        Some(err) if art == Artwork::default() => Err(err),
+        Some(err) => {
+            tracing::warn!("some art of {store_id} is missing: {err}");
+            Ok(art)
+        }
+        None => Ok(art),
+    }
+}
+
+/// Downloads an image into the cache, and its blurred backdrop when asked for.
+async fn save_download(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+    backdrop: Option<&Path>,
+) -> Result<()> {
+    let image = store_image(&download(client, url, MAX_IMAGE_BYTES).await?, path)?;
+    if let Some(backdrop) = backdrop {
+        store_backdrop(&image, backdrop)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -310,7 +403,7 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn fetches_catalog_art() {
-        let art = fetch(&reqwest::Client::new(), "9PM709J61828", Some("DE"))
+        let art = fetch(&client("xtux-test"), "9PM709J61828", Some("DE"))
             .await
             .unwrap();
         println!("{art:?}");

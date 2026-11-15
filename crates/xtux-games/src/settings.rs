@@ -37,6 +37,8 @@ pub struct UiSettings {
     pub accent: String,
     /// Library view: `grid` or `list`.
     pub view: String,
+    /// Load cover and hero images from the Microsoft Store catalog (sends the Store IDs of installed games).
+    pub online_art: bool,
 }
 
 impl Default for UiSettings {
@@ -46,6 +48,7 @@ impl Default for UiSettings {
             dark_variant: "brand".into(),
             accent: "lime".into(),
             view: "grid".into(),
+            online_art: true,
         }
     }
 }
