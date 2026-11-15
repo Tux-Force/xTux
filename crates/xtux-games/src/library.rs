@@ -25,6 +25,8 @@ pub struct Game {
     pub kind: GameKind,
     pub title_id: Option<String>,
     pub store_id: Option<String>,
+    /// Anti-cheat found in the game folder.
+    pub anticheat: Option<crate::anticheat::AntiCheat>,
 }
 
 /// Finds the games in `dirs`, sorted by name. Unreadable folders are skipped.
@@ -67,6 +69,7 @@ pub fn inspect(path: &Path) -> Option<Game> {
         GameKind::Installed
     };
     let content = layout.root;
+    let anticheat = crate::anticheat::detect(&content);
     let config = read_config(&content);
     let folder_name = path.file_name()?.to_string_lossy().into_owned();
     let name = config
@@ -81,6 +84,7 @@ pub fn inspect(path: &Path) -> Option<Game> {
         kind,
         title_id: config.as_deref().and_then(|c| element(c, "TitleId")),
         store_id: config.as_deref().and_then(|c| element(c, "StoreId")),
+        anticheat,
     })
 }
 

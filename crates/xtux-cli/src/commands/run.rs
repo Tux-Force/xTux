@@ -21,6 +21,19 @@ pub fn prepare(
 ) -> Result<LaunchOptions, String> {
     let settings = Settings::load().unwrap_or_default();
     let source = super::list::resolve(&source)?;
+    if let Some(anticheat) = xtux_games::library::inspect(&source).and_then(|g| g.anticheat) {
+        if anticheat.blocks {
+            eprintln!(
+                "Warning: this game uses the kernel anti-cheat {}, which Wine cannot load; it runs on Windows only.",
+                anticheat.name
+            );
+        } else {
+            eprintln!(
+                "Note: this game uses {}, which works on Linux only if the developer allows it.",
+                anticheat.name
+            );
+        }
+    }
     let game = settings.game(&source);
     let effective = settings.effective(&source);
     let wine = wine

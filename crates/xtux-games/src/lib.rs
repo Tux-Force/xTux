@@ -2,6 +2,7 @@
 //!
 //! Nothing here prints or prompts: functions return [`Error`] and report progress through [`Progress`].
 
+pub mod anticheat;
 pub mod art;
 mod cancel;
 pub mod download;

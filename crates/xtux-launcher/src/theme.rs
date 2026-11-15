@@ -122,6 +122,9 @@ pub struct Palette {
     /// Fill of destructive buttons (Stop, Delete) and the text on it.
     pub danger: Rgba,
     pub on_danger: Rgba,
+    /// Fill of warnings (anti-cheat that may block) and the text on it.
+    pub warning: Rgba,
+    pub on_warning: Rgba,
     /// Opacity of the blurred game art behind everything.
     pub backdrop_opacity: f32,
     /// Opacity of the veil over the backdrop at the top of the window (the thinnest part).
@@ -176,6 +179,8 @@ pub fn palette(variant: Variant, accent: &str) -> Palette {
         on_accent,
         danger: rgb(0xDC2626),
         on_danger: WHITE,
+        warning: rgb(0xF59E0B),
+        on_warning: DARK_INK,
         backdrop_opacity: if light { 0.40 } else { 0.55 },
         veil_min: if light { 0.45 } else { 0.40 },
     };
@@ -261,6 +266,11 @@ impl Palette {
             4.5,
         ));
         checks.push(("text on danger", contrast(self.on_danger, self.danger), 4.5));
+        checks.push((
+            "text on warning",
+            contrast(self.on_warning, self.warning),
+            4.5,
+        ));
         checks
     }
 }

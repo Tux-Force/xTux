@@ -209,6 +209,8 @@ fn show_games(ui: &AppWindow, state: &Shared) {
                 windows,
                 running,
                 license_problem: license_problem.into(),
+                anticheat: entry.info.anticheat.clone().unwrap_or_default().into(),
+                anticheat_blocks: entry.info.anticheat_blocks,
                 cover,
                 cover_blur,
                 has_cover,
@@ -417,6 +419,8 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
     );
     ui.set_game_windows(game.kind == "windows");
     ui.set_game_license_problem(game.license_problem.clone().unwrap_or_default().into());
+    ui.set_game_anticheat(game.anticheat.clone().unwrap_or_default().into());
+    ui.set_game_anticheat_blocks(game.anticheat_blocks);
     ui.set_game_running(
         state
             .lock()
@@ -713,6 +717,8 @@ fn apply_theme(ui: &AppWindow) {
     theme.set_on_accent(p.on_accent.to_slint());
     theme.set_danger(p.danger.to_slint());
     theme.set_on_danger(p.on_danger.to_slint());
+    theme.set_warning(p.warning.to_slint());
+    theme.set_on_warning(p.on_warning.to_slint());
     theme.set_backdrop_opacity(p.backdrop_opacity);
     theme.set_veil_top(p.veil_min);
     ui.invoke_apply_theme();

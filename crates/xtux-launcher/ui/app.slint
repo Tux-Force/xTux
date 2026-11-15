@@ -20,6 +20,8 @@ export global Theme {
     in property <color> on-accent: #06140F;
     in property <color> danger: #DC2626;
     in property <color> on-danger: #FFFFFF;
+    in property <color> warning: #F59E0B;
+    in property <color> on-warning: #06140F;
     in property <color> base: #04100C;
     in property <color> base-2: #0F3B2E;
     in property <color> text: #F4F7FB;
@@ -49,6 +51,9 @@ export struct GameRow {
     running: bool,
     // Why the last license check failed; empty when it passed or never ran.
     license-problem: string,
+    // Anti-cheat found in the game folder; blocks: a kernel driver, Windows only.
+    anticheat: string,
+    anticheat-blocks: bool,
     cover: image,
     cover-blur: image,
     has-cover: bool,
@@ -181,6 +186,26 @@ component LicenseChip inherits Rectangle {
         Text {
             text: "⚠  No license";
             color: Theme.on-danger;
+            font-size: 12px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Marks a game with anti-cheat: red for kernel anti-cheat (Windows only), amber when it may not run.
+component AntiCheatChip inherits Rectangle {
+    in property <bool> blocks;
+    height: 26px;
+    width: ac-row.preferred-width;
+    border-radius: 13px;
+    background: root.blocks ? Theme.danger : Theme.warning;
+    ac-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        Text {
+            text: root.blocks ? "⛔  Windows only" : "⚠  Anti-cheat";
+            color: root.blocks ? Theme.on-danger : Theme.on-warning;
             font-size: 12px;
             font-weight: 800;
             vertical-alignment: center;
@@ -374,6 +399,11 @@ component CoverTile inherits Rectangle {
             x: 10px;
             y: 10px;
         }
+        if !root.game.running && root.game.license-problem == "" && root.game.anticheat != "": AntiCheatChip {
+            x: 10px;
+            y: 10px;
+            blocks: root.game.anticheat-blocks;
+        }
         // Frosted action bar: the blurred cover, aligned with the cover, under a glass tint.
         bar := Rectangle {
             y: root.bar-up ? parent.height - self.height : parent.height;
@@ -402,15 +432,15 @@ component CoverTile inherits Rectangle {
                 Rectangle {
                     border-radius: 19px;
                     background: root.game.running ? Theme.danger
-                        : root.busy ? Theme.glass
+                        : root.busy || root.game.anticheat-blocks ? Theme.glass
                         : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 60%, Theme.accent.darker(15%) 100%);
                     Text {
-                        text: root.game.running ? "■  Stop" : "▶  Play";
-                        color: root.game.running ? Theme.on-danger : root.busy ? Theme.muted : Theme.on-accent;
+                        text: root.game.running ? "■  Stop" : root.game.anticheat-blocks ? "Windows only" : "▶  Play";
+                        color: root.game.running ? Theme.on-danger : root.busy || root.game.anticheat-blocks ? Theme.muted : Theme.on-accent;
                         font-weight: 800;
                     }
                     play-touch := TouchArea {
-                        enabled: root.game.running || !root.busy;
+                        enabled: root.game.running || (!root.busy && !root.game.anticheat-blocks);
                         mouse-cursor: pointer;
                         clicked => {
                             if root.game.running {
@@ -454,8 +484,11 @@ component CoverTile inherits Rectangle {
         width: root.width;
         text: root.game.running ? "Running"
             : root.game.license-problem != "" ? "License check failed"
+            : root.game.anticheat-blocks ? root.game.anticheat + ": Windows only"
+            : root.game.anticheat != "" ? root.game.anticheat + ": may not run"
             : root.game.windows ? "Windows install" : "xTux install";
         color: root.game.license-problem != "" && !root.game.running ? Theme.text : Theme.muted;
+        overflow: elide;
         font-size: 12px;
     }
 }
@@ -528,6 +561,10 @@ component ListRow inherits Rectangle {
             alignment: center;
             LicenseChip { }
         }
+        if !root.game.running && root.game.license-problem == "" && root.game.anticheat != "": VerticalLayout {
+            alignment: center;
+            AntiCheatChip { blocks: root.game.anticheat-blocks; }
+        }
         VerticalLayout {
             alignment: center;
             GhostButton {
@@ -539,9 +576,9 @@ component ListRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             if !root.game.running: ShinyButton {
-                text: "▶  Play";
+                text: root.game.anticheat-blocks ? "Windows only" : "▶  Play";
                 width: 120px;
-                enabled: !root.busy;
+                enabled: !root.busy && !root.game.anticheat-blocks;
                 clicked => { root.play(); }
             }
             if root.game.running: DangerButton {
@@ -612,6 +649,8 @@ export component AppWindow inherits Window {
     in-out property <string> backdrop-mode: "dynamic";
     in property <bool> game-running;
     in property <string> game-license-problem;
+    in property <string> game-anticheat;
+    in property <bool> game-anticheat-blocks;
     in property <bool> game-windows;
     in-out property <bool> confirm-delete;
     // Game page (page 2)
@@ -969,9 +1008,9 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                     if !root.game-running: ShinyButton {
-                                        text: "▶  Play";
+                                        text: root.game-anticheat-blocks ? "Windows only" : "▶  Play";
                                         big: true;
-                                        enabled: !root.busy;
+                                        enabled: !root.busy && !root.game-anticheat-blocks;
                                         clicked => { root.play-game(); }
                                     }
                                     if root.game-running: DangerButton {
@@ -982,6 +1021,25 @@ export component AppWindow inherits Window {
                                         clicked => { root.stop-game(); }
                                     }
                                 }
+                            }
+                        }
+                    }
+                    if root.game-anticheat != "": Rectangle {
+                        border-radius: 14px;
+                        background: (root.game-anticheat-blocks ? Theme.danger : Theme.warning).transparentize(78%);
+                        border-width: 1px;
+                        border-color: root.game-anticheat-blocks ? Theme.danger : Theme.warning;
+                        height: ac-box.preferred-height;
+                        ac-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            AntiCheatChip { blocks: root.game-anticheat-blocks; }
+                            Text {
+                                text: root.game-anticheat-blocks
+                                    ? "This game uses the kernel anti-cheat " + root.game-anticheat + ". It loads a Windows driver, which Wine cannot do, so the game runs on Windows only. Only the publisher can change this; getting around an anti-cheat breaks its terms and gets accounts banned."
+                                    : "This game uses " + root.game-anticheat + ". It runs on Linux only if the developer has allowed it; if the game stops at start, that is the reason.";
+                                color: Theme.text;
+                                wrap: word-wrap;
                             }
                         }
                     }
