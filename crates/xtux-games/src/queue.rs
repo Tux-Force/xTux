@@ -132,16 +132,24 @@ impl Queue {
                 "{name} is in the download queue already"
             )));
         }
-        let destination = library.join(folder_name(name));
-        let created_folder = !destination.exists();
-        if !created_folder && std::fs::read_dir(&destination)?.next().is_some() {
-            if crate::layout::detect(&destination).is_none() {
-                return Err(Error::msg(format!(
-                    "{} exists and is not a game folder",
-                    destination.display()
-                )));
-            }
-        }
+        // A folder of its own: never one that exists or that another item uses (names like "Game®" and
+        // "Game™" give the same folder name).
+        let base = folder_name(name);
+        let destination = (1..1000)
+            .map(|n| {
+                if n == 1 {
+                    library.join(&base)
+                } else {
+                    library.join(format!("{base} ({n})"))
+                }
+            })
+            .find(|dir| {
+                std::fs::symlink_metadata(dir).is_err()
+                    && !self.items.iter().any(|i| &i.destination == dir)
+            })
+            .ok_or("no free folder name for this game")?;
+        // Decided when the worker creates the folder (Queue::claim_folder), not now.
+        let created_folder = false;
         self.next_id += 1;
         let id = self.next_id;
         self.items.push(Item {
@@ -166,6 +174,30 @@ impl Queue {
     /// The next item to install.
     pub fn next_queued(&self) -> Option<&Item> {
         self.items.iter().find(|i| i.state == State::Queued)
+    }
+
+    /// Creates the item's folder right before its install; only a folder made here may be deleted later.
+    pub fn claim_folder(item: &mut Item) -> Result<()> {
+        match std::fs::create_dir(&item.destination) {
+            Ok(()) => {
+                item.created_folder = true;
+                Ok(())
+            }
+            // Resumed: made by this item before, or by someone else in between.
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if !item.created_folder && crate::layout::detect(&item.destination).is_none() {
+                    let empty = std::fs::read_dir(&item.destination)?.next().is_none();
+                    if !empty {
+                        return Err(Error::msg(format!(
+                            "{} exists and is not a game folder",
+                            item.destination.display()
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Moves an item one place up or down.
@@ -262,10 +294,33 @@ mod tests {
         queue.shift(b, true);
         assert_eq!(queue.items[0].id, b);
         assert_eq!(queue.items[0].destination, library.join("Game B"));
+        // Same folder name: an own folder.
+        let c = queue
+            .add("9CCCCCCCCCCC", "Game B®", id, &library, &libs)
+            .unwrap();
+        let d = queue
+            .add("9DDDDDDDDDDD", "Game B™", id, &library, &libs)
+            .unwrap();
+        let dest = |id| {
+            queue
+                .items
+                .iter()
+                .find(|i| i.id == id)
+                .unwrap()
+                .destination
+                .clone()
+        };
+        assert_ne!(dest(c), dest(d));
 
-        // A partial download the queue created is deleted on removal.
+        // Only a folder the queue created itself is deleted on removal.
+        std::fs::create_dir_all(library.join("Game B")).unwrap();
+        let mut item = queue.remove(b).unwrap();
+        delete_partial(&item, &libs).unwrap();
+        assert!(library.join("Game B").exists());
+        std::fs::remove_dir(library.join("Game B")).unwrap();
+        Queue::claim_folder(&mut item).unwrap();
+        assert!(item.created_folder);
         std::fs::create_dir_all(library.join("Game B/Content")).unwrap();
-        let item = queue.remove(b).unwrap();
         delete_partial(&item, &libs).unwrap();
         assert!(!library.join("Game B").exists());
         assert!(library.exists());

@@ -84,32 +84,42 @@ async fn worker(
     activity: Activity,
 ) {
     loop {
-        let next = downloads
-            .queue
-            .lock()
-            .ok()
-            .and_then(|q| q.next_queued().cloned());
-        let Some(item) = next else {
-            downloads.wake.notified().await;
-            continue;
+        // Pick the next item, mark it running and make its folder in one step, so a Pause or Remove either
+        // comes before (the item is not picked) or sees it running.
+        let cancel = CancellationToken::new();
+        let picked = downloads.queue.lock().ok().and_then(|mut queue| {
+            let id = queue.next_queued()?.id;
+            let entry = queue.get_mut(id)?;
+            if let Err(err) = Queue::claim_folder(entry) {
+                entry.state = State::Failed;
+                entry.message = err.to_string();
+                queue.save();
+                return Some(None);
+            }
+            entry.state = State::Running;
+            entry.message = "Starting".into();
+            let item = entry.clone();
+            if let Ok(mut current) = downloads.current.lock() {
+                *current = Some(Running {
+                    id,
+                    cancel: cancel.clone(),
+                    remove_after_stop: false,
+                });
+            }
+            queue.save();
+            Some(Some(item))
+        });
+        let item = match picked {
+            Some(Some(item)) => item,
+            // Failed before starting; look at the next one.
+            Some(None) => continue,
+            None => {
+                downloads.wake.notified().await;
+                continue;
+            }
         };
         // Keeps the service alive while it installs.
         let _busy = activity.busy();
-        let cancel = CancellationToken::new();
-        if let Ok(mut current) = downloads.current.lock() {
-            *current = Some(Running {
-                id: item.id,
-                cancel: cancel.clone(),
-                remove_after_stop: false,
-            });
-        }
-        if let Ok(mut queue) = downloads.queue.lock() {
-            if let Some(entry) = queue.get_mut(item.id) {
-                entry.state = State::Running;
-                entry.message = "Starting".into();
-            }
-            queue.save();
-        }
         tracing::info!(
             "installing {} into {}",
             item.name,
@@ -134,13 +144,10 @@ async fn worker(
 
         let running = downloads.current.lock().ok().and_then(|mut c| c.take());
         let remove = running.is_some_and(|r| r.remove_after_stop);
+        let mut removed = None;
         if let Ok(mut queue) = downloads.queue.lock() {
             if remove {
-                if let Some(removed) = queue.remove(item.id) {
-                    if let Err(err) = xtux_games::queue::delete_partial(&removed, &library_dirs()) {
-                        tracing::warn!("could not delete the partial download: {err}");
-                    }
-                }
+                removed = queue.remove(item.id);
             } else if let Some(entry) = queue.get_mut(item.id) {
                 match &result {
                     Ok(()) => {
@@ -160,10 +167,25 @@ async fn worker(
             }
             queue.save();
         }
+        if let Some(removed) = removed {
+            delete_in_background(removed);
+        }
         if let Err(err) = &result {
             tracing::warn!("install of {} stopped: {err}", item.name);
         }
     }
+}
+
+/// Deletes the folder of a removed, unfinished download off the async threads and outside the queue lock.
+fn delete_in_background(item: xtux_games::queue::Item) {
+    tokio::task::spawn_blocking(move || {
+        if let Err(err) = xtux_games::queue::delete_partial(&item, &library_dirs()) {
+            tracing::warn!(
+                "could not delete the partial download {}: {err}",
+                item.destination.display()
+            );
+        }
+    });
 }
 
 fn items(queue: &Queue) -> Vec<DownloadItem> {
@@ -247,7 +269,7 @@ pub fn command(command: DownloadCommand) -> xtux_games::Result<Vec<DownloadItem>
                 // A running item is removed by the worker once it has stopped writing.
                 if !cancel_current(id, true) {
                     if let Some(item) = queue.remove(id) {
-                        xtux_games::queue::delete_partial(&item, &library_dirs())?;
+                        delete_in_background(item);
                     }
                     queue.save();
                 }
