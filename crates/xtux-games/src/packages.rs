@@ -5,6 +5,11 @@
 //! content id) is in place: the install renames it there as its last step, so a half installed add-on is never
 //! reported.
 //!
+//! Library folders may be shared with other users, and the game itself can write anywhere, so an add-on is only
+//! reported when its folder, its file folder and its package header are real (no symbolic links), belong to this
+//! user and are not writable by everyone. Add-ons from a library that fails this (for example an NTFS drive mounted
+//! with mode 777) are left out with a warning.
+//!
 //! The list is plain text, one add-on per line with tab separated fields:
 //!
 //! ```text
@@ -16,11 +21,14 @@
 //! waiting runtime sends back to be told about the next change.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
+
+use tokio::sync::{Mutex, watch};
 
 use crate::library::Game;
 
-/// How often a waiting request looks at the library folders.
+/// How often the library folders are looked at while a runtime waits.
 const POLL: Duration = Duration::from_secs(2);
 /// A waiting request is answered after this time even without a change, before xgameruntime's 30 second timeout.
 pub const MAX_WAIT: Duration = Duration::from_secs(20);
@@ -47,9 +55,40 @@ pub struct Package {
     pub publisher: String,
 }
 
+/// Whether `path` is a real file or folder of this user that only this user (and its group) can change.
+fn trusted(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    let ok = !meta.file_type().is_symlink()
+        && meta.uid() == rustix::process::getuid().as_raw()
+        && meta.mode() & 0o002 == 0;
+    if !ok {
+        tracing::warn!(
+            "add-on file {} is left out: a symbolic link, someone else's, or writable by everyone",
+            path.display()
+        );
+    }
+    ok
+}
+
+/// A path Wine reads as the same path: no `\` or `:` in its parts, which the Windows form would read differently.
+fn plain_path(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|p| !p.contains('\\') && !p.contains(':'))
+}
+
 impl Package {
     fn from_game(game: Game) -> Option<Package> {
         let layout = crate::layout::detect(&game.path)?;
+        if !(trusted(&game.path) && trusted(&layout.root) && trusted(&layout.package)) {
+            return None;
+        }
+        let root = std::fs::canonicalize(&layout.root).ok()?;
+        if !plain_path(&root) {
+            return None;
+        }
         let content_id = layout
             .package
             .file_name()?
@@ -60,8 +99,8 @@ impl Package {
             content_id,
             store_id: game.store_id.filter(|s| crate::art::is_store_id(s))?,
             version: game.version.unwrap_or_else(|| "0.0.0.0".into()),
-            root: std::fs::canonicalize(layout.root).ok()?,
-            name: game.name,
+            root,
+            name: game.name.chars().take(200).collect(),
             publisher: game.publisher.unwrap_or_default(),
         })
     }
@@ -122,18 +161,79 @@ pub fn generation(encoded: &str) -> &str {
     encoded.lines().next().unwrap_or_default()
 }
 
-/// The encoded list once its generation differs from `known`, or the current one after [`MAX_WAIT`].
-pub async fn wait(scope: &Scope, known: &str) -> String {
-    let deadline = tokio::time::Instant::now() + MAX_WAIT;
-    loop {
-        let scope2 = scope.clone();
-        let encoded = tokio::task::spawn_blocking(move || encode(&list(&scope2)))
+/// Watches the add-ons of one game for all waiting requests: one look at the library every [`POLL`], however many
+/// requests wait, and only while one does.
+pub struct Watcher {
+    scope: Scope,
+    current: Mutex<Option<watch::Receiver<String>>>,
+}
+
+impl Watcher {
+    pub fn new(scope: Scope) -> Arc<Watcher> {
+        Arc::new(Watcher {
+            scope,
+            current: Mutex::new(None),
+        })
+    }
+
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
+
+    /// The encoded list once its generation differs from `known`, or the current one after [`MAX_WAIT`].
+    pub async fn wait(self: &Arc<Self>, known: &str) -> String {
+        let mut receiver = self.receiver().await;
+        let known = known.trim().to_string();
+        let answer = match tokio::time::timeout(
+            MAX_WAIT,
+            receiver.wait_for(|encoded| generation(encoded) != known),
+        )
+        .await
+        {
+            Ok(Ok(encoded)) => Some(encoded.clone()),
+            _ => None,
+        };
+        answer.unwrap_or_else(|| receiver.borrow().clone())
+    }
+
+    /// A receiver of the poller, started when none runs.
+    async fn receiver(self: &Arc<Self>) -> watch::Receiver<String> {
+        let mut current = self.current.lock().await;
+        if let Some(receiver) = current.as_ref().filter(|r| r.has_changed().is_ok()) {
+            return receiver.clone();
+        }
+        let scope = self.scope.clone();
+        let first = tokio::task::spawn_blocking(move || encode(&list(&scope)))
             .await
             .unwrap_or_default();
-        if generation(&encoded) != known.trim() || tokio::time::Instant::now() + POLL > deadline {
-            return encoded;
-        }
-        tokio::time::sleep(POLL).await;
+        let (sender, receiver) = watch::channel(first);
+        let scope = self.scope.clone();
+        tokio::spawn(async move {
+            // Ends when no request has waited for a whole round.
+            let mut idle = 0;
+            while idle < 2 {
+                tokio::time::sleep(POLL).await;
+                if sender.receiver_count() == 0 {
+                    idle += 1;
+                    continue;
+                }
+                idle = 0;
+                let scope = scope.clone();
+                let Ok(encoded) = tokio::task::spawn_blocking(move || encode(&list(&scope))).await
+                else {
+                    break;
+                };
+                sender.send_if_modified(|old| {
+                    let changed = *old != encoded;
+                    if changed {
+                        *old = encoded;
+                    }
+                    changed
+                });
+            }
+        });
+        *current = Some(receiver.clone());
+        receiver
     }
 }
 
@@ -187,6 +287,28 @@ mod tests {
         assert_eq!(fields[4], "RallyPack");
     }
 
+    #[test]
+    fn leaves_out_paths_wine_reads_differently() {
+        assert!(plain_path(Path::new("/home/a/Games/Rally/Content")));
+        assert!(!plain_path(Path::new("/home/a/x\\..\\y/Content")));
+        assert!(!plain_path(Path::new("/home/a/C:/Content")));
+    }
+
+    #[test]
+    fn leaves_out_symlinked_addons() {
+        let root = tempfile::tempdir().unwrap();
+        let real = addon(root.path(), "real", "9NKX70BBCDRN");
+        std::fs::write(real.join(ID), b"").unwrap();
+        let library = root.path().join("library");
+        std::fs::create_dir(&library).unwrap();
+        std::os::unix::fs::symlink(&real, library.join("Rally")).unwrap();
+        let scope = Scope {
+            library_dirs: vec![library],
+            store_ids: vec!["9NKX70BBCDRN".into()],
+        };
+        assert!(list(&scope).is_empty());
+    }
+
     #[tokio::test]
     async fn wait_answers_a_change_at_once() {
         let root = tempfile::tempdir().unwrap();
@@ -198,7 +320,7 @@ mod tests {
         };
         let empty = encode(&[]);
         let started = std::time::Instant::now();
-        let answer = wait(&scope, generation(&empty)).await;
+        let answer = Watcher::new(scope).wait(generation(&empty)).await;
         assert!(started.elapsed() < POLL);
         assert_eq!(answer.lines().count(), 2);
     }

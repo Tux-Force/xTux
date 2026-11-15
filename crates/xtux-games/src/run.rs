@@ -225,7 +225,6 @@ async fn identity_env(
     env
 }
 
-/// Reads the package, fetches the license, decrypts the executables and starts the game in Wine.
 /// Which add-ons belong to the game in `source`: those naming its Store ID, or a product it belongs to (from the
 /// Store catalog; skipped when the catalog cannot be reached quickly).
 async fn addon_scope(client: &reqwest::Client, source: &Path) -> crate::packages::Scope {
@@ -259,6 +258,7 @@ async fn addon_scope(client: &reqwest::Client, source: &Path) -> crate::packages
     }
 }
 
+/// Reads the package, fetches the license, decrypts the executables and starts the game in Wine.
 pub async fn launch(
     client: &reqwest::Client,
     tokens: &TokenManager,

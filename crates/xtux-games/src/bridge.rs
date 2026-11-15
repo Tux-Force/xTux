@@ -54,6 +54,8 @@ use crate::license::get_store_tokens;
 use crate::packages;
 
 const MAX_REQUEST: usize = 1024 * 1024;
+/// Requests handled at the same time; more wait to be accepted.
+const MAX_CONNECTIONS: usize = 32;
 /// XSTS tokens are valid for many hours; refresh well before that.
 const XSTS_LIFETIME: Duration = Duration::from_secs(60 * 60);
 
@@ -69,8 +71,8 @@ struct State {
     sessions: Mutex<HashMap<String, TitleSession>>,
     /// Title-bound XSTS tokens per `client_id:title_id:relying_party`.
     title_xsts: Mutex<HashMap<String, XstsToken>>,
-    /// Which add-ons belong to the game.
-    scope: packages::Scope,
+    /// The add-ons of the game.
+    packages: Arc<packages::Watcher>,
     /// Store market for licenses.
     market: String,
     /// Add-on license checks by content id.
@@ -102,17 +104,23 @@ pub async fn start(
         xsts: Mutex::new(HashMap::new()),
         sessions: Mutex::new(HashMap::new()),
         title_xsts: Mutex::new(HashMap::new()),
-        scope,
+        packages: packages::Watcher::new(scope),
         market,
         package_licenses: Mutex::new(HashMap::new()),
     });
+    // A game cannot tie up the process with countless open requests (long polls stay open for a while).
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     tokio::spawn(async move {
         loop {
+            let Ok(permit) = slots.clone().acquire_owned().await else {
+                break;
+            };
             let Ok((stream, _)) = listener.accept().await else {
                 continue;
             };
             let state = state.clone();
             tokio::spawn(async move {
+                let _permit = permit;
                 if let Err(err) = handle(stream, &state).await {
                     tracing::warn!("request failed: {err}");
                 }
@@ -247,7 +255,7 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
             }
         },
         ("POST", "/packages") => {
-            let scope = state.scope.clone();
+            let scope = state.packages.scope().clone();
             let list =
                 tokio::task::spawn_blocking(move || packages::encode(&packages::list(&scope)))
                     .await
@@ -255,7 +263,7 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
             respond(&mut stream, "200 OK", &list).await
         }
         ("POST", "/packages/wait") => {
-            let list = packages::wait(&state.scope, request.body.trim()).await;
+            let list = state.packages.wait(request.body.trim()).await;
             respond(&mut stream, "200 OK", &list).await
         }
         ("POST", "/store/package-license") => {
@@ -316,18 +324,19 @@ async fn license_token(
     .map_err(|err| err.to_string())
 }
 
-/// Whether the user holds a license for the installed add-on `content_id` of the game. Only add-ons of the game are
-/// checked, so the game cannot use the bridge to probe other products.
+/// Whether the user holds a license for the installed add-on `content_id` of the game. Only content ids of add-on
+/// folders of the game are asked for; that keeps lookups to installed content, it does not stop a game that writes
+/// such a folder itself (it can ask for license tokens of any product through `/store/license-token` anyway).
 async fn package_license(state: &State, content_id: &str) -> Result<bool, String> {
     let content_id = content_id.to_uppercase();
     if !crate::layout::is_content_id(&content_id) {
         return Err("not a content id".to_string());
     }
-    let mut cache = state.package_licenses.lock().await;
-    if let Some(valid) = cache.get(&content_id) {
+    // Not held across the checks below: one slow license request does not hold up the others.
+    if let Some(valid) = state.package_licenses.lock().await.get(&content_id) {
         return Ok(*valid);
     }
-    let scope = state.scope.clone();
+    let scope = state.packages.scope().clone();
     let installed = tokio::task::spawn_blocking(move || packages::list(&scope))
         .await
         .map_err(|e| e.to_string())?;
@@ -349,7 +358,11 @@ async fn package_license(state: &State, content_id: &str) -> Result<bool, String
         }
         Err(err) => return Err(err.to_string()),
     };
-    cache.insert(content_id, valid);
+    state
+        .package_licenses
+        .lock()
+        .await
+        .insert(content_id, valid);
     Ok(valid)
 }
 
