@@ -896,6 +896,15 @@ export component AppWindow inherits Window {
     in property <bool> game-anticheat-blocks;
     in property <bool> game-windows;
     in-out property <bool> confirm-delete;
+    // Crash dialog after a game ended abnormally.
+    in-out property <bool> crash-open;
+    in property <string> crash-title;
+    in property <string> crash-reason;
+    in property <string> crash-hint;
+    in property <bool> crash-has-log;
+    callback open-crash-log();
+    // Low graphics memory before a start; only a hint, the game starts anyway.
+    in-out property <string> vram-warning;
     // Game page (page 2)
     in property <string> game-name;
     in property <string> game-path;
@@ -1352,6 +1361,27 @@ export component AppWindow inherits Window {
                                         clicked => { root.stop-game(); }
                                     }
                                 }
+                            }
+                        }
+                    }
+                    if root.vram-warning != "": Rectangle {
+                        border-radius: 14px;
+                        background: Theme.warning.transparentize(78%);
+                        border-width: 1px;
+                        border-color: Theme.warning;
+                        height: vram-box.preferred-height;
+                        vram-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            Text {
+                                text: root.vram-warning;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                            GhostButton {
+                                text: "Dismiss";
+                                clicked => { root.vram-warning = ""; }
                             }
                         }
                     }
@@ -2254,6 +2284,51 @@ export component AppWindow inherits Window {
                             root.confirm-delete = false;
                             root.delete-game();
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Crash message.
+    if root.crash-open: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(560px, parent.width - 60px);
+            height: crash-dialog.preferred-height;
+            crash-dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: root.crash-title;
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.crash-reason;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.crash-hint;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    if root.crash-has-log: GhostButton {
+                        text: "Open log";
+                        clicked => { root.open-crash-log(); }
+                    }
+                    ShinyButton {
+                        text: "Close";
+                        clicked => { root.crash-open = false; }
                     }
                 }
             }

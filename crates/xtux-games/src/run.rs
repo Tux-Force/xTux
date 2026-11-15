@@ -7,6 +7,9 @@ use std::os::fd::{AsFd, IntoRawFd};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::ExitStatus;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::SystemTime;
 
 use msixvc::layout::PAGE_SIZE;
 use msixvc::xvd::{SegmentFile, XvdFile};
@@ -51,6 +54,10 @@ type Cleanup = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// A started game. Dropping it does not stop the game; call [`RunningGame::wait`].
 pub struct RunningGame {
     pub pid: u32,
+    /// When the game was started; logs older than this are from an earlier run.
+    pub started: SystemTime,
+    /// Set by the game bridge when a license token request failed while the game ran.
+    pub license_failed: Arc<AtomicBool>,
     child: Child,
     cleanup: Cleanup,
 }
@@ -364,8 +371,10 @@ pub async fn launch(
     env.extend(compatibility_env(&options.env));
 
     // Answers GDK calls that need the Microsoft services, see bridge.rs.
+    let mut license_failed = Arc::new(AtomicBool::new(false));
     match crate::bridge::start(client.clone(), tokens.clone()).await {
         Ok(bridge) => {
+            license_failed = bridge.license_failed;
             env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
             env.push(("XODUS_BRIDGE_SECRET", bridge.secret));
         }
@@ -373,6 +382,7 @@ pub async fn launch(
     }
 
     progress.message("Starting the game");
+    let started = SystemTime::now();
     let mut command = Command::new(&options.wine);
     if let Some(log) = &options.log {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -408,6 +418,8 @@ pub async fn launch(
 
     Ok(RunningGame {
         pid,
+        started,
+        license_failed,
         child,
         cleanup,
     })
