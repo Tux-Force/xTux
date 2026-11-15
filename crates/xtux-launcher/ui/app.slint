@@ -308,8 +308,8 @@ component StoreTile inherits Rectangle {
             mouse-cursor: pointer;
             clicked => { root.open(); }
         }
-        // On hover: what the labels mean, on frosted glass.
-        Rectangle {
+        // On hover: what the labels mean, on frosted glass (only titles with a label).
+        if root.title.hint != "": Rectangle {
             y: root.hover ? parent.height - self.height : parent.height;
             height: hint-text.preferred-height + 20px;
             background: Theme.glass-strong;
@@ -1078,7 +1078,7 @@ export component AppWindow inherits Window {
                 for game[index] in root.games: ListRow {
                     x: 2px;
                     y: 4px + index * 86px;
-                    width: lib-list.visible-width - 4px;
+                    width: lib-list.visible-width - 18px;
                     game: game;
                     busy: root.busy;
                     play => { root.play(index); }
@@ -1104,7 +1104,9 @@ export component AppWindow inherits Window {
                 content-width: self.visible-width;
                 content-height: max(self.visible-height, page-content.preferred-height);
                 page-content := VerticalLayout {
-                    width: game-scroll.visible-width;
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: game-scroll.visible-width - 16px;
                     spacing: 14px;
                     // Hero banner
                     Rectangle {
@@ -1316,7 +1318,9 @@ export component AppWindow inherits Window {
                 content-width: self.visible-width;
                 content-height: max(self.visible-height, settings-content.preferred-height);
                 settings-content := VerticalLayout {
-                    width: settings-scroll.visible-width;
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: settings-scroll.visible-width - 16px;
                     spacing: 14px;
                     alignment: start;
                     Glass {
@@ -1519,7 +1523,9 @@ export component AppWindow inherits Window {
                 content-width: self.visible-width;
                 content-height: max(self.visible-height, title-content.preferred-height);
                 title-content := VerticalLayout {
-                    width: title-scroll.visible-width;
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: title-scroll.visible-width - 16px;
                     spacing: 14px;
                     alignment: start;
                     Rectangle {
@@ -1645,7 +1651,9 @@ export component AppWindow inherits Window {
                 content-width: self.visible-width;
                 content-height: max(self.visible-height, about-content.preferred-height);
                 about-content := VerticalLayout {
-                    width: about-scroll.visible-width;
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: about-scroll.visible-width - 16px;
                     spacing: 14px;
                     alignment: start;
                     Glass {

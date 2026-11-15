@@ -707,8 +707,12 @@ fn size_text(bytes: Option<u64>) -> String {
     }
 }
 
-/// What the labels of a store title mean, in one or two short sentences.
+/// What the label of a store title means, in one or two short sentences; empty for titles without a label
+/// (installable or installed ones need no explanation).
 fn store_hint(title: &xtux_protocol::CatalogTitle) -> String {
+    if title.installed.is_some() || (title.installable && title.windows_only.is_none()) {
+        return String::new();
+    }
     let size = size_text(title.download_size);
     let mut hint = if title.installed.is_some() {
         "Installed: ready to play.".to_string()
