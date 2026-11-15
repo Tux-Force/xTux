@@ -111,6 +111,9 @@ pub struct GameInfo {
     pub kind: String,
     pub title_id: Option<String>,
     pub store_id: Option<String>,
+    /// Why the last license check failed (for example not entitled); `None` when it passed or never ran.
+    #[serde(default)]
+    pub license_problem: Option<String>,
 }
 
 /// What to install from.

@@ -251,6 +251,7 @@ impl Job {
                 let games = xtux_games::library::scan(&settings.library_dirs)
                     .into_iter()
                     .map(|g| xtux_protocol::GameInfo {
+                        license_problem: xtux_games::license::problems::of(&g.path),
                         name: g.name,
                         path: g.path,
                         kind: match g.kind {
@@ -280,6 +281,7 @@ impl Job {
                         &format!("Game log: {}", log.display()),
                     );
                 }
+                let game_dir = source.clone();
                 let options = xtux_games::run::LaunchOptions {
                     source,
                     wine,
@@ -289,9 +291,22 @@ impl Job {
                     args,
                     log,
                 };
-                let game = xtux_games::run::launch(&self.client, &self.tokens, options, &progress)
-                    .await
-                    .map_err(error_body)?;
+                let game =
+                    match xtux_games::run::launch(&self.client, &self.tokens, options, &progress)
+                        .await
+                    {
+                        Ok(game) => {
+                            // Getting this far means the license was granted.
+                            xtux_games::license::problems::clear(&game_dir);
+                            game
+                        }
+                        Err(err) => {
+                            if let xtux_games::Error::NotEntitled(message) = &err {
+                                xtux_games::license::problems::record(&game_dir, message);
+                            }
+                            return Err(error_body(err));
+                        }
+                    };
                 let pid = game.pid;
                 let _ = self.outbox.send(ServerMessage::Event {
                     id: self.id,

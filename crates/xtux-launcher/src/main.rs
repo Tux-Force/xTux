@@ -14,7 +14,9 @@ use slint::{
 };
 use xtux_games::art::{self, Artwork};
 use xtux_games::settings::{GameSettings, Settings};
-use xtux_protocol::{Canceller, Client, ClientError, Event, GameInfo, Request, Response};
+use xtux_protocol::{
+    Canceller, Client, ClientError, ErrorKind, Event, GameInfo, Request, Response,
+};
 
 mod theme;
 
@@ -191,6 +193,7 @@ fn show_games(ui: &AppWindow, state: &Shared) {
             let (logo, has_logo) = to_image(&entry.logo);
             let windows = entry.info.kind == "windows";
             let running = state.running.contains_key(&entry.info.path);
+            let license_problem = entry.info.license_problem.clone().unwrap_or_default();
             GameRow {
                 name: entry.info.name.clone().into(),
                 detail: format!(
@@ -205,6 +208,7 @@ fn show_games(ui: &AppWindow, state: &Shared) {
                 .into(),
                 windows,
                 running,
+                license_problem: license_problem.into(),
                 cover,
                 cover_blur,
                 has_cover,
@@ -412,6 +416,7 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
             .into(),
     );
     ui.set_game_windows(game.kind == "windows");
+    ui.set_game_license_problem(game.license_problem.clone().unwrap_or_default().into());
     ui.set_game_running(
         state
             .lock()
@@ -478,6 +483,11 @@ fn show_running(ui: &AppWindow, state: &Shared) {
         Some(s.running.contains_key(&current.info.path))
     });
     ui.set_game_running(running.unwrap_or(false));
+    let problem = state.lock().ok().and_then(|s| {
+        let current = s.all.get(s.current?)?;
+        current.info.license_problem.clone()
+    });
+    ui.set_game_license_problem(problem.unwrap_or_default().into());
 }
 
 fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, game: GameInfo) {
@@ -513,10 +523,14 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
         }
         let name = game.name.clone();
         let events = weak.clone();
+        let started = state.clone();
+        let started_path = game.path.clone();
         let result = daemon
             .request(request, move |event| match event {
                 Event::Message { text } => set_status(&events, format!("{name}: {text}"), None),
                 Event::GameStarted { .. } => {
+                    // The license was granted.
+                    set_license_problem(&started, &started_path, None);
                     set_status(&events, format!("{name} is running"), None)
                 }
                 _ => {}
@@ -530,6 +544,14 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
             ),
             Ok(Response::Cancelled) => set_status(&weak, format!("{} stopped", game.name), None),
             Ok(other) => set_status(&weak, format!("Unexpected answer: {other:?}"), None),
+            Err(ClientError::Remote(body)) if body.kind == ErrorKind::NotEntitled => {
+                set_license_problem(&state, &game.path, Some(body.message.clone()));
+                set_status(
+                    &weak,
+                    format!("{}: license check failed: {}", game.name, body.message),
+                    None,
+                )
+            }
             Err(err) => set_status(&weak, err.to_string(), None),
         }
         if let Ok(mut s) = state.lock() {
@@ -541,6 +563,15 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
             show_logs(&ui, Some(&path));
         });
     });
+}
+
+/// Updates the license mark of a game in the library (the daemon remembers it too).
+fn set_license_problem(state: &Shared, path: &Path, problem: Option<String>) {
+    if let Ok(mut s) = state.lock() {
+        if let Some(entry) = s.all.iter_mut().find(|e| e.info.path == path) {
+            entry.info.license_problem = problem;
+        }
+    }
 }
 
 /// Asks a running game to quit, like closing its window.

@@ -40,6 +40,8 @@ export struct GameRow {
     detail: string,
     windows: bool,
     running: bool,
+    // Why the last license check failed; empty when it passed or never ran.
+    license-problem: string,
     cover: image,
     cover-blur: image,
     has-cover: bool,
@@ -155,6 +157,27 @@ component DangerButton inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+}
+
+// Marks a game whose last license check failed.
+component LicenseChip inherits Rectangle {
+    height: 26px;
+    width: license-row.preferred-width;
+    border-radius: 13px;
+    background: Theme.danger;
+    drop-shadow-blur: 10px;
+    drop-shadow-color: Theme.danger.transparentize(50%);
+    license-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        Text {
+            text: "⚠  No license";
+            color: Theme.on-danger;
+            font-size: 12px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
     }
 }
 
@@ -340,6 +363,10 @@ component CoverTile inherits Rectangle {
             x: 10px;
             y: 10px;
         }
+        if !root.game.running && root.game.license-problem != "": LicenseChip {
+            x: 10px;
+            y: 10px;
+        }
         // Frosted action bar: the blurred cover, aligned with the cover, under a glass tint.
         bar := Rectangle {
             y: root.bar-up ? parent.height - self.height : parent.height;
@@ -418,8 +445,10 @@ component CoverTile inherits Rectangle {
     Text {
         y: art.height + 30px;
         width: root.width;
-        text: root.game.running ? "Running" : root.game.windows ? "Windows install" : "xTux install";
-        color: Theme.muted;
+        text: root.game.running ? "Running"
+            : root.game.license-problem != "" ? "License check failed"
+            : root.game.windows ? "Windows install" : "xTux install";
+        color: root.game.license-problem != "" && !root.game.running ? Theme.text : Theme.muted;
         font-size: 12px;
     }
 }
@@ -487,6 +516,10 @@ component ListRow inherits Rectangle {
         if root.game.running: VerticalLayout {
             alignment: center;
             RunningChip { }
+        }
+        if !root.game.running && root.game.license-problem != "": VerticalLayout {
+            alignment: center;
+            LicenseChip { }
         }
         VerticalLayout {
             alignment: center;
@@ -571,6 +604,7 @@ export component AppWindow inherits Window {
     // dynamic | static | off
     in-out property <string> backdrop-mode: "dynamic";
     in property <bool> game-running;
+    in property <string> game-license-problem;
     in property <bool> game-windows;
     in-out property <bool> confirm-delete;
     // Game page (page 2)
@@ -929,6 +963,32 @@ export component AppWindow inherits Window {
                                         border-radius: 24px;
                                         clicked => { root.stop-game(); }
                                     }
+                                }
+                            }
+                        }
+                    }
+                    if root.game-license-problem != "": Rectangle {
+                        border-radius: 14px;
+                        background: Theme.danger.transparentize(78%);
+                        border-width: 1px;
+                        border-color: Theme.danger;
+                        height: license-box.preferred-height;
+                        license-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            LicenseChip { }
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text {
+                                    text: "The last license check failed. The game starts again once Microsoft grants the license (Game Pass active, game owned, signed in with the right account).";
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.game-license-problem;
+                                    color: Theme.text;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
                                 }
                             }
                         }
