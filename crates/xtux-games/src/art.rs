@@ -381,6 +381,29 @@ pub async fn fetch_from(
     Ok(cached(store_id))
 }
 
+/// Screenshot `index` (0..8) of a catalog title from the URL the catalog gave, into the cache. Returns its file.
+pub async fn fetch_screenshot(
+    client: &reqwest::Client,
+    store_id: &str,
+    index: usize,
+    url: &str,
+) -> Result<PathBuf> {
+    if !is_store_id(store_id) || index >= 8 {
+        return Err(Error::msg("not a screenshot of a Store title"));
+    }
+    let dir = cache_dir()
+        .ok_or("cannot determine the cache folder")?
+        .join(store_id);
+    let path = dir.join(format!("shot-{index}.jpg"));
+    if path.is_file() {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(&dir)?;
+    let url = image_url(url, "w=1280&h=720&q=85&mode=scale").ok_or("not a Store image URL")?;
+    save_download(client, &url, &path, None).await?;
+    Ok(path)
+}
+
 /// Downloads an image into the cache, and its blurred backdrop when asked for.
 async fn save_download(
     client: &reqwest::Client,

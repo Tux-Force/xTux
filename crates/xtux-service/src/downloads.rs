@@ -8,11 +8,85 @@ use xodus::tokens::TokenManager;
 use xtux_games::queue::{Queue, State};
 use xtux_games::settings::Settings;
 use xtux_games::{CancellationToken, Progress};
-use xtux_protocol::{DownloadCommand, DownloadItem};
+use xtux_protocol::{DownloadCommand, DownloadItem, RateSample};
+
+/// Seconds of rate history kept.
+const HISTORY: usize = 300;
+
+/// Bytes this process read from and wrote to storage so far (`/proc/self/io`).
+fn disk_io() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string("/proc/self/io").ok()?;
+    let field = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name)?.trim().parse::<u64>().ok())
+    };
+    Some((field("read_bytes:")?, field("write_bytes:")?))
+}
+
+/// The rate history, oldest first.
+pub fn history() -> Vec<RateSample> {
+    get()
+        .and_then(|d| d.history.lock().ok().map(|h| h.iter().copied().collect()))
+        .unwrap_or_default()
+}
+
+/// Samples network and disk rates every second while an install runs.
+async fn sampler(downloads: Arc<Downloads>) {
+    let mut last_disk = disk_io();
+    let mut last_done: Option<(u64, u64)> = None;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let running = downloads
+            .current
+            .lock()
+            .ok()
+            .and_then(|c| c.as_ref().map(|r| r.id));
+        let disk = disk_io();
+        // Idle seconds are recorded as zero, so the graph keeps a real time axis.
+        let network = match running {
+            Some(id) => {
+                let done = downloads
+                    .queue
+                    .lock()
+                    .ok()
+                    .and_then(|q| q.items.iter().find(|i| i.id == id).map(|i| i.done));
+                let network = match (last_done, done) {
+                    (Some((last_id, before)), Some(now)) if last_id == id => {
+                        now.saturating_sub(before)
+                    }
+                    _ => 0,
+                };
+                last_done = done.map(|d| (id, d));
+                network
+            }
+            None => {
+                last_done = None;
+                0
+            }
+        };
+        let (disk_read, disk_write) = match (last_disk, disk) {
+            (Some((r0, w0)), Some((r1, w1))) => (r1.saturating_sub(r0), w1.saturating_sub(w0)),
+            _ => (0, 0),
+        };
+        last_disk = disk;
+        if let Ok(mut history) = downloads.history.lock() {
+            history.push_back(RateSample {
+                network,
+                disk_write,
+                disk_read,
+            });
+            while history.len() > HISTORY {
+                history.pop_front();
+            }
+        }
+    }
+}
 
 use crate::activity::Activity;
 
 pub struct Downloads {
+    /// Network and disk rates while installs run, newest last.
+    history: Mutex<std::collections::VecDeque<RateSample>>,
     queue: Mutex<Queue>,
     wake: Notify,
     /// The running item, what cancels it, and whether to remove it once stopped.
@@ -30,6 +104,7 @@ static DOWNLOADS: OnceLock<Arc<Downloads>> = OnceLock::new();
 /// Loads the queue and starts the worker; once per service.
 pub fn start(client: reqwest::Client, tokens: Arc<TokenManager>, activity: Activity) {
     let downloads = Arc::new(Downloads {
+        history: Mutex::new(std::collections::VecDeque::new()),
         queue: Mutex::new(Queue::load()),
         wake: Notify::new(),
         current: Mutex::new(None),
@@ -37,6 +112,7 @@ pub fn start(client: reqwest::Client, tokens: Arc<TokenManager>, activity: Activ
     if DOWNLOADS.set(downloads.clone()).is_err() {
         return;
     }
+    tokio::spawn(sampler(downloads.clone()));
     tokio::spawn(worker(downloads, client, tokens, activity));
 }
 
@@ -54,6 +130,9 @@ struct ItemProgress {
     id: u64,
     /// Last speed sample: when, and how much was done then.
     sample: Mutex<Option<(std::time::Instant, u64)>>,
+    /// Byte progress counts only from the download step on; before it the bar keeps what the last run reached,
+    /// instead of jumping around with the metadata.
+    downloading: std::sync::atomic::AtomicBool,
 }
 
 impl ItemProgress {
@@ -68,10 +147,17 @@ impl ItemProgress {
 
 impl Progress for ItemProgress {
     fn message(&self, text: &str) {
+        if text == xtux_games::install::DOWNLOAD_STEP {
+            self.downloading
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.update(|item| item.message = text.to_string());
     }
 
     fn bytes(&self, done: u64, total: Option<u64>) {
+        if !self.downloading.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         // Speed from samples at least a second apart, smoothed so it does not jump.
         let mut speed = None;
         if let Ok(mut sample) = self.sample.lock() {
@@ -156,6 +242,7 @@ async fn worker(
             downloads: downloads.clone(),
             id: item.id,
             sample: Mutex::new(None),
+            downloading: std::sync::atomic::AtomicBool::new(false),
         };
         let result = xtux_games::install::install(
             &client,

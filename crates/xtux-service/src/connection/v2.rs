@@ -230,7 +230,10 @@ impl Job {
             }
             Request::Downloads(command) => {
                 let items = crate::downloads::command(command).map_err(error_body)?;
-                Ok(Response::Downloads { items })
+                Ok(Response::Downloads {
+                    items,
+                    history: crate::downloads::history(),
+                })
             }
             Request::Uninstall { path } => {
                 if InUse::contains(&path) {
@@ -281,6 +284,7 @@ impl Job {
                         download_size: t.download_size,
                         poster_url: t.poster_url,
                         hero_url: t.hero_url,
+                        screenshots: t.screenshots,
                         in_game_pass: t.in_game_pass,
                         owned: t.owned,
                         installable: t.installable,

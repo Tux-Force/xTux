@@ -159,6 +159,14 @@ pub enum DownloadCommand {
     ClearDone,
 }
 
+/// Bytes per second at one moment of the download history.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RateSample {
+    pub network: u64,
+    pub disk_write: u64,
+    pub disk_read: u64,
+}
+
 /// An item of the download queue.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DownloadItem {
@@ -191,6 +199,9 @@ pub struct CatalogTitle {
     pub download_size: Option<u64>,
     pub poster_url: Option<String>,
     pub hero_url: Option<String>,
+    /// Screenshot URLs of the Store.
+    #[serde(default)]
+    pub screenshots: Vec<String>,
     pub in_game_pass: bool,
     pub owned: bool,
     /// A GDK package xTux can install.
@@ -258,6 +269,9 @@ pub enum Response {
     },
     Downloads {
         items: Vec<DownloadItem>,
+        /// Network and disk rates of the last minutes, oldest first, one sample per second.
+        #[serde(default)]
+        history: Vec<RateSample>,
     },
     Cancelled,
 }

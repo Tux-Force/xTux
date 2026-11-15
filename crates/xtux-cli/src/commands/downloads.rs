@@ -122,7 +122,7 @@ pub async fn run(action: Vec<String>) -> ExitCode {
         }
     };
     match send(Request::Downloads(command)).await {
-        Ok(Response::Downloads { items }) => {
+        Ok(Response::Downloads { items, .. }) => {
             print(&items);
             ExitCode::SUCCESS
         }

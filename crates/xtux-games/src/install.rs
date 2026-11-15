@@ -370,10 +370,12 @@ where
         )));
     }
 
-    progress.message("Downloading");
-    // Kept files count as done, so a resumed install shows its real progress.
+    // Kept files count as done, so a resumed install shows its real progress; the totals are settled before
+    // the "Downloading" step starts, which is when clients begin to trust the byte progress.
     counter.advance(kept);
     counter.set_remaining(total_size);
+    progress.message("Downloading");
+    counter.report();
 
     let remote_xvd = &remote_xvd;
     stream::iter(jobs.into_iter().map(Ok::<Job, Error>))
@@ -574,6 +576,9 @@ async fn download_job(
     note_finished(&job.journal, &job.name);
     Ok(())
 }
+
+/// The step from which [`Progress::bytes`] is the overall progress of the install; before it, metadata is read.
+pub const DOWNLOAD_STEP: &str = "Downloading";
 
 /// Overall byte progress, shared by the concurrent downloads.
 struct Counter<'p> {

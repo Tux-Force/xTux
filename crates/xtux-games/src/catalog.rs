@@ -49,6 +49,9 @@ pub struct Title {
     /// Image URLs of the Store (store-images.s-microsoft.com).
     pub poster_url: Option<String>,
     pub hero_url: Option<String>,
+    /// Screenshot URLs (up to eight).
+    #[serde(default)]
+    pub screenshots: Vec<String>,
     pub in_game_pass: bool,
     pub owned: bool,
     /// xTux can install it: a GDK package (MSIXVC) for Windows PCs.
@@ -57,8 +60,13 @@ pub struct Title {
     pub windows_only: Option<String>,
 }
 
+/// Bumped when a cached catalog lacks fields a newer xTux shows (2: screenshots).
+const CACHE_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
+    #[serde(default)]
+    pub version: u32,
     pub titles: Vec<Title>,
     /// Seconds since the Unix epoch when it was loaded.
     pub fetched_at: u64,
@@ -359,6 +367,16 @@ fn to_title(product: Product) -> Option<Title> {
         download_size: pc.and_then(|p| p.max_download_size_in_bytes),
         poster_url: image_url(&localized.images, &["Poster", "BoxArt"]),
         hero_url: image_url(&localized.images, &["SuperHeroArt", "TitledHeroArt"]),
+        screenshots: localized
+            .images
+            .iter()
+            .filter(|i| i.image_purpose == "Screenshot")
+            .take(8)
+            .map(|i| match i.uri.strip_prefix("//") {
+                Some(rest) => format!("https://{rest}"),
+                None => i.uri.clone(),
+            })
+            .collect(),
         in_game_pass: false,
         owned: false,
     })
@@ -393,7 +411,9 @@ pub async fn load(
     let account = account(tokens);
     if !refresh {
         if let Some(cached) = read_cache(&market, &account) {
-            if now().saturating_sub(cached.fetched_at) < MAX_AGE.as_secs() {
+            if cached.version == CACHE_VERSION
+                && now().saturating_sub(cached.fetched_at) < MAX_AGE.as_secs()
+            {
                 return Ok(cached);
             }
         }
@@ -419,6 +439,7 @@ pub async fn load(
     let mut titles: Vec<Title> = by_id.into_values().collect();
     titles.sort_by_key(|t| t.name.to_lowercase());
     let catalog = Catalog {
+        version: CACHE_VERSION,
         titles,
         fetched_at: now(),
     };

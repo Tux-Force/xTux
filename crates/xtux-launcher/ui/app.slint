@@ -55,6 +55,9 @@ export struct StoreRow {
     package-format: string,
     // Kernel anti-cheat guessed from xTux's list (opt-in); empty otherwise.
     windows-only: string,
+    // In the download queue: queued | running | pausing | paused | failed (empty: not queued).
+    dl-state: string,
+    dl-progress: float,
     // What the labels mean, shown on hover.
     hint: string,
 }
@@ -69,6 +72,18 @@ export struct DownloadRow {
     cover: image,
     cover-blur: image,
     has-cover: bool,
+}
+
+export struct GraphPoint {
+    // Share of the graph's top value, 0 to 1.
+    network: float,
+    disk: float,
+}
+
+export struct ShotRow {
+    image: image,
+    blur: image,
+    loaded: bool,
 }
 
 export struct LibraryChoice {
@@ -120,6 +135,45 @@ component SoftImage inherits Rectangle {
         image-fit: cover;
         opacity: root.loaded ? 1 : 0;
         animate opacity { duration: 700ms; delay: 200ms; easing: ease-out; }
+    }
+}
+
+// A ring that fills with the download progress, like an App Store download.
+component ProgressRing inherits Rectangle {
+    in property <float> progress;
+    in property <bool> paused;
+    in property <length> stroke: 5px;
+    property <float> p: max(0.001, min(0.999, root.progress));
+    property <angle> a: 360deg * root.p;
+    width: 44px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: Theme.glass-strong;
+    border-width: root.stroke;
+    border-color: Theme.field;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        stroke: root.paused ? Theme.muted : Theme.accent;
+        stroke-width: root.stroke;
+        fill: transparent;
+        commands: "M 50 " + (50 - 50 * (1 - root.stroke / root.width) + 0) + " A " + (50 - 50 * root.stroke / root.width) + " " + (50 - 50 * root.stroke / root.width) + " 0 " + (root.p > 0.5 ? "1" : "0") + " 1 " + (50 + (50 - 50 * root.stroke / root.width) * sin(root.a)) + " " + (50 - (50 - 50 * root.stroke / root.width) * cos(root.a));
+    }
+    // Pause bars or a play triangle in the middle.
+    if !root.paused: HorizontalLayout {
+        alignment: center;
+        spacing: root.width * 0.08;
+        padding-top: root.width * 0.33;
+        padding-bottom: root.width * 0.33;
+        Rectangle { width: root.width * 0.08; border-radius: 1px; background: Theme.text; }
+        Rectangle { width: root.width * 0.08; border-radius: 1px; background: Theme.text; }
+    }
+    if root.paused: Text {
+        text: "▶";
+        color: Theme.text;
+        font-size: root.width * 0.32;
     }
 }
 
@@ -349,6 +403,14 @@ component StoreTile inherits Rectangle {
         touch := TouchArea {
             mouse-cursor: pointer;
             clicked => { root.open(); }
+        }
+        if root.title.dl-state != "": ProgressRing {
+            x: parent.width - self.width - 8px;
+            y: 8px;
+            width: 38px;
+            stroke: 4px;
+            progress: root.title.dl-progress;
+            paused: root.title.dl-state == "paused" || root.title.dl-state == "failed" || root.title.dl-state == "queued";
         }
         // On hover: what the labels mean, on frosted glass (only titles with a label).
         if root.title.hint != "": Rectangle {
@@ -873,6 +935,11 @@ export component AppWindow inherits Window {
     in property <[LibraryChoice]> install-libraries;
     in-out property <int> install-choice;
     in property <bool> store-title-queued;
+    in property <[ShotRow]> store-shots;
+    in-out property <int> shot-open: -1;
+    // Download history graph: one point per second, oldest first, and its label.
+    in property <[GraphPoint]> graph;
+    in property <string> graph-label;
     // About page (page 4)
     in property <string> version;
     in property <[LicenseRow]> licenses;
@@ -900,6 +967,8 @@ export component AppWindow inherits Window {
     callback store-play();
     callback store-refresh();
     callback store-install();
+    callback store-download-toggle();
+    callback open-shot(int);
     callback confirm-install();
     callback open-downloads();
     callback download-action(int, string);
@@ -1683,7 +1752,43 @@ export component AppWindow inherits Window {
                                         enabled: !root.busy && root.store-title.windows-only == "";
                                         clicked => { root.store-play(); }
                                     }
-                                    if !root.store-title.installed: ShinyButton {
+                                    if !root.store-title.installed && root.store-title.dl-state != "": HorizontalLayout {
+                                        spacing: 10px;
+                                        ring-touch := TouchArea {
+                                            width: 48px;
+                                            mouse-cursor: pointer;
+                                            clicked => { root.store-download-toggle(); }
+                                            ProgressRing {
+                                                width: 48px;
+                                                progress: root.store-title.dl-progress;
+                                                paused: root.store-title.dl-state == "paused" || root.store-title.dl-state == "failed" || root.store-title.dl-state == "queued";
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: root.store-title.dl-state == "running" ? round(root.store-title.dl-progress * 100) + " %"
+                                                    : root.store-title.dl-state == "queued" ? "Waiting"
+                                                    : root.store-title.dl-state == "pausing" ? "Pausing…"
+                                                    : root.store-title.dl-state == "failed" ? "Failed" : "Paused";
+                                                color: Theme.text;
+                                                font-weight: 800;
+                                            }
+                                            Text {
+                                                text: "Downloads ›";
+                                                color: Theme.muted;
+                                                font-size: 12px;
+                                                TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.page = 7;
+                                                        root.open-downloads();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !root.store-title.installed && root.store-title.dl-state == "": ShinyButton {
                                         text: root.store-title-queued ? "In downloads"
                                             : root.store-title.installable ? "⤓  Install"
                                             : root.store-title.no-package ? "No PC package" : "Not supported";
@@ -1692,6 +1797,34 @@ export component AppWindow inherits Window {
                                         clicked => { root.store-install(); }
                                     }
                                 }
+                            }
+                        }
+                    }
+                    if root.store-shots.length > 0: shots-scroll := ScrollView {
+                        height: 196px;
+                        vertical-scrollbar-policy: always-off;
+                        content-height: 186px;
+                        content-width: root.store-shots.length * 334px;
+                        for shot[index] in root.store-shots: Rectangle {
+                            x: index * 334px;
+                            y: 0;
+                            width: 320px;
+                            height: 180px;
+                            border-radius: 12px;
+                            clip: true;
+                            background: Theme.base-2;
+                            border-width: 1px;
+                            border-color: shot-touch.has-hover ? Theme.accent : Theme.glass-border;
+                            SoftImage {
+                                width: parent.width;
+                                height: parent.height;
+                                sharp: shot.image;
+                                soft: shot.blur;
+                                loaded: shot.loaded;
+                            }
+                            shot-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.shot-open = index; }
                             }
                         }
                     }
@@ -1742,6 +1875,53 @@ export component AppWindow inherits Window {
                     GhostButton {
                         text: "Clear finished";
                         clicked => { root.download-action(0, "clear"); }
+                    }
+                }
+            }
+            if root.page == 7: Glass {
+                height: 170px;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 16px;
+                        Heading { text: "Activity"; vertical-alignment: center; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            VerticalLayout { alignment: center; Rectangle { width: 12px; height: 4px; border-radius: 2px; background: Theme.accent; } }
+                            Label { text: "Download"; vertical-alignment: center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            VerticalLayout { alignment: center; Rectangle { width: 12px; height: 4px; border-radius: 2px; background: Theme.text; } }
+                            Label { text: "Disk write"; vertical-alignment: center; }
+                        }
+                        Rectangle { }
+                        Label { text: root.graph-label; vertical-alignment: center; }
+                    }
+                    graph-area := Rectangle {
+                        border-radius: 10px;
+                        background: Theme.field;
+                        clip: true;
+                        for point[index] in root.graph: Rectangle {
+                            x: index * graph-area.width / max(1, root.graph.length);
+                            width: graph-area.width / max(1, root.graph.length) + 0.5px;
+                            // Download: filled bars.
+                            Rectangle {
+                                y: parent.height - self.height;
+                                height: point.network * (parent.height - 8px);
+                                background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.transparentize(75%) 100%);
+                            }
+                            // Disk write: a thin line on top of its value.
+                            Rectangle {
+                                y: parent.height - point.disk * (parent.height - 8px) - 1.5px;
+                                height: 1.5px;
+                                background: Theme.text.transparentize(25%);
+                                visible: point.disk > 0;
+                            }
+                        }
                     }
                 }
             }
@@ -2141,6 +2321,41 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    // Screenshot, large.
+    if root.shot-open >= 0 && root.shot-open < root.store-shots.length: Rectangle {
+        background: #000000D8;
+        TouchArea { clicked => { root.shot-open = -1; } }
+        Image {
+            x: 60px;
+            y: 50px;
+            width: parent.width - 120px;
+            height: parent.height - 100px;
+            source: root.store-shots[root.shot-open].image;
+            image-fit: contain;
+        }
+        if root.shot-open > 0: GhostButton {
+            x: 12px;
+            y: (parent.height - self.height) / 2;
+            text: "‹";
+            width: 40px;
+            clicked => { root.shot-open -= 1; }
+        }
+        if root.shot-open < root.store-shots.length - 1: GhostButton {
+            x: parent.width - self.width - 12px;
+            y: (parent.height - self.height) / 2;
+            text: "›";
+            width: 40px;
+            clicked => { root.shot-open += 1; }
+        }
+        GhostButton {
+            x: parent.width - self.width - 12px;
+            y: 12px;
+            text: "✕";
+            width: 40px;
+            clicked => { root.shot-open = -1; }
         }
     }
 }
