@@ -24,6 +24,27 @@ slint::include_modules!();
 
 type Pixels = SharedPixelBuffer<Rgba8Pixel>;
 
+thread_local! {
+    // The window's models live as long as it: rows are updated in place, so a cover that arrives fades in
+    // instead of the whole grid being rebuilt.
+    static GAMES: std::rc::Rc<VecModel<GameRow>> = std::rc::Rc::new(VecModel::default());
+    static STORE: std::rc::Rc<VecModel<StoreRow>> = std::rc::Rc::new(VecModel::default());
+}
+
+/// Replaces the rows of `model`, changing only rows that differ when the length stays (UI thread).
+fn update_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
+    use slint::Model;
+    if model.row_count() == rows.len() {
+        for (i, row) in rows.into_iter().enumerate() {
+            if model.row_data(i).as_ref() != Some(&row) {
+                model.set_row_data(i, row);
+            }
+        }
+    } else {
+        model.set_vec(rows);
+    }
+}
+
 /// Shown part of a log file.
 const LOG_TAIL: u64 = 256 * 1024;
 
@@ -60,7 +81,7 @@ struct State {
     store_limit: usize,
     store_current: Option<usize>,
     /// Decoded store covers by Store ID.
-    covers: HashMap<String, Pixels>,
+    covers: HashMap<String, (Pixels, Pixels)>,
     /// What the command line asked for, done once the library is loaded.
     startup: Option<Startup>,
     handle: Option<tokio::runtime::Handle>,
@@ -337,7 +358,7 @@ fn show_games(ui: &AppWindow, state: &Shared) {
         })
         .collect();
     ui.set_game_count(state.all.len() as i32);
-    ui.set_games(ModelRc::new(VecModel::from(rows)));
+    GAMES.with(|model| update_rows(model, rows));
 }
 
 /// Cross-fades the window backdrop to the blurred art of `all[index]` (UI thread), as the backdrop setting allows.
@@ -548,6 +569,8 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
     ui.set_game_logo(logo);
     ui.set_has_game_logo(has_logo);
     ui.set_has_game_hero(false);
+    // The blurred backdrop is the hero's soft first look.
+    ui.set_game_hero_soft(to_image(&entry.backdrop).0);
     show_logs(ui, Some(&game.path));
     show_backdrop(ui, state, index, BackdropCause::Game);
     ui.set_page(2);
@@ -748,8 +771,9 @@ fn store_hint(title: &xtux_protocol::CatalogTitle) -> String {
     hint
 }
 
-fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&Pixels>) -> StoreRow {
-    let (cover, has_cover) = to_image(&cover.cloned());
+fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&(Pixels, Pixels)>) -> StoreRow {
+    let (cover_blur, _) = to_image(&cover.map(|c| c.1.clone()));
+    let (cover, has_cover) = to_image(&cover.map(|c| c.0.clone()));
     StoreRow {
         name: title.name.clone().into(),
         publisher: title.publisher.clone().into(),
@@ -762,6 +786,7 @@ fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&Pixels>) -> Sto
         owned: title.owned,
         installable: title.installable,
         installed: title.installed.is_some(),
+        cover_blur,
         no_package: title.package_format.is_none(),
         package_format: title.package_format.clone().unwrap_or_default().into(),
         windows_only: title.windows_only.clone().unwrap_or_default().into(),
@@ -815,7 +840,7 @@ fn show_store(ui: &AppWindow, state: &Shared) {
         .collect();
     ui.set_store_count(s.store_filtered.len() as i32);
     ui.set_store_total(s.catalog.len() as i32);
-    ui.set_store(ModelRc::new(VecModel::from(rows)));
+    STORE.with(|model| update_rows(model, rows));
 }
 
 /// Loads the covers of the shown store titles: from the art cache, else from the Store (when allowed).
@@ -853,10 +878,13 @@ fn load_store_covers(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
                         .ok()?
                         .cover;
                 }
-                let pixels =
-                    tokio::task::spawn_blocking(move || decode(cover.as_deref(), 320, 480))
-                        .await
-                        .ok()??;
+                let pixels = tokio::task::spawn_blocking(move || {
+                    let sharp = decode(cover.as_deref(), 320, 480)?;
+                    let soft = blur(&Some(sharp.clone()))?;
+                    Some((sharp, soft))
+                })
+                .await
+                .ok()??;
                 Some((id, pixels))
             });
         }
@@ -950,13 +978,19 @@ fn open_store_title(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Han
                 .ok()
                 .and_then(|a| a.hero);
         }
-        let pixels = tokio::task::spawn_blocking(move || decode(hero.as_deref(), 1920, 1080))
-            .await
-            .ok()
-            .flatten();
+        let backdrop = art::cached(&title.product_id).backdrop;
+        let (pixels, soft) = tokio::task::spawn_blocking(move || {
+            (
+                decode(hero.as_deref(), 1920, 1080),
+                decode(backdrop.as_deref(), 640, 360),
+            )
+        })
+        .await
+        .unwrap_or_default();
         with_ui(&weak, move |ui| {
             if state.lock().ok().and_then(|s| s.store_current) == Some(index) {
                 let (hero, has_hero) = to_image(&pixels);
+                ui.set_store_hero_soft(to_image(&soft).0);
                 ui.set_store_hero(hero);
                 ui.set_has_store_hero(has_hero);
             }
@@ -1244,6 +1278,8 @@ fn main() {
 
     let runtime = tokio::runtime::Runtime::new().expect("cannot start the async runtime");
     let ui = AppWindow::new().expect("cannot create the window");
+    GAMES.with(|model| ui.set_games(ModelRc::from(model.clone())));
+    STORE.with(|model| ui.set_store(ModelRc::from(model.clone())));
     let state: Shared = Arc::default();
     if let Ok(mut s) = state.lock() {
         s.handle = Some(runtime.handle().clone());

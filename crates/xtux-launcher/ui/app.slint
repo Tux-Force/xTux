@@ -49,6 +49,7 @@ export struct StoreRow {
     owned: bool,
     installable: bool,
     installed: bool,
+    cover-blur: image,
     // The Store lists no PC package (other launcher, or not offered for PC here).
     no-package: bool,
     package-format: string,
@@ -80,6 +81,29 @@ export struct GameRow {
     has-cover: bool,
     logo: image,
     has-logo: bool,
+}
+
+// An image that arrives softly: its blurred copy fades in first, then the sharp image over it.
+component SoftImage inherits Rectangle {
+    in property <image> sharp;
+    in property <image> soft;
+    in property <bool> loaded;
+    Image {
+        source: root.soft;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.loaded ? 1 : 0;
+        animate opacity { duration: 250ms; easing: ease-out; }
+    }
+    Image {
+        source: root.sharp;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.loaded ? 1 : 0;
+        animate opacity { duration: 700ms; delay: 200ms; easing: ease-out; }
+    }
 }
 
 // Frosted glass: translucent fill, light edge, top shine and a soft shadow.
@@ -273,12 +297,6 @@ component StoreTile inherits Rectangle {
         drop-shadow-color: root.hover ? Theme.accent.transparentize(60%) : Theme.shadow;
         transform-scale: root.hover ? 1.04 : 1;
         animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
-        if root.title.has-cover: Image {
-            source: root.title.cover;
-            width: parent.width;
-            height: parent.height;
-            image-fit: cover;
-        }
         if !root.title.has-cover: Rectangle {
             background: @linear-gradient(150deg, Theme.base-2 0%, Theme.accent.transparentize(70%) 100%);
             Text {
@@ -290,6 +308,13 @@ component StoreTile inherits Rectangle {
                 horizontal-alignment: center;
                 width: parent.width - 24px;
             }
+        }
+        SoftImage {
+            width: parent.width;
+            height: parent.height;
+            sharp: root.title.cover;
+            soft: root.title.cover-blur;
+            loaded: root.title.has-cover;
         }
         Rectangle {
             background: @linear-gradient(135deg, #FFFFFF30 0%, #FFFFFF00 40%);
@@ -502,16 +527,17 @@ component CoverTile inherits Rectangle {
         transform-scale: root.hover ? 1.04 : 1;
         animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
 
-        if root.game.has-cover: Image {
-            source: root.game.cover;
-            width: parent.width;
-            height: parent.height;
-            image-fit: cover;
-        }
         if !root.game.has-cover: ArtFallback {
             game: root.game;
             width: parent.width;
             height: parent.height;
+        }
+        SoftImage {
+            width: parent.width;
+            height: parent.height;
+            sharp: root.game.cover;
+            soft: root.game.cover-blur;
+            loaded: root.game.has-cover;
         }
         // Gloss sweep.
         Rectangle {
@@ -656,16 +682,17 @@ component ListRow inherits Rectangle {
             width: 56px;
             border-radius: 10px;
             clip: true;
-            if root.game.has-cover: Image {
-                source: root.game.cover;
-                width: parent.width;
-                height: parent.height;
-                image-fit: cover;
-            }
             if !root.game.has-cover: ArtFallback {
                 game: root.game;
                 width: parent.width;
                 height: parent.height;
+            }
+            SoftImage {
+                width: parent.width;
+                height: parent.height;
+                sharp: root.game.cover;
+                soft: root.game.cover-blur;
+                loaded: root.game.has-cover;
             }
         }
         VerticalLayout {
@@ -773,6 +800,8 @@ export component AppWindow inherits Window {
     in property <image> backdrop-b;
     in property <bool> show-a: true;
     in property <bool> has-backdrop;
+    // Game art behind library, game, store and title pages; settings, logs and about stay neutral.
+    property <bool> art-page: root.page == 0 || root.page == 2 || root.page == 5 || root.page == 6;
     // Logo of the sidebar and the window icon, chosen in Settings.
     in property <image> app-icon;
     in-out property <string> icon-choice: "mascot";
@@ -791,6 +820,7 @@ export component AppWindow inherits Window {
     in property <string> game-kind;
     in property <image> game-hero;
     in property <bool> has-game-hero;
+    in property <image> game-hero-soft;
     in property <image> game-logo;
     in property <bool> has-game-logo;
     in-out property <string> game-wine;
@@ -818,6 +848,7 @@ export component AppWindow inherits Window {
     in property <StoreRow> store-title;
     in property <image> store-hero;
     in property <bool> has-store-hero;
+    in property <image> store-hero-soft;
     // About page (page 4)
     in property <string> version;
     in property <[LicenseRow]> licenses;
@@ -875,7 +906,7 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         image-fit: cover;
-        opacity: root.has-backdrop && root.show-a ? Theme.backdrop-opacity : 0;
+        opacity: root.has-backdrop && root.show-a && root.art-page ? Theme.backdrop-opacity : 0;
         animate opacity { duration: 450ms; easing: ease-in-out; }
     }
     Image {
@@ -883,7 +914,7 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         image-fit: cover;
-        opacity: root.has-backdrop && !root.show-a ? Theme.backdrop-opacity : 0;
+        opacity: root.has-backdrop && !root.show-a && root.art-page ? Theme.backdrop-opacity : 0;
         animate opacity { duration: 450ms; easing: ease-in-out; }
     }
     Rectangle {
@@ -1052,7 +1083,7 @@ export component AppWindow inherits Window {
                 content-width: self.visible-width;
                 property <length> tile: 176px;
                 property <length> gap: 26px;
-                property <int> cols: max(1, floor((self.visible-width - 16px + self.gap) / (self.tile + self.gap)));
+                property <int> cols: max(1, floor((self.visible-width - 40px + self.gap) / (self.tile + self.gap)));
                 property <length> row-height: self.tile * 1.5 + 54px;
                 content-height: ceil(root.games.length / self.cols) * (self.row-height + self.gap) + 24px;
                 for game[index] in root.games: CoverTile {
@@ -1078,7 +1109,7 @@ export component AppWindow inherits Window {
                 for game[index] in root.games: ListRow {
                     x: 2px;
                     y: 4px + index * 86px;
-                    width: lib-list.visible-width - 18px;
+                    width: lib-list.visible-width - 28px;
                     game: game;
                     busy: root.busy;
                     play => { root.play(index); }
@@ -1106,7 +1137,7 @@ export component AppWindow inherits Window {
                 page-content := VerticalLayout {
                     // Room for the scrollbar on the right.
                     x: 0;
-                    width: game-scroll.visible-width - 16px;
+                    width: game-scroll.visible-width - 28px;
                     spacing: 14px;
                     // Hero banner
                     Rectangle {
@@ -1116,11 +1147,12 @@ export component AppWindow inherits Window {
                         background: Theme.base-2;
                         border-width: 1px;
                         border-color: Theme.glass-border;
-                        if root.has-game-hero: Image {
-                            source: root.game-hero;
+                        SoftImage {
                             width: parent.width;
                             height: parent.height;
-                            image-fit: cover;
+                            sharp: root.game-hero;
+                            soft: root.game-hero-soft;
+                            loaded: root.has-game-hero;
                         }
                         Rectangle {
                             background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
@@ -1320,7 +1352,7 @@ export component AppWindow inherits Window {
                 settings-content := VerticalLayout {
                     // Room for the scrollbar on the right.
                     x: 0;
-                    width: settings-scroll.visible-width - 16px;
+                    width: settings-scroll.visible-width - 28px;
                     spacing: 14px;
                     alignment: start;
                     Glass {
@@ -1497,7 +1529,7 @@ export component AppWindow inherits Window {
                 content-width: self.visible-width;
                 property <length> tile: 160px;
                 property <length> gap: 24px;
-                property <int> cols: max(1, floor((self.visible-width - 16px + self.gap) / (self.tile + self.gap)));
+                property <int> cols: max(1, floor((self.visible-width - 40px + self.gap) / (self.tile + self.gap)));
                 property <length> row-height: self.tile * 1.5 + 54px;
                 property <length> grid-height: ceil(root.store.length / self.cols) * (self.row-height + self.gap);
                 content-height: self.grid-height + 90px;
@@ -1525,7 +1557,7 @@ export component AppWindow inherits Window {
                 title-content := VerticalLayout {
                     // Room for the scrollbar on the right.
                     x: 0;
-                    width: title-scroll.visible-width - 16px;
+                    width: title-scroll.visible-width - 28px;
                     spacing: 14px;
                     alignment: start;
                     Rectangle {
@@ -1535,11 +1567,12 @@ export component AppWindow inherits Window {
                         background: Theme.base-2;
                         border-width: 1px;
                         border-color: Theme.glass-border;
-                        if root.has-store-hero: Image {
-                            source: root.store-hero;
+                        SoftImage {
                             width: parent.width;
                             height: parent.height;
-                            image-fit: cover;
+                            sharp: root.store-hero;
+                            soft: root.store-hero-soft;
+                            loaded: root.has-store-hero;
                         }
                         Rectangle {
                             background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
@@ -1653,7 +1686,7 @@ export component AppWindow inherits Window {
                 about-content := VerticalLayout {
                     // Room for the scrollbar on the right.
                     x: 0;
-                    width: about-scroll.visible-width - 16px;
+                    width: about-scroll.visible-width - 28px;
                     spacing: 14px;
                     alignment: start;
                     Glass {
