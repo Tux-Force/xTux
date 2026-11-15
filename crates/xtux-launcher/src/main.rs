@@ -707,6 +707,43 @@ fn size_text(bytes: Option<u64>) -> String {
     }
 }
 
+/// What the labels of a store title mean, in one or two short sentences.
+fn store_hint(title: &xtux_protocol::CatalogTitle) -> String {
+    let size = size_text(title.download_size);
+    let mut hint = if title.installed.is_some() {
+        "Installed: ready to play.".to_string()
+    } else if let Some(anticheat) = &title.windows_only {
+        format!(
+            "Likely Windows only: xTux's own list guesses the kernel anti-cheat {anticheat} (not verified)."
+        )
+    } else if title.installable {
+        format!(
+            "GDK game: xTux can install it{}.",
+            if size.is_empty() {
+                String::new()
+            } else {
+                format!(" ({size})")
+            }
+        )
+    } else if title.package_format.is_none() {
+        "No PC package in the Store: usually installs through another launcher, or is offered for consoles only."
+            .to_string()
+    } else {
+        format!(
+            "Not supported: an older UWP app package ({}), not a GDK game.",
+            title.package_format.as_deref().unwrap_or_default()
+        )
+    };
+    let access = match (title.owned, title.in_game_pass) {
+        (true, true) => " Owned and in Game Pass.",
+        (true, false) => " Owned by your account.",
+        (false, true) => " Included in Game Pass.",
+        _ => "",
+    };
+    hint.push_str(access);
+    hint
+}
+
 fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&Pixels>) -> StoreRow {
     let (cover, has_cover) = to_image(&cover.cloned());
     StoreRow {
@@ -724,6 +761,7 @@ fn store_row(title: &xtux_protocol::CatalogTitle, cover: Option<&Pixels>) -> Sto
         no_package: title.package_format.is_none(),
         package_format: title.package_format.clone().unwrap_or_default().into(),
         windows_only: title.windows_only.clone().unwrap_or_default().into(),
+        hint: store_hint(title).into(),
     }
 }
 
@@ -756,6 +794,8 @@ fn filter_store(ui: &AppWindow, state: &Shared) {
             .collect();
         s.store_limit = STORE_PAGE;
     }
+    // New results start at the top.
+    ui.set_store_scroll(0.0);
     show_store(ui, state);
 }
 
