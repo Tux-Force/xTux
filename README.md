@@ -54,20 +54,61 @@ Guides, the compatibility list and downloads are on the website, **https://tux-f
 (`xtux-service`) and the graphical front end the **xTux Launcher** (`xtux-launcher`); the core library keeps its
 upstream name `xodus`.
 
+## Launcher features
+
+The current source includes a searchable local library (grid or list), Play/Stop, per-game Wine/prefix/executable/
+arguments/environment settings, launch logs and file-based anti-cheat indicators. The Store combines PC Game Pass
+and owned-title catalogs with filters, artwork, title details and screenshot galleries.
+
+Supported packages can be installed through a persistent service-owned download queue with pause/resume,
+reordering and activity graphs. The CLI shares it via `xtux-cli downloads`. Catalog presence does not establish
+an entitlement; Microsoft checks the license when the game starts.
+
+**Delete game…** removes the entire game folder after confirmation, including Windows Xbox app installs and any
+saves inside that folder. Installed-game update checks, verify, automatic first-launch prefix setup and Flatpak
+packaging remain planned. Initialize prefixes with `xtux-cli prefix init` before using them.
+
+Global and per-game settings share `$XDG_CONFIG_HOME/xtux/settings.toml` (normally `~/.config/xtux/settings.toml`).
+Per-game overrides are keyed by game folder. See the [launcher guide](https://tux-force.github.io/guide/launcher/)
+for pages, launch options, appearance settings and log locations.
+
+## Launcher screenshots
+
+The xTux Launcher brings your installed games and the Store catalog into one graphical interface.
+Account details and personal paths are redacted in these screenshots.
+
+### Library
+
+![xTux Launcher library with installed games, Play buttons and compatibility indicators](docs/screenshots/launcher-library.png)
+
+### Store
+
+![xTux Launcher Store with game covers and Game Pass, Owned and Installed filters](docs/screenshots/launcher-store.png)
+
+### Game details
+
+![xTux Launcher game detail view with artwork, Play button and per-game settings](docs/screenshots/launcher-detail.png)
+
+[Download branded social-media versions](docs/social-media/README.md) of all three screenshots.
+
 ## Building
 
 The project structure is as follows.
 
 ```
 .
-├── msixvc - [rlib] common rlib crate for utilities for parsing MSIXVC and XSP files
-├── xodus - [rlib] common rlib crate that contains core xodus functionality, API calls abstractions and utilities
-├── xtux-cli - [bin] xTux-cli, the command line front end
-└── xtux-service - [bin] service process exposing xtux.sock for IPC communication, it takes care of xgameruntime.dll integration.
+├── msixvc / msixvc-common - MSIXVC and XSP package utilities
+├── xodus - authentication, tokens and Microsoft API abstractions
+├── xtux-games - game layouts, catalog, install queue, prefix setup, launch and bridge logic
+├── xtux-protocol - typed requests, responses and events for service protocol v2
+├── xtux-cli - command line client
+├── xtux-service - daemon owning accounts, downloads and game launches
+└── xtux-launcher - Slint graphical client
 ```
 
 > [!NOTE]
-> xtux-service aims to become a main point of integration. All xodus clients will connect to it to interact with games and Xbox services.
+> xtux-service is the integration point for game operations. CLI and launcher use its `XTX2` length-prefixed JSON
+> protocol; the older runtime XML messages are still supported on the same socket.
 
 ### Prerequisites
 
@@ -86,7 +127,7 @@ cargo build --release --workspace
 Running cli in debug
 
 ```
-cargo run -- --help
+cargo run --bin xtux-cli -- --help
 ```
 
 Running xtux-service in debug
@@ -95,10 +136,16 @@ Running xtux-service in debug
 cargo run --bin xtux-service
 ```
 
+Running the launcher in debug
+
+```bash
+cargo run --bin xtux-launcher
+```
+
 Debug and profile `xtux-cli` or `xtux-service` with [tokio-console](https://github.com/tokio-rs/console)
 
 ```
-RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console 
+RUSTFLAGS="--cfg tokio_unstable" cargo run --bin xtux-cli --features tokio_console
 ```
 
 > [!WARNING]
