@@ -31,6 +31,8 @@ thread_local! {
     static STORE: std::rc::Rc<VecModel<StoreRow>> = std::rc::Rc::new(VecModel::default());
     static DOWNLOAD_ROWS: std::rc::Rc<VecModel<DownloadRow>> = std::rc::Rc::new(VecModel::default());
     static SHOTS: std::rc::Rc<VecModel<ShotRow>> = std::rc::Rc::new(VecModel::default());
+    static ADDONS: std::rc::Rc<VecModel<AddonRow>> = std::rc::Rc::new(VecModel::default());
+    static UPDATES: std::rc::Rc<VecModel<UpdateRow>> = std::rc::Rc::new(VecModel::default());
     static GRAPH: std::rc::Rc<VecModel<GraphPoint>> = std::rc::Rc::new(VecModel::default());
     /// Counts gallery loads, so screenshots of a title left meanwhile are dropped.
     static SHOT_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -82,6 +84,10 @@ struct State {
     running: HashMap<PathBuf, Canceller>,
     /// The store catalog and which of its titles are shown.
     catalog: Vec<xtux_protocol::CatalogTitle>,
+    /// Owned add-ons with a PC package; shown on the page of their game.
+    addons: Vec<xtux_protocol::CatalogTitle>,
+    pending_addon_delete: Option<xtux_protocol::CatalogTitle>,
+    updates: Vec<xtux_protocol::UpdateInfo>,
     store_filtered: Vec<usize>,
     store_limit: usize,
     store_current: Option<usize>,
@@ -115,7 +121,7 @@ struct Args {
     #[arg(long, value_name = "GAME", conflicts_with = "play")]
     game: Option<String>,
     /// Open a page
-    #[arg(long, value_parser = ["library", "store", "settings", "about", "logs"], conflicts_with_all = ["play", "game"])]
+    #[arg(long, value_parser = ["library", "store", "updates", "settings", "about", "logs"], conflicts_with_all = ["play", "game"])]
     page: Option<String>,
 }
 
@@ -175,6 +181,7 @@ fn run_startup(ui: &AppWindow, state: &Shared) {
     match startup {
         Startup::Page(page) => ui.set_page(match page.as_str() {
             "settings" => 1,
+            "updates" => 8,
             "store" => {
                 open_store(ui, state, &handle, false);
                 5
@@ -1022,10 +1029,11 @@ fn open_store(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, r
         )
         .await;
         match result {
-            Ok(Response::Catalog { titles }) => {
+            Ok(Response::Catalog { titles, addons }) => {
                 let count = titles.len();
                 if let Ok(mut s) = state.lock() {
                     s.catalog = titles;
+                    s.addons = addons;
                     // The old indices are invalid now; filter_store rebuilds them.
                     s.store_filtered.clear();
                     s.store_current = None;
@@ -1064,6 +1072,7 @@ fn open_store_title(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Han
         Err(_) => Vec::new(),
     };
     ui.set_store_title(store_row(&title, cover.as_ref(), &downloads));
+    show_addons(state);
     load_screenshots(ui, &title, handle);
     ui.set_has_store_hero(false);
     ui.set_page(6);
@@ -1260,6 +1269,7 @@ fn load_screenshots(
 }
 
 fn show_downloads(ui: &AppWindow, state: &Shared) {
+    show_updates(state);
     // Rings on store tiles and the title page follow the queue.
     show_store(ui, state);
     if let Some(row) = state.lock().ok().and_then(|s| {
@@ -1272,6 +1282,7 @@ fn show_downloads(ui: &AppWindow, state: &Shared) {
     }) {
         ui.set_store_title(row);
     }
+    show_addons(state);
     let Ok(s) = state.lock() else { return };
     show_graph(ui, &s.history);
     let rows: Vec<DownloadRow> = s
@@ -1405,7 +1416,12 @@ fn download_command(
                 None,
             );
             refresh_library(weak2.clone(), state.clone()).await;
-            with_ui(&weak2, move |ui| reload_store(&ui, &state, &handle2));
+            with_ui(&weak2, move |ui| {
+                reload_store(&ui, &state, &handle2);
+                if state.lock().is_ok_and(|s| !s.updates.is_empty()) {
+                    check_updates(&ui, &state, &handle2);
+                }
+            });
         }
     });
 }
@@ -1419,6 +1435,209 @@ fn reload_store(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle)
         s.catalog.clear();
     }
     open_store(ui, state, handle, false);
+}
+
+/// The owned add-ons of the store title on screen.
+fn current_addons(s: &State) -> Vec<xtux_protocol::CatalogTitle> {
+    let Some(title) = s.store_current.and_then(|i| s.catalog.get(i)) else {
+        return Vec::new();
+    };
+    s.addons
+        .iter()
+        .filter(|a| title.has_addon(a))
+        .cloned()
+        .collect()
+}
+
+fn show_updates(state: &Shared) {
+    let Ok(s) = state.lock() else { return };
+    let rows = s
+        .updates
+        .iter()
+        .map(|item| {
+            let queued = s
+                .downloads
+                .iter()
+                .any(|d| d.destination == item.path && d.state != "done");
+            UpdateRow {
+                name: item.name.clone().into(),
+                versions: format!(
+                    "Installed: {} · Latest: {}",
+                    item.installed_version,
+                    item.latest_version.as_deref().unwrap_or("unknown")
+                )
+                .into(),
+                detail: item.message.clone().into(),
+                available: item.can_update && !queued && !s.running.contains_key(&item.path),
+                queued,
+            }
+        })
+        .collect();
+    drop(s);
+    UPDATES.with(|model| update_rows(model, rows));
+}
+
+fn check_updates(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle) {
+    if ui.get_updates_loading() {
+        return;
+    }
+    ui.set_updates_loading(true);
+    ui.set_updates_status("Checking installed games and add-ons…".into());
+    let weak = ui.as_weak();
+    let state = state.clone();
+    handle.spawn(async move {
+        let result = ask(Request::CheckUpdates, |_| {}).await;
+        with_ui(&weak, move |ui| {
+            ui.set_updates_loading(false);
+            match result {
+                Ok(Response::Updates { items }) => {
+                    let available = items.iter().filter(|i| i.state == "available").count();
+                    let failed = items.iter().filter(|i| i.state == "failed").count();
+                    ui.set_updates_status(format!("{} packages checked · {available} updates available · {failed} checks failed", items.len()).into());
+                    if let Ok(mut s) = state.lock() { s.updates = items; }
+                    show_updates(&state);
+                }
+                Ok(other) => ui.set_updates_status(format!("Unexpected answer: {other:?}").into()),
+                Err(err) => ui.set_updates_status(format!("Could not check updates: {err}").into()),
+            }
+        });
+    });
+}
+
+/// Shows the add-ons of the store title on screen (UI thread).
+fn show_addons(state: &Shared) {
+    let Ok(s) = state.lock() else { return };
+    let rows: Vec<AddonRow> = current_addons(&s)
+        .iter()
+        .map(|a| AddonRow {
+            name: a.name.clone().into(),
+            size: a
+                .download_size
+                .map(|b| size_text(Some(b)))
+                .unwrap_or_default()
+                .into(),
+            state: if a.installed.is_some() {
+                "installed"
+            } else if s
+                .downloads
+                .iter()
+                .any(|d| d.product_id == a.product_id && d.state != "done")
+            {
+                "queued"
+            } else {
+                "install"
+            }
+            .into(),
+        })
+        .collect();
+    drop(s);
+    ADDONS.with(|model| update_rows(model, rows));
+}
+
+/// Queues add-on `index` of the store title on screen, into the library folder of its game (or the first one).
+fn store_addon_install(
+    ui: &AppWindow,
+    state: &Shared,
+    handle: &tokio::runtime::Handle,
+    index: usize,
+) {
+    let Some((addon, game_dir)) = state.lock().ok().and_then(|s| {
+        let addon = current_addons(&s).into_iter().nth(index)?;
+        let game_dir = s
+            .store_current
+            .and_then(|i| s.catalog.get(i))
+            .and_then(|t| t.installed.clone());
+        Some((addon, game_dir))
+    }) else {
+        return;
+    };
+    let Some(content_id) = addon.content_id.clone() else {
+        ui.set_status("This add-on has no PC package to install".into());
+        return;
+    };
+    let settings = Settings::load().unwrap_or_default();
+    let library = game_dir
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(|parent| settings.library_dirs.iter().find(|d| d.as_path() == parent))
+        .or_else(|| {
+            settings
+                .library_dirs
+                .iter()
+                .find(|dir| dir.is_dir() || std::fs::create_dir_all(dir).is_ok())
+        })
+        .cloned();
+    let Some(library) = library else {
+        ui.set_status("No library folder to install into; add one in Settings".into());
+        return;
+    };
+    ui.set_status(format!("{} added to the downloads", addon.name).into());
+    download_command(
+        ui,
+        state,
+        handle,
+        DownloadCommand::Add {
+            product_id: addon.product_id,
+            name: addon.name,
+            content_id,
+            library,
+        },
+    );
+}
+
+/// Capture the exact add-on before opening the confirmation; catalog refreshes can change row indices.
+fn confirm_addon_remove(ui: &AppWindow, state: &Shared, index: usize) {
+    let Ok(mut s) = state.lock() else { return };
+    let Some(addon) = current_addons(&s).into_iter().nth(index) else {
+        return;
+    };
+    let Some(path) = addon.installed.as_ref() else {
+        return;
+    };
+    if !s.running.is_empty() {
+        ui.set_status("Stop running games before removing an add-on".into());
+        return;
+    }
+    ui.set_delete_addon_name(addon.name.clone().into());
+    ui.set_delete_addon_path(path.to_string_lossy().as_ref().into());
+    s.pending_addon_delete = Some(addon);
+    ui.set_deleting_addon(true);
+    ui.set_confirm_delete(true);
+}
+
+fn delete_addon(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle) {
+    let addon = state.lock().ok().and_then(|mut s| {
+        if !s.running.is_empty() {
+            return None;
+        }
+        s.pending_addon_delete.take()
+    });
+    let Some(addon) = addon else {
+        ui.set_status("Stop running games before removing an add-on".into());
+        return;
+    };
+    let Some(path) = addon.installed else { return };
+    ui.set_busy(true);
+    ui.set_status(format!("Removing {}…", addon.name).into());
+    let weak = ui.as_weak();
+    let state = state.clone();
+    handle.spawn(async move {
+        match ask(Request::Uninstall { path: path.clone() }, |_| {}).await {
+            Ok(Response::Uninstalled { .. }) => {
+                if let Ok(mut s) = state.lock() {
+                    for a in &mut s.addons {
+                        if a.installed.as_ref() == Some(&path) {
+                            a.installed = None;
+                        }
+                    }
+                }
+                set_status(&weak, format!("{} removed", addon.name), Some(false));
+                with_ui(&weak, move |_| show_addons(&state));
+            }
+            Ok(other) => set_status(&weak, format!("Unexpected answer: {other:?}"), Some(false)),
+            Err(err) => set_status(&weak, err.to_string(), Some(false)),
+        }
+    });
 }
 
 /// Opens the install dialog for the store title on screen (UI thread).
@@ -1665,6 +1884,10 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
                 ui.set_page(7);
                 download_command(&ui, &state, &handle, DownloadCommand::List);
             }
+            "updates" => {
+                ui.set_page(8);
+                check_updates(&ui, &state, &handle);
+            }
             "install" => {
                 ui.set_store_search("digging".into());
                 filter_store(&ui, &state);
@@ -1675,6 +1898,29 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
                 ui.set_store_search("farming".into());
                 filter_store(&ui, &state);
                 open_store_title(&ui, &state, &handle, 0);
+            }
+            "addons" | "addon-delete" => {
+                let title = state.lock().ok().and_then(|s| {
+                    s.catalog
+                        .iter()
+                        .find(|t| s.addons.iter().any(|a| t.has_addon(a)))
+                        .map(|t| t.name.clone())
+                });
+                if let Some(title) = title {
+                    ui.set_store_search(title.into());
+                    filter_store(&ui, &state);
+                    open_store_title(&ui, &state, &handle, 0);
+                    if page == "addon-delete" {
+                        let installed = state.lock().ok().and_then(|s| {
+                            current_addons(&s)
+                                .iter()
+                                .position(|a| a.installed.is_some())
+                        });
+                        if let Some(index) = installed {
+                            confirm_addon_remove(&ui, &state, index);
+                        }
+                    }
+                }
             }
             "about" => {
                 ui.set_page(4);
@@ -2061,7 +2307,11 @@ fn main() {
         let handle = handle.clone();
         move || {
             if let Some(ui) = weak.upgrade() {
-                delete_game(&ui, &state, &handle);
+                if ui.get_deleting_addon() {
+                    delete_addon(&ui, &state, &handle);
+                } else {
+                    delete_game(&ui, &state, &handle);
+                }
             }
         }
     });
@@ -2168,6 +2418,62 @@ fn main() {
 
     DOWNLOAD_ROWS.with(|model| ui.set_downloads(ModelRc::from(model.clone())));
     SHOTS.with(|model| ui.set_store_shots(ModelRc::from(model.clone())));
+    ADDONS.with(|model| ui.set_store_addons(ModelRc::from(model.clone())));
+    UPDATES.with(|model| ui.set_updates(ModelRc::from(model.clone())));
+    ui.on_check_updates({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                check_updates(&ui, &state, &handle);
+            }
+        }
+    });
+    ui.on_install_update({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move |index| {
+            let Some(ui) = weak.upgrade() else { return };
+            let item = usize::try_from(index).ok().and_then(|index| {
+                state.lock().ok().and_then(|s| {
+                    s.updates
+                        .get(index)
+                        .filter(|i| i.can_update && !s.running.contains_key(&i.path))
+                        .cloned()
+                })
+            });
+            if let Some(item) = item {
+                download_command(
+                    &ui,
+                    &state,
+                    &handle,
+                    DownloadCommand::Update { path: item.path },
+                );
+            }
+        }
+    });
+    ui.on_store_addon_remove({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        move |index| {
+            if let (Some(ui), Ok(index)) = (weak.upgrade(), usize::try_from(index)) {
+                confirm_addon_remove(&ui, &state, index);
+            }
+        }
+    });
+
+    ui.on_store_addon_install({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move |index| {
+            if let (Some(ui), Ok(index)) = (weak.upgrade(), usize::try_from(index)) {
+                store_addon_install(&ui, &state, &handle, index);
+            }
+        }
+    });
     GRAPH.with(|model| ui.set_graph(ModelRc::from(model.clone())));
 
     ui.on_store_download_toggle({

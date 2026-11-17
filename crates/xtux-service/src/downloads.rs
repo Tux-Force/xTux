@@ -264,7 +264,7 @@ async fn worker(
                 match &result {
                     Ok(()) => {
                         entry.state = State::Done;
-                        entry.message = "Installed".into();
+                        entry.message = if entry.update { "Updated" } else { "Installed" }.into();
                     }
                     // Paused: the state was set by the pause.
                     Err(xtux_games::Error::Cancelled) => {
@@ -309,6 +309,7 @@ fn items(queue: &Queue) -> Vec<DownloadItem> {
             product_id: i.product_id.clone(),
             name: i.name.clone(),
             destination: i.destination.clone(),
+            update: i.update,
             state: match i.state {
                 State::Queued => "queued",
                 State::Running => "running",
@@ -354,6 +355,11 @@ pub fn command(command: DownloadCommand) -> xtux_games::Result<Vec<DownloadItem>
             .map_err(|_| "the download queue is broken")?;
         match command {
             DownloadCommand::List => {}
+            DownloadCommand::Update { path } => {
+                queue.update(&path, &library_dirs())?;
+                queue.save();
+                downloads.wake.notify_one();
+            }
             DownloadCommand::Add {
                 product_id,
                 name,

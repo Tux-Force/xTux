@@ -87,7 +87,12 @@ async fn run_init(
         ));
     }
 
-    let mut state = json!({ "certificates": [] });
+    // A certificate-only update must retain the installed graphics configuration.
+    let mut state = std::fs::read_to_string(prefix.join(STATE_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .filter(|state| state.is_object())
+        .unwrap_or_else(|| json!({}));
     let mut overridden: Vec<&str> = Vec::new();
 
     if !options.skip_graphics {
@@ -334,6 +339,37 @@ fn sha1_hex(data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn certificate_update_preserves_graphics_settings() {
+        let prefix = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(prefix.path().join("drive_c/windows/system32")).unwrap();
+        let previous = serde_json::json!({
+            "dxvk": "existing-dxvk", "vkd3d_proton": "existing-vkd3d",
+            "dll_overrides": "dxgi,d3d11,d3d12,d3d12core=n,b"
+        });
+        std::fs::write(prefix.path().join(super::STATE_FILE), previous.to_string()).unwrap();
+        super::run_init(
+            &reqwest::Client::new(),
+            super::InitOptions {
+                wine: "/bin/true".into(),
+                prefix: Some(prefix.path().to_str().unwrap().into()),
+                from_proton: None,
+                skip_graphics: true,
+            },
+            &crate::Silent,
+        )
+        .await
+        .unwrap();
+        let after: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(prefix.path().join(super::STATE_FILE)).unwrap(),
+        )
+        .unwrap();
+        for key in ["dxvk", "vkd3d_proton", "dll_overrides"] {
+            assert_eq!(after[key], previous[key]);
+        }
+        assert_eq!(after["certificates"].as_array().unwrap().len(), 2);
+    }
+
     #[test]
     fn thumbprints_match_windows() {
         assert_eq!(

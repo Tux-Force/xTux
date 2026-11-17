@@ -1,6 +1,7 @@
 # Tux-Force (xTux) CI: build the workspace on Linux x86_64, run the tests
-# and publish xtux-cli and xtux-service as downloadable artifacts.
-# Pushes to main also create a GitHub release v<version of xtux-cli> once.
+# and publish CLI, service, launcher and source archives as downloadable artifacts.
+# A pushed v<version of xtux-cli> tag publishes a release after both checks succeed,
+# but only when the tagged commit is part of main (releases come from main, see README.md).
 # The licenses job checks the licenses and sources of all dependencies
 # (cargo-deny, deny.toml) and that licenses/THIRD-PARTY-LICENSES.md is current.
 #
@@ -12,6 +13,7 @@ name: Tux-Force build
 on:
   push:
     branches: [develop, main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -59,6 +61,23 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Validate release version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/xtux-cli/Cargo.toml | head -1)
+          test -n "$version"
+          if [ "$REF_TYPE" = tag ]; then
+            test "$REF_NAME" = "v$version" || {
+              echo "::error::Release tag must match xtux-cli version v$version"
+              exit 1
+            }
+            test -f "docs/ReleaseNotes-v$version.md"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       # protobuf-compiler: prost-build in crates/xodus compiles proto/
       # libwebkit2gtk-4.1-dev: wry/tao login webview (pulls in gtk3 + libsoup3)
       # libdbus-1-dev: keyring (dbus-secret-service)
@@ -101,48 +120,82 @@ jobs:
       - name: Test
         run: cargo test --release --workspace --locked
 
-      - name: Package binaries
+      - name: Package and verify release archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          mkdir -p dist
+          mkdir -p dist release
           cp target/release/xtux-cli target/release/xtux-service target/release/xtux-launcher dist/
           cp LICENSE licenses/THIRD-PARTY-LICENSES.md dist/
+          cp docs/Updates.md dist/
+          if [ -f "docs/ReleaseNotes-v$VERSION.md" ]; then
+            cp "docs/ReleaseNotes-v$VERSION.md" dist/RELEASE-NOTES.md
+            cp dist/RELEASE-NOTES.md release/RELEASE-NOTES.md
+          fi
           strip dist/xtux-cli dist/xtux-service dist/xtux-launcher
           (cd dist && sha256sum xtux-cli xtux-service xtux-launcher > SHA256SUMS)
+          printf '{"version":"%s","commit":"%s","build":"GitHub Actions","run_id":"%s"}\n' \
+            "$VERSION" "$GITHUB_SHA" "$GITHUB_RUN_ID" > dist/BUILD-INFO.json
+          archive="xtux-$VERSION-linux-x86_64.tar.gz"
+          source="xtux-$VERSION-source.tar.gz"
+          tar -C dist -czf "release/$archive" .
+          git archive --format=tar.gz --prefix="xtux-$VERSION/" -o "release/$source" HEAD
+          (cd release && sha256sum "$archive" > "$archive.sha256" && sha256sum "$source" > "$source.sha256")
+          smoke=$(mktemp -d)
+          tar -C "$smoke" -xzf "release/$archive"
+          (cd "$smoke" && sha256sum -c SHA256SUMS)
+          "$smoke/xtux-cli" --version
+          "$smoke/xtux-launcher" --version
+          rm -rf "$smoke"
 
       - uses: actions/upload-artifact@v4
         with:
           name: xtux-linux-x86_64
-          path: dist/
+          path: release/
           if-no-files-found: error
 
   release:
     name: Release
     needs: [build, licenses]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      # Only reviewed code is released: the tag must point at a commit that is in main.
+      - name: Tagged commit is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::Tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main; merge develop into main first and tag there."
+            exit 1
+          }
 
       - uses: actions/download-artifact@v4
         with:
           name: xtux-linux-x86_64
-          path: dist
+          path: release
 
-      - name: Create the release if this version has none yet
+      - name: Publish release and upload CI-built assets
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/xtux-cli/Cargo.toml | head -1)
-          tag="v$version"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag exists already; bump the version in crates/xtux-cli/Cargo.toml for a new one."
-            exit 0
+          (cd release && sha256sum -c *.sha256)
+          assets=(release/*.tar.gz release/*.sha256)
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            flags=()
+            case "$RELEASE_TAG" in
+              v0.*|*-*) flags+=(--prerelease) ;;
+            esac
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --title "xTux ${RELEASE_TAG#v}" \
+              --notes-file release/RELEASE-NOTES.md "${flags[@]}"
           fi
-          chmod +x dist/xtux-cli dist/xtux-service dist/xtux-launcher
-          archive="xtux-$version-linux-x86_64.tar.gz"
-          tar -C dist -czf "$archive" xtux-cli xtux-service xtux-launcher SHA256SUMS LICENSE THIRD-PARTY-LICENSES.md
-          sha256sum "$archive" > "$archive.sha256"
-          gh release create "$tag" "$archive" "$archive.sha256" \
-            --target "$GITHUB_SHA" --title "xTux $version" --generate-notes

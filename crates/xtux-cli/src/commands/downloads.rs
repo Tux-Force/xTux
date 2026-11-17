@@ -51,6 +51,33 @@ pub async fn run(action: Vec<String>) -> ExitCode {
     let words: Vec<&str> = action.iter().map(String::as_str).collect();
     let command = match words.as_slice() {
         [] | ["list"] => DownloadCommand::List,
+        ["update", path] => DownloadCommand::Update {
+            path: PathBuf::from(path),
+        },
+        ["check"] => {
+            return match send(Request::CheckUpdates).await {
+                Ok(Response::Updates { items }) => {
+                    for item in items {
+                        println!(
+                            "{}: {} → {} — {}",
+                            item.name,
+                            item.installed_version,
+                            item.latest_version.as_deref().unwrap_or("unknown"),
+                            item.message
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Ok(other) => {
+                    eprintln!("unexpected answer: {other:?}");
+                    ExitCode::FAILURE
+                }
+                Err(err) => {
+                    eprintln!("{err}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         ["clear"] => DownloadCommand::ClearDone,
         [verb @ ("pause" | "resume" | "remove" | "up" | "down"), id] => {
             let Ok(id) = id.parse() else {
@@ -73,7 +100,10 @@ pub async fn run(action: Vec<String>) -> ExitCode {
             })
             .await
             {
-                Ok(Response::Catalog { titles }) => titles,
+                // Games and add-ons alike: an add-on installs into a folder of its own.
+                Ok(Response::Catalog { titles, addons }) => {
+                    titles.into_iter().chain(addons).collect::<Vec<_>>()
+                }
                 Ok(other) => {
                     eprintln!("unexpected answer: {other:?}");
                     return ExitCode::FAILURE;
@@ -116,7 +146,7 @@ pub async fn run(action: Vec<String>) -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: xtux-cli downloads [list | add <Store ID> [library] | pause|resume|remove|up|down <n> | clear]"
+                "usage: xtux-cli downloads [list | check | update <installed folder> | add <Store ID> [library] | pause|resume|remove|up|down <n> | clear]"
             );
             return ExitCode::FAILURE;
         }

@@ -156,6 +156,19 @@ RUSTFLAGS="--cfg tokio_unstable" cargo run --bin xtux-cli --features tokio_conso
 > See https://en.wikipedia.org/wiki/AES_instruction_set for a list of compatible CPUs (every processor from
 > 2011 onwards should be supported).
 
+## Releases
+
+Work lands in `develop` through pull requests (`feature/*`, `fix/*`, `chore/*`), merged only when CI is green.
+`main` is protected and holds released code. A release goes like this:
+
+1. Set the version in `crates/xtux-cli/Cargo.toml` and add `docs/ReleaseNotes-v<version>.md` (in a PR to `develop`).
+2. Merge `develop` into `main` with a pull request.
+3. Tag the merge commit on `main` with `v<version>` and push the tag.
+
+The CI builds, tests and checks licenses for the tag, then publishes the GitHub release with the CI-built archives
+and checksums. It refuses tags on commits that are not on `main` and tags that do not match the version.
+Versions `0.x` and versions with a suffix (`-rc1`) are marked as pre-releases.
+
 ## License
 
 xTux is free software under the GNU General Public License 3.0 ([LICENSE](LICENSE)); the crates taken over from

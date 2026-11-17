@@ -2,6 +2,7 @@
 //!
 //! Nothing here prints or prompts: functions return [`Error`] and report progress through [`Progress`].
 
+mod access;
 pub mod anticheat;
 pub mod art;
 mod cancel;
@@ -16,10 +17,12 @@ pub mod library;
 pub mod license;
 pub mod logs;
 pub mod package;
+pub mod packages;
 pub mod progress;
 pub mod queue;
 pub mod settings;
 pub mod uninstall;
+pub mod updates;
 
 #[cfg(unix)]
 pub mod bridge;
