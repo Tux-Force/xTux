@@ -16,7 +16,89 @@ pub(crate) fn ensure_ready(path: &Path) -> Result<()> {
             "An update is incomplete; finish or retry it before starting this game",
         ));
     }
+    if crate::layout::detect(path).is_some_and(|l| windows_update_unresolved(path, &l)) {
+        return Err(Error::msg(WINDOWS_PENDING));
+    }
     Ok(())
+}
+
+const WINDOWS_PENDING: &str = "The Windows Xbox app started an update of this game and did not finish it: files are still missing. Finish the update under Updates in xTux, or let the Xbox app finish it in Windows";
+
+/// Notes that xTux finished an update of an Xbox app install, so a stale streaming state of the Xbox app does not
+/// block it. Holds the package header and the Xbox app's state as they were then; once either changes the state
+/// of the Xbox app counts again.
+const WINDOWS_FINISHED: &str = ".xtux-windows-update-finished";
+
+fn xvs_path(package: &Path) -> PathBuf {
+    let mut name = package.as_os_str().to_owned();
+    name.push(".xvs");
+    PathBuf::from(name)
+}
+
+fn windows_stamp(package: &Path) -> Option<String> {
+    use sha1::{Digest, Sha1};
+    let mut header = [0u8; 4096];
+    std::fs::File::open(package)
+        .ok()?
+        .read_exact(&mut header)
+        .ok()?;
+    let state = std::fs::read(xvs_path(package)).unwrap_or_default();
+    Some(format!(
+        "package:{:x}\nxvs:{:x}\n",
+        Sha1::digest(header),
+        Sha1::digest(state)
+    ))
+}
+
+/// Records a finished update of an Xbox app install (see [`WINDOWS_FINISHED`]).
+pub(crate) fn note_windows_update_finished(dir: &Path, package: &Path) -> Result<()> {
+    let stamp = windows_stamp(package).ok_or("cannot read the package header")?;
+    std::fs::write(dir.join(WINDOWS_FINISHED), stamp)?;
+    Ok(())
+}
+
+/// Whether `dir` is an Xbox app install that the Xbox app left in the middle of an update which xTux did not
+/// finish since. Its package header then does not describe the files on disk.
+pub(crate) fn windows_update_unresolved(dir: &Path, layout: &crate::layout::GameLayout) -> bool {
+    if !layout.windows_app || !windows_update_pending(&layout.package) {
+        return false;
+    }
+    let finished = std::fs::read_to_string(dir.join(WINDOWS_FINISHED)).ok();
+    finished.is_none() || finished != windows_stamp(&layout.package)
+}
+
+/// Whether the Windows Xbox app left this install in the middle of a download or an update. Its `.xvs` file
+/// (UTF-16 JSON next to the package header) records the streaming state. While it is not completed, changed
+/// files are empty placeholders and the package header itself may be only partly written.
+pub(crate) fn windows_update_pending(package: &Path) -> bool {
+    let Ok(raw) = std::fs::read(xvs_path(package)) else {
+        return false;
+    };
+    let units: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let text = String::from_utf16_lossy(&units);
+    let Some(end) = text.rfind('}') else {
+        return false;
+    };
+    let Ok(state) =
+        serde_json::from_str::<serde_json::Value>(text[..=end].trim_start_matches('\u{feff}'))
+    else {
+        return false;
+    };
+    let status = &state["Status"];
+    let package = &status["Progress"]["Package"];
+    match (
+        status["Operation"].as_str(),
+        package["StreamedBytes"].as_u64(),
+        package["TotalBytes"].as_u64(),
+    ) {
+        (Some(operation), Some(streamed), Some(total)) => {
+            operation != "Completed" && streamed < total
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -135,7 +217,10 @@ pub async fn check(
             let current =
                 version(&local.version).ok_or("unrecognized installed package version")?;
             let incomplete = result.path.join(INCOMPLETE).exists();
-            let needs_update = latest > current || (incomplete && latest == current);
+            let windows_pending = crate::layout::detect(&result.path)
+                .is_some_and(|l| windows_update_unresolved(&result.path, &l));
+            let needs_update =
+                latest > current || ((incomplete || windows_pending) && latest == current);
             result.latest_version = Some(
                 latest
                     .iter()
@@ -150,7 +235,6 @@ pub async fn check(
             }
             .into();
             result.can_update = needs_update
-                && !local.windows_app
                 && !remote.update_predownload
                 && remote.content_id.eq_ignore_ascii_case(&local.content_id)
                 && remote
@@ -160,8 +244,14 @@ pub async fn check(
             if incomplete && latest >= current {
                 result.state = "available".into();
             }
-            result.message = if needs_update && local.windows_app {
-                "Update this Xbox app installation in Windows"
+            if windows_pending && latest >= current {
+                // The header already carries the new version although its files are not there yet.
+                result.state = "available".into();
+            }
+            result.message = if windows_pending && result.can_update {
+                "The Windows Xbox app did not finish this update; xTux can finish it"
+            } else if windows_pending {
+                WINDOWS_PENDING
             } else if needs_update && remote.update_predownload {
                 "Update is offered for predownload; not yet ready to install"
             } else if needs_update && !result.can_update {
@@ -193,6 +283,63 @@ mod tests {
         assert!(ensure_ready(tmp.path()).is_err());
         std::fs::remove_file(tmp.path().join(INCOMPLETE)).unwrap();
         assert!(ensure_ready(tmp.path()).is_ok());
+    }
+    #[test]
+    fn unfinished_windows_updates_block_launches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = "FD1A3647-8CBF-439E-B7F9-B67AF942BA4A";
+        std::fs::create_dir(tmp.path().join("Content")).unwrap();
+        std::fs::write(tmp.path().join(id), b"").unwrap();
+        std::fs::write(tmp.path().join(format!("{id}.xvi")), b"").unwrap();
+        let xvs = |operation: &str, streamed: u64| {
+            let json = format!(
+                r#"{{"Status":{{"Operation":"{operation}","Progress":{{"Package":{{"TotalBytes":100,"StreamedBytes":{streamed}}}}}}}}}"#
+            );
+            let mut bytes: Vec<u8> = json.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            bytes.extend([0; 6]);
+            std::fs::write(tmp.path().join(format!("{id}.xvs")), bytes).unwrap();
+        };
+        assert!(ensure_ready(tmp.path()).is_ok());
+        xvs("Completed", 100);
+        assert!(ensure_ready(tmp.path()).is_ok());
+        xvs("Stopped", 0);
+        let error = ensure_ready(tmp.path()).unwrap_err().to_string();
+        assert!(error.contains("Xbox app"), "{error}");
+        std::fs::write(tmp.path().join(format!("{id}.xvs")), b"not json").unwrap();
+        assert!(ensure_ready(tmp.path()).is_ok());
+    }
+    #[test]
+    fn windows_updates_finished_by_xtux_allow_launches_until_windows_changes_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = "FD1A3647-8CBF-439E-B7F9-B67AF942BA4A";
+        let package = tmp.path().join(id);
+        std::fs::create_dir(tmp.path().join("Content")).unwrap();
+        std::fs::write(&package, [1u8; 4096]).unwrap();
+        std::fs::write(tmp.path().join(format!("{id}.xvi")), b"").unwrap();
+        let xvs = |streamed: u64| {
+            let json = format!(
+                r#"{{"Status":{{"Operation":"Stopped","Progress":{{"Package":{{"TotalBytes":100,"StreamedBytes":{streamed}}}}}}}}}"#
+            );
+            let bytes: Vec<u8> = json.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            std::fs::write(tmp.path().join(format!("{id}.xvs")), bytes).unwrap();
+        };
+        xvs(0);
+        let layout = crate::layout::detect(tmp.path()).unwrap();
+        assert!(windows_update_unresolved(tmp.path(), &layout));
+        assert!(ensure_ready(tmp.path()).is_err());
+
+        note_windows_update_finished(tmp.path(), &package).unwrap();
+        assert!(!windows_update_unresolved(tmp.path(), &layout));
+        assert!(ensure_ready(tmp.path()).is_ok());
+
+        // The Xbox app continued its update in Windows and stopped again.
+        xvs(50);
+        assert!(ensure_ready(tmp.path()).is_err());
+        note_windows_update_finished(tmp.path(), &package).unwrap();
+        assert!(ensure_ready(tmp.path()).is_ok());
+        // A new package header (the next update) counts as unfinished again.
+        std::fs::write(&package, [2u8; 4096]).unwrap();
+        assert!(ensure_ready(tmp.path()).is_err());
     }
     #[test]
     fn compares_packed_and_dotted_versions_numerically() {

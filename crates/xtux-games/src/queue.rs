@@ -183,11 +183,6 @@ impl Queue {
     /// Updates use exactly the checked existing folder; cancellation must never delete it.
     pub fn update(&mut self, path: &Path, library_dirs: &[PathBuf]) -> Result<u64> {
         let installed = crate::updates::installed(path, library_dirs)?;
-        if installed.windows_app {
-            return Err(Error::msg(
-                "Update installations managed by the Windows Xbox app from Windows",
-            ));
-        }
         if self
             .items
             .iter()
@@ -229,9 +224,9 @@ impl Queue {
     pub fn claim_folder(item: &mut Item) -> Result<()> {
         if item.update {
             let meta = std::fs::symlink_metadata(&item.destination)?;
-            let layout = crate::layout::detect(&item.destination)
+            crate::layout::detect(&item.destination)
                 .ok_or("the update target is no longer installed")?;
-            if !meta.is_dir() || meta.is_symlink() || layout.windows_app {
+            if !meta.is_dir() || meta.is_symlink() {
                 return Err(Error::msg("the update target changed; not modified"));
             }
             let parent = item
@@ -368,8 +363,10 @@ mod tests {
             std::fs::read(game.join("Content/keep.dat")).unwrap(),
             b"saved installation"
         );
+        // Installs of the Windows Xbox app are updated as well.
         std::fs::write(game.join(format!("{id}.xvi")), b"").unwrap();
-        assert!(queue.update(&game, &libraries).is_err());
+        let windows = queue.update(&game, &libraries).unwrap();
+        Queue::claim_folder(queue.get_mut(windows).unwrap()).unwrap();
         std::fs::remove_dir_all(&game).unwrap();
         assert!(Queue::claim_folder(&mut item).is_err());
         assert!(!game.exists());

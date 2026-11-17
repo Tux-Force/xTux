@@ -80,6 +80,13 @@ enum SubCommand {
         /// Folder for the links, defaults to ~/.local/share/xtux/links/<game>
         dest: Option<String>,
     },
+    #[command(about = "Check the files of an installed game against its package, page by page")]
+    Verify {
+        /// Game folder
+        game_dir: String,
+        #[arg(short, long)]
+        market: Option<String>,
+    },
     #[cfg(unix)]
     #[command(about = "Run a game with the Tux-Force Wine build")]
     Run {
@@ -317,6 +324,9 @@ async fn main() -> ExitCode {
                 market,
             )
             .await
+        }
+        SubCommand::Verify { game_dir, market } => {
+            commands::verify::run(&client, &tokens, game_dir, market).await
         }
         #[cfg(unix)]
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
