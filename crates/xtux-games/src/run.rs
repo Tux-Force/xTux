@@ -36,7 +36,7 @@ pub struct LaunchOptions {
     pub source: PathBuf,
     /// Wine binary to start the game with.
     pub wine: String,
-    /// Executable to start (package relative), defaults to the first encrypted one.
+    /// Executable to start (package relative), defaults to the desktop manifest entry.
     pub exe: Option<String>,
     /// Store market for the license request, `neutral` when not set.
     pub market: Option<String>,
@@ -60,6 +60,8 @@ pub struct RunningGame {
     pub license_failed: Arc<AtomicBool>,
     child: Child,
     cleanup: Cleanup,
+    _access: crate::access::Guard,
+    _addon_access: Vec<crate::access::Guard>,
 }
 
 impl RunningGame {
@@ -69,6 +71,18 @@ impl RunningGame {
         self.cleanup.await;
         Ok(status)
     }
+}
+
+/// Stops a launch's dedicated process group, including children that ignore Ctrl+C.
+/// The caller must keep this future alive even if the initial launcher exits first.
+pub async fn stop_process_group(pid: u32) {
+    use rustix::process::{Pid, Signal, kill_process_group};
+    let Some(group) = Pid::from_raw(pid as i32).filter(|p| p.as_raw_nonzero().get() > 1) else {
+        return;
+    };
+    let _ = kill_process_group(group, Signal::INT);
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let _ = kill_process_group(group, Signal::KILL);
 }
 
 #[cfg(target_os = "linux")]
@@ -232,6 +246,39 @@ async fn identity_env(
     env
 }
 
+/// Which add-ons belong to the game in `source`: those naming its Store ID, or a product it belongs to (from the
+/// Store catalog; skipped when the catalog cannot be reached quickly).
+async fn addon_scope(client: &reqwest::Client, source: &Path) -> crate::packages::Scope {
+    let settings = crate::settings::Settings::load().unwrap_or_default();
+    let Some(store_id) = crate::library::inspect(source)
+        .and_then(|g| g.store_id)
+        .filter(|s| crate::art::is_store_id(s))
+    else {
+        return crate::packages::Scope::default();
+    };
+    let market = settings
+        .market
+        .filter(|m| m.len() == 2 && m.chars().all(|c| c.is_ascii_alphabetic()))
+        .unwrap_or_else(|| "US".to_string());
+    let mut store_ids = vec![store_id.to_uppercase()];
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::catalog::details(client, &store_ids, &market),
+    )
+    .await
+    {
+        Ok(Ok(titles)) => store_ids.extend(titles.into_iter().flat_map(|t| t.parents)),
+        Ok(Err(err)) => tracing::warn!("no catalog entry for {store_id}: {err}"),
+        Err(_) => tracing::warn!("the catalog did not answer for {store_id}"),
+    }
+    store_ids.sort();
+    store_ids.dedup();
+    crate::packages::Scope {
+        library_dirs: settings.library_dirs,
+        store_ids,
+    }
+}
+
 /// Reads the package, fetches the license, decrypts the executables and starts the game in Wine.
 pub async fn launch(
     client: &reqwest::Client,
@@ -239,6 +286,8 @@ pub async fn launch(
     options: LaunchOptions,
     progress: &dyn Progress,
 ) -> Result<RunningGame> {
+    let access = crate::access::acquire(&options.source, false)?;
+    crate::updates::ensure_ready(&options.source)?;
     // Both layouts are read in place (see layout.rs): game files under `root`, header in `package`.
     let layout = crate::layout::detect(&options.source).ok_or_else(|| {
         Error::msg(format!(
@@ -352,14 +401,24 @@ pub async fn launch(
     let nt_prefix = out_absolute.to_string_lossy().replace('/', "\\");
     let nt_prefix = nt_prefix.trim_end_matches('\\');
     let mut nt_entry = None;
+    let entry = options.exe.clone().or_else(|| {
+        crate::library::read_config(out)
+            .and_then(|config| crate::library::desktop_executable(&config))
+    });
     for (path, fd) in fds {
         if !file_map.is_empty() {
             file_map.push('|');
         }
         let nt_suffix = path.trim_start_matches('\\');
         let nt_path = format!("\\??\\Z:{nt_prefix}\\{nt_suffix}");
-        match &options.exe {
-            Some(exe) if exe == path => nt_entry = Some(nt_path),
+        match &entry {
+            Some(exe)
+                if exe
+                    .replace('/', "\\")
+                    .eq_ignore_ascii_case(path.trim_start_matches('\\')) =>
+            {
+                nt_entry = Some(nt_path)
+            }
             None if nt_entry.is_none() => nt_entry = Some(nt_path),
             _ => {}
         }
@@ -371,8 +430,19 @@ pub async fn launch(
     env.extend(compatibility_env(&options.env));
 
     // Answers GDK calls that need the Microsoft services, see bridge.rs.
+    let scope = addon_scope(client, &options.source).await;
+    let mut addon_access = Vec::new();
+    for addon in crate::library::addons_of(&scope.library_dirs, &scope.store_ids) {
+        let guard = crate::access::acquire(&addon.path, false)?;
+        crate::updates::ensure_ready(&addon.path)?;
+        addon_access.push(guard);
+    }
+    let market = options
+        .market
+        .clone()
+        .unwrap_or_else(|| "neutral".to_string());
     let mut license_failed = Arc::new(AtomicBool::new(false));
-    match crate::bridge::start(client.clone(), tokens.clone()).await {
+    match crate::bridge::start(client.clone(), tokens.clone(), scope, market).await {
         Ok(bridge) => {
             license_failed = bridge.license_failed;
             env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
@@ -403,7 +473,11 @@ pub async fn launch(
             .map_err(|e| Error::msg(format!("could not create {}: {e}", log.display())))?;
         command.stdout(file.try_clone()?).stderr(file);
     }
+    // Keep game children separate from the daemon and other running games.
+    command.process_group(0);
     let child = command
+        // Relative game assets must resolve inside the package, independent of the daemon cwd.
+        .current_dir(&out_absolute)
         .arg(nt_entry)
         .args(&options.args)
         .envs(env)
@@ -422,5 +496,37 @@ pub async fn launch(
         license_failed,
         child,
         cleanup,
+        _access: access,
+        _addon_access: addon_access,
     })
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[tokio::test]
+    async fn stop_forces_an_unresponsive_game_to_exit() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "trap '' INT; echo ready; while :; do sleep 1; done"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .await
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        stop_process_group(child.id().unwrap()).await;
+        let status = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.signal(), Some(9));
+    }
 }

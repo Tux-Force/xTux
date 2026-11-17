@@ -279,11 +279,72 @@ impl Job {
                 })
             }
             Request::Downloads(command) => {
+                if let xtux_protocol::DownloadCommand::Update { path } = &command {
+                    if InUse::contains(path) {
+                        return Err(error_body(xtux_games::Error::msg(
+                            "Stop the game before updating it",
+                        )));
+                    }
+                }
                 let items = crate::downloads::command(command).map_err(error_body)?;
                 Ok(Response::Downloads {
                     items,
                     history: crate::downloads::history(),
                 })
+            }
+            Request::CheckUpdates => {
+                use futures_util::{StreamExt, stream};
+                let settings = xtux_games::settings::Settings::load().map_err(error_body)?;
+                let games = xtux_games::library::scan_all(&settings.library_dirs);
+                let authorization = Arc::new(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        xtux_games::package::update_authorization(&self.client, &self.tokens),
+                    )
+                    .await
+                    .map_err(|_| error_body(xtux_games::Error::msg("Update sign-in timed out")))?
+                    .map_err(error_body)?,
+                );
+                let mut items = stream::iter(games)
+                    .map(|game| {
+                        let libraries = settings.library_dirs.clone();
+                        let client = self.client.clone();
+                        let authorization = authorization.clone();
+                        async move {
+                            match xtux_games::updates::check(
+                                &client,
+                                &authorization,
+                                &game.path,
+                                &libraries,
+                            )
+                            .await
+                            {
+                                Ok(item) => xtux_protocol::UpdateInfo {
+                                    path: item.path,
+                                    name: item.name,
+                                    installed_version: item.installed_version,
+                                    latest_version: item.latest_version,
+                                    state: item.state,
+                                    can_update: item.can_update,
+                                    message: item.message,
+                                },
+                                Err(err) => xtux_protocol::UpdateInfo {
+                                    path: game.path,
+                                    name: game.name,
+                                    installed_version: String::new(),
+                                    latest_version: None,
+                                    state: "failed".into(),
+                                    can_update: false,
+                                    message: err.to_string(),
+                                },
+                            }
+                        }
+                    })
+                    .buffer_unordered(4)
+                    .collect::<Vec<_>>()
+                    .await;
+                items.sort_by_key(|i| i.name.to_lowercase());
+                Ok(Response::Updates { items })
             }
             Request::Uninstall { path } => {
                 if InUse::contains(&path) {
@@ -314,36 +375,36 @@ impl Job {
                 )
                 .await
                 .map_err(error_body)?;
-                // Installed games by Store ID.
+                // Installed games and add-ons by Store ID.
                 let installed: HashMap<String, PathBuf> =
-                    xtux_games::library::scan(&settings.library_dirs)
+                    xtux_games::library::scan_all(&settings.library_dirs)
                         .into_iter()
                         .filter_map(|g| Some((g.store_id?.to_uppercase(), g.path)))
                         .collect();
-                let titles = catalog
-                    .titles
-                    .into_iter()
-                    .map(|t| xtux_protocol::CatalogTitle {
-                        installed: installed.get(&t.product_id.to_uppercase()).cloned(),
-                        product_id: t.product_id,
-                        name: t.name,
-                        publisher: t.publisher,
-                        description: t.description,
-                        category: t.category,
-                        content_id: t.content_id,
-                        download_size: t.download_size,
-                        poster_url: t.poster_url,
-                        hero_url: t.hero_url,
-                        screenshots: t.screenshots,
-                        in_game_pass: t.in_game_pass,
-                        owned: t.owned,
-                        installable: t.installable,
-                        package_format: t.package_format,
-                        // xTux's own title list is a guess: only when the user asked for it.
-                        windows_only: t.windows_only.filter(|_| settings.ui.anticheat_guess),
-                    })
-                    .collect();
-                Ok(Response::Catalog { titles })
+                let convert = |t: xtux_games::catalog::Title| xtux_protocol::CatalogTitle {
+                    installed: installed.get(&t.product_id.to_uppercase()).cloned(),
+                    product_id: t.product_id,
+                    name: t.name,
+                    publisher: t.publisher,
+                    description: t.description,
+                    category: t.category,
+                    content_id: t.content_id,
+                    download_size: t.download_size,
+                    poster_url: t.poster_url,
+                    hero_url: t.hero_url,
+                    screenshots: t.screenshots,
+                    in_game_pass: t.in_game_pass,
+                    owned: t.owned,
+                    installable: t.installable,
+                    package_format: t.package_format,
+                    // xTux's own title list is a guess: only when the user asked for it.
+                    windows_only: t.windows_only.filter(|_| settings.ui.anticheat_guess),
+                    parents: t.parents,
+                    addon_parents: t.addon_parents,
+                };
+                let titles = catalog.titles.into_iter().map(convert).collect();
+                let addons = catalog.addons.into_iter().map(convert).collect();
+                Ok(Response::Catalog { titles, addons })
             }
             Request::Library => {
                 let settings = xtux_games::settings::Settings::load().map_err(error_body)?;
@@ -419,19 +480,21 @@ impl Job {
                     id: self.id,
                     event: Event::GameStarted { pid },
                 });
-                // A cancelled launch asks the game to quit, like Ctrl+C in a terminal.
+                // Ask the entire game process group to quit, then force a hung game to stop.
                 let cancel = self.cancel.clone();
                 let stopper = tokio::spawn(async move {
                     cancel.cancelled().await;
-                    let _ = nix::sys::signal::kill(
-                        nix::unistd::Pid::from_raw(pid as i32),
-                        nix::sys::signal::Signal::SIGINT,
-                    );
+                    xtux_games::run::stop_process_group(pid).await;
                 });
                 let started = game.started;
                 let license_failed = game.license_failed.clone();
                 let status = game.wait().await.map_err(error_body);
-                stopper.abort();
+                if self.cancel.is_cancelled() {
+                    // The launcher may exit before its child; finish stopping the group.
+                    let _ = stopper.await;
+                } else {
+                    stopper.abort();
+                }
                 let status = status?;
                 // A game the user stopped did not crash.
                 let crash = if self.cancel.is_cancelled() {

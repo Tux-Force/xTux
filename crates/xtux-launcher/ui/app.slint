@@ -77,6 +77,22 @@ export struct DownloadRow {
     has-cover: bool,
 }
 
+// An add-on (DLC) of the store title the account owns.
+export struct AddonRow {
+    name: string,
+    size: string,
+    // install | queued | installed
+    state: string,
+}
+
+export struct UpdateRow {
+    name: string,
+    versions: string,
+    detail: string,
+    available: bool,
+    queued: bool,
+}
+
 export struct GraphPoint {
     // Share of the graph's top value, 0 to 1.
     network: float,
@@ -905,6 +921,9 @@ export component AppWindow inherits Window {
     callback open-crash-log();
     // Low graphics memory before a start; only a hint, the game starts anyway.
     in-out property <string> vram-warning;
+    in-out property <bool> deleting-addon;
+    in property <string> delete-addon-name;
+    in property <string> delete-addon-path;
     // Game page (page 2)
     in property <string> game-name;
     in property <string> game-path;
@@ -948,6 +967,11 @@ export component AppWindow inherits Window {
     in-out property <int> install-choice;
     in property <bool> store-title-queued;
     in property <[ShotRow]> store-shots;
+    // Owned add-ons of the store title with a PC package.
+    in property <[AddonRow]> store-addons;
+    in property <[UpdateRow]> updates;
+    in-out property <bool> updates-loading;
+    in property <string> updates-status: "Check installed games and add-ons for updates.";
     in-out property <int> shot-open: -1;
     // Download history graph: one point per second, oldest first, and its label.
     in property <[GraphPoint]> graph;
@@ -980,6 +1004,10 @@ export component AppWindow inherits Window {
     callback store-refresh();
     callback store-install();
     callback store-download-toggle();
+    callback store-addon-install(int);
+    callback store-addon-remove(int);
+    callback check-updates();
+    callback install-update(int);
     callback open-shot(int);
     callback confirm-install();
     callback open-downloads();
@@ -1100,6 +1128,12 @@ export component AppWindow inherits Window {
                             font-weight: 800;
                         }
                     }
+                }
+                NavItem {
+                    glyph: "↻";
+                    text: "Updates";
+                    active: root.page == 8;
+                    clicked => { root.page = 8; }
                 }
                 NavItem {
                     glyph: "⚙";
@@ -1466,7 +1500,7 @@ export component AppWindow inherits Window {
                                     spacing: 10px;
                                     GhostButton {
                                         text: "Delete game…";
-                                        clicked => { root.confirm-delete = true; }
+                                        clicked => { root.deleting-addon = false; root.confirm-delete = true; }
                                     }
                                     Rectangle { }
                                     ShinyButton {
@@ -1894,6 +1928,90 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            Heading { text: "Your add-ons"; }
+                            Text {
+                                text: root.store-addons.length > 0 ? "Install and remove your owned PC add-ons here. Downloads can be paused or cancelled in Downloads." : "No downloadable PC add-ons were found in your account for this game.";
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            for addon[index] in root.store-addons: HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text { text: addon.name; color: Theme.text; font-weight: 700; wrap: word-wrap; }
+                                    if addon.size != "": Text { text: addon.size; color: Theme.muted; font-size: 12px; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    if addon.state == "installed": Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; }
+                                    if addon.state == "installed": GhostButton {
+                                        text: "Remove…";
+                                        clicked => { root.store-addon-remove(index); }
+                                    }
+                                    if addon.state == "queued": GhostButton {
+                                        text: "In downloads";
+                                        clicked => {
+                                            root.page = 7;
+                                            root.open-downloads();
+                                        }
+                                    }
+                                    if addon.state == "install": GhostButton {
+                                        text: "⤓  Install";
+                                        clicked => { root.store-addon-install(index); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.page == 8: VerticalLayout {
+                spacing: 14px;
+                HorizontalLayout {
+                    PageTitle { text: "Updates"; }
+                    Rectangle { }
+                    ShinyButton {
+                        text: root.updates-loading ? "Checking…" : "Check for updates";
+                        enabled: !root.updates-loading;
+                        clicked => { root.check-updates(); }
+                    }
+                }
+                Text { text: root.updates-status; color: Theme.muted; wrap: word-wrap; }
+                ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        spacing: 10px;
+                        for item[index] in root.updates: Glass {
+                            HorizontalLayout {
+                                padding: 16px;
+                                spacing: 16px;
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text { text: item.name; color: Theme.text; font-weight: 700; wrap: word-wrap; }
+                                    Text { text: item.versions; color: Theme.muted; wrap: word-wrap; }
+                                    Text { text: item.detail; color: Theme.muted; wrap: word-wrap; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    if item.available: GhostButton {
+                                        text: "⤓  Update";
+                                        clicked => { root.install-update(index); }
+                                    }
+                                    if item.queued: GhostButton {
+                                        text: "In downloads";
+                                        clicked => { root.page = 7; root.open-downloads(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2237,24 +2355,24 @@ export component AppWindow inherits Window {
                 padding: 24px;
                 spacing: 12px;
                 Text {
-                    text: "Delete " + root.game-name + "?";
+                    text: "Delete " + (root.deleting-addon ? root.delete-addon-name : root.game-name) + "?";
                     color: Theme.text;
                     font-size: 22px;
                     font-weight: 900;
                     wrap: word-wrap;
                 }
                 Text {
-                    text: "The whole game folder is deleted from the disk. This cannot be undone:";
+                    text: root.deleting-addon ? "The add-on folder is deleted from disk. You can download it again later:" : "The whole game folder is deleted from the disk. This cannot be undone:";
                     color: Theme.text;
                     wrap: word-wrap;
                 }
                 Text {
-                    text: root.game-path;
+                    text: root.deleting-addon ? root.delete-addon-path : root.game-path;
                     color: Theme.muted;
                     font-size: 12px;
                     wrap: word-wrap;
                 }
-                if root.game-windows: Rectangle {
+                if !root.deleting-addon && root.game-windows: Rectangle {
                     border-radius: 12px;
                     background: Theme.danger.transparentize(80%);
                     border-width: 1px;
@@ -2279,7 +2397,7 @@ export component AppWindow inherits Window {
                     }
                     DangerButton {
                         text: "Delete";
-                        enabled: !root.game-running;
+                        enabled: !root.busy && (root.deleting-addon || !root.game-running);
                         clicked => {
                             root.confirm-delete = false;
                             root.delete-game();

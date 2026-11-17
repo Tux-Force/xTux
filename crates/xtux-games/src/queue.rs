@@ -33,6 +33,8 @@ pub struct Item {
     pub content_id: String,
     /// Game folder the install goes into.
     pub destination: PathBuf,
+    #[serde(default)]
+    pub update: bool,
     /// The queue created the folder (it did not exist before), so removing an unfinished item may delete it.
     pub created_folder: bool,
     pub state: State,
@@ -167,6 +169,7 @@ impl Queue {
             name: name.into(),
             content_id: content_id.to_uppercase(),
             destination,
+            update: false,
             created_folder,
             state: State::Queued,
             done: 0,
@@ -174,6 +177,42 @@ impl Queue {
             message: "Waiting".into(),
             speed: 0,
         });
+        Ok(id)
+    }
+
+    /// Updates use exactly the checked existing folder; cancellation must never delete it.
+    pub fn update(&mut self, path: &Path, library_dirs: &[PathBuf]) -> Result<u64> {
+        let installed = crate::updates::installed(path, library_dirs)?;
+        if installed.windows_app {
+            return Err(Error::msg(
+                "Update installations managed by the Windows Xbox app from Windows",
+            ));
+        }
+        if self
+            .items
+            .iter()
+            .any(|i| i.destination == installed.path && i.state != State::Done)
+        {
+            return Err(Error::msg(
+                "This installation is already in the download queue",
+            ));
+        }
+        let library = library_dirs
+            .iter()
+            .find(|dir| std::fs::canonicalize(dir).ok().as_deref() == installed.path.parent())
+            .ok_or("the update target is not in a library")?;
+        let id = self.add(
+            &installed.product_id,
+            &installed.name,
+            &installed.content_id,
+            library,
+            library_dirs,
+        )?;
+        let item = self.get_mut(id).ok_or("queued update missing")?;
+        item.destination = installed.path;
+        item.update = true;
+        item.created_folder = false;
+        item.message = "Waiting to update".into();
         Ok(id)
     }
 
@@ -188,6 +227,28 @@ impl Queue {
 
     /// Creates the item's folder right before its install; only a folder made here may be deleted later.
     pub fn claim_folder(item: &mut Item) -> Result<()> {
+        if item.update {
+            let meta = std::fs::symlink_metadata(&item.destination)?;
+            let layout = crate::layout::detect(&item.destination)
+                .ok_or("the update target is no longer installed")?;
+            if !meta.is_dir() || meta.is_symlink() || layout.windows_app {
+                return Err(Error::msg("the update target changed; not modified"));
+            }
+            let parent = item
+                .destination
+                .parent()
+                .ok_or("the update target has no library")?
+                .to_path_buf();
+            let installed = crate::updates::installed(&item.destination, &[parent])?;
+            if !installed.content_id.eq_ignore_ascii_case(&item.content_id)
+                || !installed.product_id.eq_ignore_ascii_case(&item.product_id)
+            {
+                return Err(Error::msg(
+                    "another package replaced the queued update target; not modified",
+                ));
+            }
+            return Ok(());
+        }
         match std::fs::create_dir(&item.destination) {
             Ok(()) => {
                 item.created_folder = true;
@@ -239,6 +300,9 @@ impl Queue {
 
 /// Deletes the folder of an unfinished download the queue created itself, inside one of `library_dirs`.
 pub fn delete_partial(item: &Item, library_dirs: &[PathBuf]) -> Result<()> {
+    if item.update {
+        return Ok(());
+    }
     if !item.created_folder || item.state == State::Done || !item.destination.exists() {
         return Ok(());
     }
@@ -273,6 +337,42 @@ mod tests {
         assert_eq!(folder_name("../../etc"), "_.._etc");
         assert_eq!(folder_name("..."), "Game");
         assert!(!folder_name("a/b").contains('/'));
+    }
+
+    #[test]
+    fn cancelling_an_update_keeps_the_existing_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let game = root.path().join("Game");
+        std::fs::create_dir_all(game.join("Content")).unwrap();
+        std::fs::write(game.join("Content/MicrosoftGame.config"),
+            "<Game><StoreId>9AAAAAAAAAAA</StoreId><ShellVisuals DefaultDisplayName=\"Game\"/></Game>").unwrap();
+        let id = "FD1A3647-8CBF-439E-B7F9-B67AF942BA4A";
+        let mut header = [0u8; 4096];
+        header[512..520].copy_from_slice(b"msft-xvd");
+        header[0x210..0x218].copy_from_slice(&133000000000000000u64.to_le_bytes());
+        header[0x218..0x220].copy_from_slice(&4096u64.to_le_bytes());
+        std::fs::write(game.join(id), header).unwrap();
+        std::fs::write(game.join("Content/keep.dat"), b"saved installation").unwrap();
+        let libraries = vec![root.path().to_path_buf()];
+        let mut queue = Queue::default();
+        let n = queue.update(&game, &libraries).unwrap();
+        assert_eq!(queue.items[0].destination, game);
+        assert!(queue.items[0].update && !queue.items[0].created_folder);
+        assert!(queue.update(&game, &libraries).is_err());
+        Queue::claim_folder(queue.get_mut(n).unwrap()).unwrap();
+        let mut item = queue.remove(n).unwrap();
+        // Even a stale created_folder flag cannot turn an update cancellation into an uninstall.
+        item.created_folder = true;
+        delete_partial(&item, &libraries).unwrap();
+        assert_eq!(
+            std::fs::read(game.join("Content/keep.dat")).unwrap(),
+            b"saved installation"
+        );
+        std::fs::write(game.join(format!("{id}.xvi")), b"").unwrap();
+        assert!(queue.update(&game, &libraries).is_err());
+        std::fs::remove_dir_all(&game).unwrap();
+        assert!(Queue::claim_folder(&mut item).is_err());
+        assert!(!game.exists());
     }
 
     #[test]

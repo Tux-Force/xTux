@@ -45,6 +45,7 @@ pub fn check(game_dir: &Path, library_dirs: &[PathBuf]) -> Result<PathBuf> {
 /// Deletes a game folder of the library with everything in it (see [`check`]).
 pub fn remove(game_dir: &Path, library_dirs: &[PathBuf]) -> Result<()> {
     let game = check(game_dir, library_dirs)?;
+    let _access = crate::access::acquire(&game, true)?;
     // Renamed first inside its library: the game disappears at once and as a whole, and what is deleted is the
     // folder that was checked, even if a path is swapped afterwards.
     let name = game
