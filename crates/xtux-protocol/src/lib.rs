@@ -92,6 +92,8 @@ pub enum Request {
         #[serde(default)]
         refresh: bool,
     },
+    /// Check installed games and DLCs against the current authenticated package offer.
+    CheckUpdates,
     /// The download queue: list it or change it; answered with the queue.
     Downloads(DownloadCommand),
     /// Deletes a game folder of the library with everything in it.
@@ -135,6 +137,10 @@ pub struct GameInfo {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum DownloadCommand {
     List,
+    /// Update this existing xTux installation in place.
+    Update {
+        path: PathBuf,
+    },
     /// Queues a game into `library/<name>`; `library` must be a library folder of the settings.
     Add {
         product_id: String,
@@ -174,6 +180,8 @@ pub struct DownloadItem {
     pub product_id: String,
     pub name: String,
     pub destination: PathBuf,
+    #[serde(default)]
+    pub update: bool,
     /// `queued`, `running`, `pausing`, `removing`, `paused`, `failed` or `done`.
     pub state: String,
     pub done: u64,
@@ -213,6 +221,22 @@ pub struct CatalogTitle {
     pub windows_only: Option<String>,
     /// Folder of the installed game, when it is in the library.
     pub installed: Option<PathBuf>,
+    /// Products this one belongs to (for example the product group of all editions).
+    #[serde(default)]
+    pub parents: Vec<String>,
+    /// For an add-on: the products it adds to. A game's add-ons name its `product_id` or one of its `parents`.
+    #[serde(default)]
+    pub addon_parents: Vec<String>,
+}
+
+impl CatalogTitle {
+    /// Whether `addon` adds to this game.
+    pub fn has_addon(&self, addon: &CatalogTitle) -> bool {
+        addon
+            .addon_parents
+            .iter()
+            .any(|p| *p == self.product_id || self.parents.contains(p))
+    }
 }
 
 /// What to install from.
@@ -266,6 +290,9 @@ pub enum Response {
     },
     Catalog {
         titles: Vec<CatalogTitle>,
+        /// Add-ons (DLC) the account owns that have a PC package.
+        #[serde(default)]
+        addons: Vec<CatalogTitle>,
     },
     Downloads {
         items: Vec<DownloadItem>,
@@ -273,7 +300,21 @@ pub enum Response {
         #[serde(default)]
         history: Vec<RateSample>,
     },
+    Updates {
+        items: Vec<UpdateInfo>,
+    },
     Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateInfo {
+    pub path: PathBuf,
+    pub name: String,
+    pub installed_version: String,
+    pub latest_version: Option<String>,
+    pub state: String,
+    pub can_update: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

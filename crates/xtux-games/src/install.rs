@@ -84,10 +84,15 @@ pub async fn find_msixvc_url(
     content_id: String,
 ) -> Result<String> {
     let package = get_packages(client, tokens, content_id).await?;
+    if package.update_predownload {
+        return Err(Error::msg(
+            "This package is offered for predownload and is not ready to install",
+        ));
+    }
     let file = package
         .package_files
         .iter()
-        .find(|p| p.file_name.ends_with(".msixvc"))
+        .find(|p| p.file_name.ends_with(".msixvc") && p.delta_version_id.is_none())
         .ok_or("No .msixvc file found")?;
     file.download_urls()
         .into_iter()
@@ -109,6 +114,7 @@ pub async fn install(
     progress: &dyn Progress,
     cancel: &CancellationToken,
 ) -> Result<()> {
+    let _access = crate::access::acquire(&options.destination, true)?;
     progress.message("Initializing");
     let counter = Counter::new(progress);
     match source {
@@ -196,9 +202,15 @@ struct Job {
 }
 
 /// Names of the files an earlier, unfinished run completed.
-fn read_finished(journal: &Path) -> std::collections::HashSet<String> {
+fn read_finished(journal: &Path, identity: &str) -> std::collections::HashSet<String> {
     std::fs::read_to_string(journal)
-        .map(|text| text.lines().map(str::to_string).collect())
+        .map(|text| {
+            let mut lines = text.lines();
+            if lines.next() != Some(identity) {
+                return Default::default();
+            }
+            lines.map(str::to_string).collect()
+        })
         .unwrap_or_default()
 }
 
@@ -215,6 +227,24 @@ fn note_finished(journal: &Path, name: &str) {
     {
         let _ = file.write_all(format!("{name}\n").as_bytes());
     }
+}
+
+/// Remove only regular files that the previous package installed and the new one dropped.
+fn remove_obsolete(
+    root: &Path,
+    previous: &HashMap<String, SegmentFile>,
+    next: &HashMap<String, SegmentFile>,
+) -> Result<()> {
+    for name in previous.keys().filter(|name| !next.contains_key(*name)) {
+        let target = safe_join(root, name)?;
+        match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.is_file() => std::fs::remove_file(target)?,
+            Ok(_) => {} // User-created directories and symlinks are kept.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -313,18 +343,30 @@ where
     // Files whose hashes differ from the last install, or that have no hashes at all; files an interrupted run
     // of this install finished (with their full size) are kept.
     let journal = out.join(FINISHED_FILE);
-    let finished = read_finished(&journal);
+    let updating = final_path.exists();
+    let identity = {
+        use sha1::{Digest, Sha1};
+        use std::io::Read;
+        let mut header = [0u8; 4096];
+        std::fs::File::open(&cache_path)?.read_exact(&mut header)?;
+        format!("package:{:x}", Sha1::digest(header))
+    };
+    let finished = read_finished(&journal, &identity);
+    if finished.is_empty() {
+        std::fs::write(&journal, format!("{identity}\n"))?;
+    }
     let mut jobs = Vec::new();
     let mut total_size: u64 = 0;
     let mut kept: u64 = 0;
     for (name, remote) in &rfiles {
+        let target = safe_join(&root, name)?;
         let unchanged = lfiles.get(name).is_some_and(|local| {
             remote.data_hashs == local.data_hashs && !remote.data_hashs.is_empty()
-        });
+        }) && std::fs::symlink_metadata(&target)
+            .is_ok_and(|m| m.is_file() && m.len() == remote.length);
         if unchanged {
             continue;
         }
-        let target = safe_join(&root, name)?;
         if finished.contains(name)
             && std::fs::symlink_metadata(&target)
                 .is_ok_and(|m| m.is_file() && m.len() == remote.length)
@@ -332,7 +374,11 @@ where
             kept = kept.saturating_add(remote.length);
             continue;
         }
-        if target == cache_path || target == final_path || target == journal {
+        if target == cache_path
+            || target == final_path
+            || target == journal
+            || target == out.join(crate::updates::INCOMPLETE)
+        {
             return Err(Error::msg(format!(
                 "refusing to overwrite {name:?} from the package"
             )));
@@ -374,6 +420,12 @@ where
     // the "Downloading" step starts, which is when clients begin to trust the byte progress.
     counter.advance(kept);
     counter.set_remaining(total_size);
+    // Updates replace individual files. Keep launches blocked after pause, cancellation or a crash until
+    // the complete new package metadata has been committed; the previous files are never deleted as a unit.
+    let incomplete = out.join(crate::updates::INCOMPLETE);
+    if updating && (!jobs.is_empty() || lfiles.keys().any(|name| !rfiles.contains_key(name))) {
+        std::fs::write(&incomplete, &identity)?;
+    }
     progress.message("Downloading");
     counter.report();
 
@@ -391,8 +443,7 @@ where
 
     // Only a finished install replaces the metadata of the last one, so an interrupted run
     // downloads the files it did not finish again.
-    std::fs::remove_file(&journal).ok();
-    std::fs::remove_file(&final_path).ok();
+    remove_obsolete(&root, &lfiles, &rfiles)?;
     std::fs::rename(&cache_path, &final_path).map_err(|e| {
         Error::msg(format!(
             "could not move {} to {}: {e}",
@@ -400,6 +451,8 @@ where
             final_path.display()
         ))
     })?;
+    std::fs::remove_file(&journal).ok();
+    std::fs::remove_file(&incomplete).ok();
     Ok(())
 }
 
@@ -670,5 +723,40 @@ mod tests {
             Source::parse("a6a4b3a2-0000-4000-8000-000000000000"),
             Source::ContentId("a6a4b3a2-0000-4000-8000-000000000000".into())
         );
+    }
+
+    #[test]
+    fn resumed_files_belong_to_the_exact_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let journal = tmp.path().join("journal");
+        std::fs::write(&journal, "package:first\nContent/same-size.dat\n").unwrap();
+        assert!(super::read_finished(&journal, "package:first").contains("Content/same-size.dat"));
+        assert!(super::read_finished(&journal, "package:second").is_empty());
+        std::fs::write(&journal, "Content/old-journal.dat\n").unwrap();
+        assert!(super::read_finished(&journal, "package:first").is_empty());
+    }
+
+    #[test]
+    fn update_removes_retired_package_files_but_keeps_user_files() {
+        use msixvc::xvd::SegmentFile;
+        use std::collections::HashMap;
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["retired.dll", "current.dll", "custom.ini"] {
+            std::fs::write(tmp.path().join(name), b"data").unwrap();
+        }
+        let file = || SegmentFile {
+            offset: 0,
+            length: 4,
+            data_hashs: vec![],
+            keep_encrypted: false,
+        };
+        let old = HashMap::from([
+            ("retired.dll".into(), file()),
+            ("current.dll".into(), file()),
+        ]);
+        let new = HashMap::from([("current.dll".into(), file())]);
+        super::remove_obsolete(tmp.path(), &old, &new).unwrap();
+        assert!(!tmp.path().join("retired.dll").exists());
+        assert!(tmp.path().join("current.dll").exists() && tmp.path().join("custom.ini").exists());
     }
 }
