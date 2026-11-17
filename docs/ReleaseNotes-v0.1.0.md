@@ -14,8 +14,8 @@ The first xTux release includes the graphical launcher, CLI and service for mana
 
 ## Requirements and limitations
 
-- The archive contains Linux x86-64 launcher, CLI and service binaries. Wine, DXVK/vkd3d and the desktop's WebKitGTK/GTK/system libraries remain external requirements. These host-built candidates should be tested on the intended distribution before general deployment.
-- The runtime and Wine fixes are separate repository commits. A matching runtime/Wine setup is required for those compatibility improvements; the launcher archive alone does not replace Wine or a prefix DLL.
+- Published archives are built and tested by GitHub Actions on Ubuntu Linux x86-64. Wine, DXVK/vkd3d and the desktop's WebKitGTK/GTK/system libraries remain external requirements.
+- The runtime and Wine fixes are separate repository commits: [runtime 03bd2a6](https://github.com/Tux-Force/xgameruntime/commit/03bd2a68b596b660345994d9f6cf99ed6d3f265d) and [Wine ea05fb0](https://github.com/Tux-Force/wine/commit/ea05fb0193cdec23102e8b075fd36eba269aab1a). A matching runtime/Wine setup is required for those compatibility improvements; the launcher archive alone does not replace Wine or a prefix DLL.
 - Windows Xbox app installations can be checked for updates, but must be updated through Windows. xTux does not rewrite Xbox app bookkeeping files.
 - DLC management covers listing, downloads and removal. The runtime's in-game package discovery/mounting support is not complete.
 - Microsoft Flight Simulator 2024 remains unsupported in the current test installation. Its local installed container representation fails direct XVD metadata parsing; earlier tests also showed a process warning and native crash. No repair is included in this release candidate.
@@ -32,3 +32,7 @@ The first xTux release includes the graphical launcher, CLI and service for mana
 - Genuine account checks correctly identify Minecraft's available update and distinguish current packages from Windows-managed update targets. No real game update was installed as part of release validation.
 
 See [Updates](Updates.md) for update behavior and CLI commands.
+
+## Automated publication
+
+Pushing `v0.1.0` triggers the CI/CD pipeline. Only successful build/tests and license/advisory checks permit publication. The pipeline builds and verifies the binary archive, source archive and SHA-256 files, then creates the GitHub release and uploads these CI-built assets automatically. A retry uploads missing/rebuilt assets to the existing release. Tags must match the CLI package version and have matching release notes. Tags for 0.x versions or with a prerelease suffix are published as prereleases. Branch pushes and manual check runs do not publish releases.
