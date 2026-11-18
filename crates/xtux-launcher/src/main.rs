@@ -3148,6 +3148,7 @@ mod tests {
                 license_problem: None,
                 anticheat: None,
                 anticheat_blocks: false,
+                anticheat_report: None,
             },
             art: Default::default(),
             cover: None,
