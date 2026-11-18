@@ -831,6 +831,10 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
     ui.set_game_license_problem(game.license_problem.clone().unwrap_or_default().into());
     ui.set_game_anticheat(game.anticheat.clone().unwrap_or_default().into());
     ui.set_game_anticheat_blocks(game.anticheat_blocks);
+    let report = game.anticheat_report.as_ref();
+    ui.set_game_awacy(report.map(awacy_text).unwrap_or_default().into());
+    ui.set_game_awacy_blocks(report.is_some_and(|r| r.blocks));
+    ui.set_game_awacy_url(report.map(|r| r.url.clone()).unwrap_or_default().into());
     ui.set_game_running(
         state
             .lock()
@@ -1061,19 +1065,44 @@ fn size_text(bytes: Option<u64>) -> String {
     }
 }
 
+/// What AreWeAntiCheatYet says, with how sure the match of the names is.
+fn awacy_text(report: &xtux_protocol::AntiCheatReport) -> String {
+    let anticheats = if report.anticheats.is_empty() {
+        "an anti-cheat".to_string()
+    } else {
+        report.anticheats.join(", ")
+    };
+    let state = match report.status.as_str() {
+        "Supported" => "supported on Linux by the developer",
+        "Running" => "reported to run on Linux",
+        "Planned" => "planned for Linux by the developer",
+        "Broken" => "not working on Linux (the anti-cheat is not enabled for it)",
+        "Denied" => "not allowed on Linux by the developer",
+        other => other,
+    };
+    let sure = match report.likelihood {
+        95.. => "Same name",
+        80.. => "Likely the same game",
+        _ => "Possibly the same game",
+    };
+    format!(
+        "AreWeAntiCheatYet: {anticheats}, {state}. {sure} (listed as \"{}\", {} % match).",
+        report.name, report.likelihood
+    )
+}
+
 /// What the label of a store title means, in one or two short sentences; empty for titles without a label
 /// (installable or installed ones need no explanation).
 fn store_hint(title: &xtux_protocol::CatalogTitle) -> String {
+    let report = title.anticheat_report.as_ref().map(awacy_text);
     if title.installed.is_some() || (title.installable && title.windows_only.is_none()) {
-        return String::new();
+        return report.unwrap_or_default();
     }
     let size = size_text(title.download_size);
     let mut hint = if title.installed.is_some() {
         "Installed: ready to play.".to_string()
-    } else if let Some(anticheat) = &title.windows_only {
-        format!(
-            "Likely Windows only: xTux's own list guesses the kernel anti-cheat {anticheat} (not verified)."
-        )
+    } else if let Some(report) = report.as_ref().filter(|_| title.windows_only.is_some()) {
+        format!("Likely Windows only. {report}")
     } else if title.installable {
         format!(
             "GDK game: xTux can install it{}.",
@@ -1099,6 +1128,10 @@ fn store_hint(title: &xtux_protocol::CatalogTitle) -> String {
         _ => "",
     };
     hint.push_str(access);
+    if let Some(report) = report.filter(|_| title.windows_only.is_none()) {
+        hint.push(' ');
+        hint.push_str(&report);
+    }
     hint
 }
 
@@ -2266,7 +2299,7 @@ fn main() {
         ui.set_backdrop_mode(settings.ui.backdrop.clone().into());
         ui.set_icon_choice(settings.ui.icon.clone().into());
         ui.set_icon_colour(settings.ui.icon_colour.clone().into());
-        ui.set_anticheat_guess(settings.ui.anticheat_guess);
+        ui.set_anticheat_guess(settings.ui.anticheat_list);
         ui.set_controller_mode(settings.controller.as_str().into());
         // A new user starts on the setup page.
         if !refresh_setup(&ui).complete() {
@@ -2509,7 +2542,7 @@ fn main() {
             settings.ui.backdrop = ui.get_backdrop_mode().into();
             settings.ui.icon = ui.get_icon_choice().into();
             settings.ui.icon_colour = ui.get_icon_colour().into();
-            settings.ui.anticheat_guess = ui.get_anticheat_guess();
+            settings.ui.anticheat_list = ui.get_anticheat_guess();
             settings.controller =
                 ControllerMode::parse(&ui.get_controller_mode()).unwrap_or_default();
             apply_theme(&ui);
@@ -2716,7 +2749,7 @@ fn main() {
     ui.set_version(env!("CARGO_PKG_VERSION").into());
     ui.set_licenses(ModelRc::new(VecModel::from(license_rows())));
     ui.on_open_url(|url| {
-        // Fixed https links of the About page only.
+        // Fixed https links of the About page and checked AreWeAntiCheatYet pages only.
         if url.starts_with("https://") {
             let _ = std::process::Command::new("xdg-open")
                 .arg(url.as_str())
@@ -3115,6 +3148,7 @@ mod tests {
                 license_problem: None,
                 anticheat: None,
                 anticheat_blocks: false,
+                anticheat_report: None,
             },
             art: Default::default(),
             cover: None,

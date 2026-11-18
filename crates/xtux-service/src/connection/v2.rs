@@ -88,6 +88,36 @@ impl xtux_games::Progress for EventProgress {
     }
 }
 
+/// The AreWeAntiCheatYet list when the settings turn it on; `None` when off or neither downloadable nor cached.
+async fn anticheat_list(
+    client: &reqwest::Client,
+    settings: &xtux_games::settings::Settings,
+    refresh: bool,
+) -> Option<xtux_games::awacy::Database> {
+    if !settings.ui.anticheat_list {
+        return None;
+    }
+    match xtux_games::awacy::Database::load(client, refresh).await {
+        Ok(db) => Some(db),
+        Err(err) => {
+            tracing::warn!("AreWeAntiCheatYet list not available: {err}");
+            None
+        }
+    }
+}
+
+fn protocol_report(report: xtux_games::awacy::Report) -> xtux_protocol::AntiCheatReport {
+    xtux_protocol::AntiCheatReport {
+        blocks: report.blocks(),
+        summary: report.summary(),
+        name: report.name,
+        status: report.status,
+        anticheats: report.anticheats,
+        url: report.url,
+        likelihood: report.likelihood,
+    }
+}
+
 fn error_body(err: xtux_games::Error) -> ErrorBody {
     let kind = match &err {
         xtux_games::Error::SignedOut(_) => ErrorKind::SignedOut,
@@ -375,32 +405,42 @@ impl Job {
                 )
                 .await
                 .map_err(error_body)?;
+                let reports = anticheat_list(&self.client, &settings, refresh).await;
                 // Installed games and add-ons by Store ID.
                 let installed: HashMap<String, PathBuf> =
                     xtux_games::library::scan_all(&settings.library_dirs)
                         .into_iter()
                         .filter_map(|g| Some((g.store_id?.to_uppercase(), g.path)))
                         .collect();
-                let convert = |t: xtux_games::catalog::Title| xtux_protocol::CatalogTitle {
-                    installed: installed.get(&t.product_id.to_uppercase()).cloned(),
-                    product_id: t.product_id,
-                    name: t.name,
-                    publisher: t.publisher,
-                    description: t.description,
-                    category: t.category,
-                    content_id: t.content_id,
-                    download_size: t.download_size,
-                    poster_url: t.poster_url,
-                    hero_url: t.hero_url,
-                    screenshots: t.screenshots,
-                    in_game_pass: t.in_game_pass,
-                    owned: t.owned,
-                    installable: t.installable,
-                    package_format: t.package_format,
-                    // xTux's own title list is a guess: only when the user asked for it.
-                    windows_only: t.windows_only.filter(|_| settings.ui.anticheat_guess),
-                    parents: t.parents,
-                    addon_parents: t.addon_parents,
+                let convert = |t: xtux_games::catalog::Title| {
+                    let report = reports.as_ref().and_then(|db| db.find(&t.name));
+                    xtux_protocol::CatalogTitle {
+                        windows_only: report
+                            .as_ref()
+                            .filter(|r| {
+                                r.blocks()
+                                    && r.likelihood >= xtux_games::awacy::WINDOWS_ONLY_LIKELIHOOD
+                            })
+                            .map(|r| r.summary()),
+                        anticheat_report: report.map(protocol_report),
+                        installed: installed.get(&t.product_id.to_uppercase()).cloned(),
+                        product_id: t.product_id,
+                        name: t.name,
+                        publisher: t.publisher,
+                        description: t.description,
+                        category: t.category,
+                        content_id: t.content_id,
+                        download_size: t.download_size,
+                        poster_url: t.poster_url,
+                        hero_url: t.hero_url,
+                        screenshots: t.screenshots,
+                        in_game_pass: t.in_game_pass,
+                        owned: t.owned,
+                        installable: t.installable,
+                        package_format: t.package_format,
+                        parents: t.parents,
+                        addon_parents: t.addon_parents,
+                    }
                 };
                 let titles = catalog.titles.into_iter().map(convert).collect();
                 let addons = catalog.addons.into_iter().map(convert).collect();
@@ -408,9 +448,14 @@ impl Job {
             }
             Request::Library => {
                 let settings = xtux_games::settings::Settings::load().map_err(error_body)?;
+                let reports = anticheat_list(&self.client, &settings, false).await;
                 let games = xtux_games::library::scan(&settings.library_dirs)
                     .into_iter()
                     .map(|g| xtux_protocol::GameInfo {
+                        anticheat_report: reports
+                            .as_ref()
+                            .and_then(|db| db.find(&g.name))
+                            .map(protocol_report),
                         license_problem: xtux_games::license::problems::of(&g.path),
                         anticheat: g.anticheat.as_ref().map(|a| a.name.clone()),
                         anticheat_blocks: g.anticheat.as_ref().is_some_and(|a| a.blocks),

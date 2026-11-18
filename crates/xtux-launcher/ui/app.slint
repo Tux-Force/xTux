@@ -973,6 +973,10 @@ export component AppWindow inherits Window {
     in property <string> game-license-problem;
     in property <string> game-anticheat;
     in property <bool> game-anticheat-blocks;
+    // What AreWeAntiCheatYet says about the game, with how sure the name match is; empty when unknown or off.
+    in property <string> game-awacy;
+    in property <bool> game-awacy-blocks;
+    in property <string> game-awacy-url;
     in property <bool> game-windows;
     in-out property <bool> confirm-delete;
     // Crash dialog after a game ended abnormally.
@@ -1750,6 +1754,27 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if root.game-awacy != "": Rectangle {
+                        border-radius: 14px;
+                        background: (root.game-awacy-blocks ? Theme.warning : Theme.glass).transparentize(78%);
+                        border-width: 1px;
+                        border-color: root.game-awacy-blocks ? Theme.warning : Theme.muted;
+                        height: awacy-box.preferred-height;
+                        awacy-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            Text {
+                                text: root.game-awacy;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                            if root.game-awacy-url != "": GhostButton {
+                                text: "Details";
+                                clicked => { root.open-url(root.game-awacy-url); }
+                            }
+                        }
+                    }
                     if root.game-license-problem != "": Rectangle {
                         border-radius: 14px;
                         background: Theme.danger.transparentize(78%);
@@ -1948,15 +1973,15 @@ export component AppWindow inherits Window {
                                     GhostButton { text: "Accent colour"; active: root.icon-colour == "accent"; clicked => { root.icon-colour = "accent"; root.ui-changed(); } }
                                 }
                             }
-                            Label { text: "Store: guess kernel anti-cheat"; }
+                            Label { text: "Anti-cheat reports"; }
                             HorizontalLayout {
                                 alignment: start;
                                 spacing: 8px;
                                 GhostButton { text: "Off"; active: !root.anticheat-guess; clicked => { root.anticheat-guess = false; root.ui-changed(); root.store-refresh(); } }
-                                GhostButton { text: "From xTux's own list"; active: root.anticheat-guess; clicked => { root.anticheat-guess = true; root.ui-changed(); root.store-refresh(); } }
+                                GhostButton { text: "AreWeAntiCheatYet"; active: root.anticheat-guess; clicked => { root.anticheat-guess = true; root.ui-changed(); root.store-refresh(); } }
                             }
                             Label {
-                                text: "The list matches title names (for example Call of Duty, EA SPORTS FC) and is not verified per title. Installed games are always checked by their files.";
+                                text: "Downloads the public AreWeAntiCheatYet list from GitHub once a week; no game names are sent. The list knows Steam and Epic names, so games are matched by name and each report says how sure the match is. Installed games are always checked by their files.";
                                 wrap: word-wrap;
                                 font-size: 12px;
                             }
