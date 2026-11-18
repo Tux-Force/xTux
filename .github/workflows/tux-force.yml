@@ -1,6 +1,7 @@
 # Tux-Force (xTux) CI: build the workspace on Linux x86_64, run the tests
 # and publish CLI, service, launcher and source archives as downloadable artifacts.
-# A pushed v<version of xtux-cli> tag publishes a release after both checks succeed.
+# A pushed v<version of xtux-cli> tag publishes a release after both checks succeed,
+# but only when the tagged commit is part of main (releases come from main, see README.md).
 # The licenses job checks the licenses and sources of all dependencies
 # (cargo-deny, deny.toml) and that licenses/THIRD-PARTY-LICENSES.md is current.
 #
@@ -162,6 +163,18 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      # Only reviewed code is released: the tag must point at a commit that is in main.
+      - name: Tagged commit is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::Tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main; merge develop into main first and tag there."
+            exit 1
+          }
 
       - uses: actions/download-artifact@v4
         with:

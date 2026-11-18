@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -61,6 +62,8 @@ const XSTS_LIFETIME: Duration = Duration::from_secs(60 * 60);
 
 struct State {
     client: reqwest::Client,
+    /// Set when a license token request failed; read after the game exits (see `crash.rs`).
+    license_failed: Arc<AtomicBool>,
     tokens: TokenManager,
     secret: String,
     /// Endpoint lists per title id (0 for the default list).
@@ -82,6 +85,8 @@ struct State {
 pub struct Bridge {
     pub port: u16,
     pub secret: String,
+    /// A license token request of the game failed.
+    pub license_failed: Arc<AtomicBool>,
 }
 
 /// Starts the bridge on 127.0.0.1 with a random port. It runs until the process exits. `scope` tells which add-ons
@@ -96,8 +101,10 @@ pub async fn start(
     let port = listener.local_addr()?.port();
     let secret = random_secret()?;
 
+    let license_failed = Arc::new(AtomicBool::new(false));
     let state = Arc::new(State {
         client,
+        license_failed: license_failed.clone(),
         tokens,
         secret: secret.clone(),
         endpoints: Mutex::new(HashMap::new()),
@@ -128,7 +135,11 @@ pub async fn start(
         }
     });
 
-    Ok(Bridge { port, secret })
+    Ok(Bridge {
+        port,
+        secret,
+        license_failed,
+    })
 }
 
 fn random_secret() -> std::io::Result<String> {
@@ -240,6 +251,7 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
                 Ok(token) => respond(&mut stream, "200 OK", &token).await,
                 Err(err) => {
                     tracing::warn!("license token request failed: {err}");
+                    state.license_failed.store(true, Ordering::Relaxed);
                     respond(&mut stream, "502 Bad Gateway", &err).await
                 }
             }

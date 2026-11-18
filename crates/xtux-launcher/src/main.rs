@@ -99,6 +99,8 @@ struct State {
     history: Vec<xtux_protocol::RateSample>,
     download_polling: bool,
     install_libraries: Vec<PathBuf>,
+    /// Game log behind "Open log" of the crash dialog.
+    crash_log: Option<PathBuf>,
     /// What the command line asked for, done once the library is loaded.
     startup: Option<Startup>,
     handle: Option<tokio::runtime::Handle>,
@@ -670,6 +672,16 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
         }
     };
     ui.set_status(format!("Starting {}…", game.name).into());
+    // Low graphics memory is only a hint next to the start; it never holds the game back.
+    ui.set_vram_warning(SharedString::default());
+    {
+        let weak = ui.as_weak();
+        handle.spawn(async move {
+            if let Some(warning) = xtux_games::gpu::status().await.low_memory_warning() {
+                with_ui(&weak, move |ui| ui.set_vram_warning(warning.into()));
+            }
+        });
+    }
     let weak = ui.as_weak();
     let state = state.clone();
     handle.spawn(async move {
@@ -701,7 +713,25 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
             })
             .await;
         match result {
-            Ok(Response::GameExited { code }) => set_status(
+            Ok(Response::GameExited {
+                code,
+                crash: Some(crash),
+            }) => {
+                set_status(
+                    &weak,
+                    format!("{} crashed (code {})", game.name, code.unwrap_or(0)),
+                    None,
+                );
+                show_crash(
+                    &weak,
+                    &state,
+                    &game,
+                    format!("{} crashed", game.name),
+                    crash.reason,
+                    crash.hint,
+                );
+            }
+            Ok(Response::GameExited { code, crash: None }) => set_status(
                 &weak,
                 format!("{} exited (code {})", game.name, code.unwrap_or(0)),
                 None,
@@ -714,7 +744,15 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
                     &weak,
                     format!("{}: license check failed: {}", game.name, body.message),
                     None,
-                )
+                );
+                show_crash(
+                    &weak,
+                    &state,
+                    &game,
+                    format!("{} could not start", game.name),
+                    format!("The license check failed: {}", body.message),
+                    "The game starts once Microsoft grants the license: Game Pass active or the game owned, and signed in with the right account.".into(),
+                );
             }
             Err(err) => set_status(&weak, err.to_string(), None),
         }
@@ -726,6 +764,30 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
             show_running(&ui, &state);
             show_logs(&ui, Some(&path));
         });
+    });
+}
+
+/// Opens the crash dialog (from any thread). "Open log" opens the game's log, whose path is worked out here and
+/// not taken from the daemon's answer.
+fn show_crash(
+    ui: &Weak<AppWindow>,
+    state: &Shared,
+    game: &GameInfo,
+    title: String,
+    reason: String,
+    hint: String,
+) {
+    let log = xtux_games::logs::game_log(&game.path).filter(|log| log.is_file());
+    let has_log = log.is_some();
+    if let Ok(mut s) = state.lock() {
+        s.crash_log = log;
+    }
+    with_ui(ui, move |ui| {
+        ui.set_crash_title(title.into());
+        ui.set_crash_reason(reason.into());
+        ui.set_crash_hint(hint.into());
+        ui.set_crash_has_log(has_log);
+        ui.set_crash_open(true);
     });
 }
 
@@ -2267,6 +2329,17 @@ fn main() {
             let _ = std::process::Command::new("xdg-open")
                 .arg(url.as_str())
                 .spawn();
+        }
+    });
+
+    ui.on_open_crash_log({
+        let state = state.clone();
+        move || {
+            let log = state.lock().ok().and_then(|s| s.crash_log.clone());
+            if let Some(log) = log {
+                // The file path as one argument, no shell.
+                let _ = std::process::Command::new("xdg-open").arg(log).spawn();
+            }
         }
     });
 

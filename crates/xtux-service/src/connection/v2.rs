@@ -98,6 +98,56 @@ fn error_body(err: xtux_games::Error) -> ErrorBody {
     ErrorBody::new(kind, err.to_string())
 }
 
+/// Why a game ended abnormally, from its logs; `None` for a normal end or when no known cause is found.
+async fn crash_info(
+    game_dir: &Path,
+    prefix: &Option<PathBuf>,
+    wine_log: &Option<PathBuf>,
+    started: std::time::SystemTime,
+    status: std::process::ExitStatus,
+    license_failed: bool,
+) -> Option<xtux_protocol::CrashInfo> {
+    use std::os::unix::process::ExitStatusExt;
+    use xtux_games::crash::{CrashKind as K, Ending, classify};
+    use xtux_protocol::CrashKind;
+
+    if status.success() {
+        return None;
+    }
+    // Who holds the graphics memory now, to name them when it ran out. Bounded by the query timeout.
+    let vram = xtux_games::gpu::status().await;
+    let (game_dir, prefix, wine_log) = (game_dir.to_owned(), prefix.clone(), wine_log.clone());
+    let crash = tokio::task::spawn_blocking(move || {
+        let own_log = prefix
+            .as_deref()
+            .and_then(|p| xtux_games::crash::own_log(&game_dir, p, started));
+        classify(&Ending {
+            code: status.code(),
+            signal: status.signal(),
+            wine_log: wine_log.as_deref(),
+            own_log: own_log.as_deref(),
+            license_failed,
+            vram: Some(&vram),
+        })
+    })
+    .await
+    .ok()??;
+    tracing::info!("game crash: {:?}: {}", crash.kind, crash.reason);
+    Some(xtux_protocol::CrashInfo {
+        kind: match crash.kind {
+            K::License => CrashKind::License,
+            K::OutOfMemory => CrashKind::OutOfMemory,
+            K::GpuLost => CrashKind::GpuLost,
+            K::MissingDll => CrashKind::MissingDll,
+            K::Unimplemented => CrashKind::Unimplemented,
+            K::Exception => CrashKind::Exception,
+            K::Killed => CrashKind::Killed,
+        },
+        reason: crash.reason,
+        hint: crash.hint,
+    })
+}
+
 /// Serves one v2 connection. The magic of the first frame was already read by the router.
 pub async fn serve(
     socket: UnixStream,
@@ -394,6 +444,12 @@ impl Job {
                     );
                 }
                 let game_dir = source.clone();
+                // Where the game's own log is looked for after a crash: the client's prefix, else the default.
+                let prefix = env
+                    .iter()
+                    .find(|(k, _)| k == "WINEPREFIX")
+                    .map(|(_, v)| std::path::PathBuf::from(v))
+                    .or_else(|| xtux_games::prefix::resolve_prefix(None));
                 let options = xtux_games::run::LaunchOptions {
                     source,
                     wine,
@@ -401,7 +457,7 @@ impl Job {
                     market,
                     env,
                     args,
-                    log,
+                    log: log.clone(),
                 };
                 let game =
                     match xtux_games::run::launch(&self.client, &self.tokens, options, &progress)
@@ -430,6 +486,8 @@ impl Job {
                     cancel.cancelled().await;
                     xtux_games::run::stop_process_group(pid).await;
                 });
+                let started = game.started;
+                let license_failed = game.license_failed.clone();
                 let status = game.wait().await.map_err(error_body);
                 if self.cancel.is_cancelled() {
                     // The launcher may exit before its child; finish stopping the group.
@@ -437,8 +495,24 @@ impl Job {
                 } else {
                     stopper.abort();
                 }
+                let status = status?;
+                // A game the user stopped did not crash.
+                let crash = if self.cancel.is_cancelled() {
+                    None
+                } else {
+                    crash_info(
+                        &game_dir,
+                        &prefix,
+                        &log,
+                        started,
+                        status,
+                        license_failed.load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                    .await
+                };
                 Ok(Response::GameExited {
-                    code: status?.code(),
+                    code: status.code(),
+                    crash,
                 })
             }
             Request::PrefixInit {
