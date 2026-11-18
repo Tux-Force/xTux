@@ -170,6 +170,69 @@ async fn prepare(_lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Str
     Ok((Box::pin(async {}), String::new()))
 }
 
+/// Folder of the Proton BattlEye Runtime: `PROTON_BATTLEYE_RUNTIME`, or the Steam tool of that name in one of the
+/// Steam libraries.
+fn battleye_runtime() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PROTON_BATTLEYE_RUNTIME") {
+        return Some(PathBuf::from(dir));
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let roots = [
+        home.join(".local/share/Steam"),
+        home.join(".steam/steam"),
+        home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+    ];
+    let mut libraries: Vec<PathBuf> = roots.to_vec();
+    for root in &roots {
+        let Ok(text) = std::fs::read_to_string(root.join("steamapps/libraryfolders.vdf")) else {
+            continue;
+        };
+        for line in text.lines() {
+            let mut fields = line.split('"').filter(|f| !f.trim().is_empty());
+            if fields.next() == Some("path")
+                && let Some(path) = fields.next()
+            {
+                libraries.push(PathBuf::from(path.replace("\\\\", "\\")));
+            }
+        }
+    }
+    libraries
+        .into_iter()
+        .map(|library| library.join("steamapps/common/Proton BattlEye Runtime"))
+        .find(|dir| dir.join("v1").is_dir())
+}
+
+/// The `Battleye/BELauncher.ini` of a game folder, whatever the case of its folder name.
+fn battleye_launcher_config(content: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(content)
+        .ok()?
+        .flatten()
+        .find(|entry| entry.file_name().eq_ignore_ascii_case("battleye"))
+        .map(|entry| entry.path().join("BELauncher.ini"))
+        .filter(|config| config.is_file())
+}
+
+/// Adds `value` to the DLL overrides xTux passes to Wine, unless the user chose their own.
+fn add_dll_override(
+    env: &mut Vec<(&'static str, String)>,
+    user_env: &[(String, String)],
+    value: &str,
+) {
+    if user_env.iter().any(|(k, _)| k == "WINEDLLOVERRIDES")
+        || std::env::var_os("WINEDLLOVERRIDES").is_some()
+    {
+        return;
+    }
+    match env.iter_mut().find(|(k, _)| *k == "WINEDLLOVERRIDES") {
+        Some((_, overrides)) if !overrides.is_empty() => {
+            overrides.push(';');
+            overrides.push_str(value);
+        }
+        Some((_, overrides)) => *overrides = value.to_string(),
+        None => env.push(("WINEDLLOVERRIDES", value.to_string())),
+    }
+}
+
 /// Environment that steers Wine and its libraries for GDK games, unless the user set it.
 fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> {
     let is_set =
@@ -473,6 +536,39 @@ pub async fn launch(
 
     let mut env = identity_env(client, tokens).await;
     env.extend(compatibility_env(&options.env));
+    // Without AMD's own amd_ags_x64.dll in the game folder, a game only probes for AGS. Wine's builtin then
+    // reports a GPU whose driver extensions it cannot provide, and DayZ re-initialises it until its stack overflows.
+    if !out.join("amd_ags_x64.dll").is_file() {
+        add_dll_override(&mut env, &options.env, "amd_ags_x64=d");
+    }
+    // The BattlEye launcher installs a Windows service with a kernel driver, which Wine cannot run, and the game
+    // then waits for it forever. Like Proton, start the game through Wine's belauncher.exe with the Proton BattlEye
+    // Runtime instead; its beclient DLLs replace the ones in the game folder.
+    let nt_entry = match (
+        options
+            .exe
+            .is_none()
+            .then(|| battleye_launcher_config(out))
+            .flatten(),
+        battleye_runtime(),
+    ) {
+        (Some(_), Some(runtime)) => {
+            env.push((
+                "PROTON_BATTLEYE_RUNTIME",
+                runtime.to_string_lossy().into_owned(),
+            ));
+            add_dll_override(&mut env, &options.env, "beclient,beclient_x64=b,n");
+            progress.message("Starting the game through BattlEye");
+            "C:\\windows\\system32\\belauncher.exe".to_string()
+        }
+        (Some(_), None) => {
+            progress.message(
+                "BattlEye needs the Proton BattlEye Runtime from Steam (Library, Tools); online play will not work",
+            );
+            nt_entry
+        }
+        _ => nt_entry,
+    };
     // Read by GetCurrentPackageFamilyName/FullName of the Tux-Force Wine build.
     if let Some((family, full)) =
         crate::library::read_config(out).and_then(|c| crate::library::package_identity(&c))
