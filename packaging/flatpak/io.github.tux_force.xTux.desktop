@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=xTux
+GenericName=Game launcher
+Comment=Play your Xbox PC games on Linux
+Exec=xtux-launcher
+Icon=io.github.tux_force.xTux
+Categories=Game;
+Keywords=Xbox;Game Pass;GDK;Wine;
+StartupWMClass=xtux-launcher

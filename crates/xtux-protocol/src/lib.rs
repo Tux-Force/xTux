@@ -78,6 +78,9 @@ pub enum Request {
         from_proton: Option<String>,
         skip_graphics: bool,
     },
+    /// Downloads the newest Tux-Force Wine release, checks it against its SHA-256 file and makes it the Wine
+    /// games start with when the settings name none; answered with `WineReady`, with progress events in between.
+    InstallWine,
     /// Installs a game by streaming its package; answered when done, with progress events in between.
     Install {
         source: InstallSource,
@@ -281,6 +284,12 @@ pub enum Response {
     },
     PrefixReady {
         prefix: PathBuf,
+    },
+    WineReady {
+        /// Release name, for example `wine-20261118-1d9aa74`.
+        tag: String,
+        /// The `wine` binary.
+        wine: PathBuf,
     },
     Installed {
         destination: PathBuf,

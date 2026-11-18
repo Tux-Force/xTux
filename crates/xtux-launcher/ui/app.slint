@@ -941,6 +941,20 @@ export component AppWindow inherits Window {
     // "" follows the general setting, else "xbox" or "native".
     in-out property <string> game-controller;
     in-out property <string> controller-mode: "xbox";
+    // Setup page (page 9)
+    in property <bool> setup-wine-ok;
+    in property <bool> setup-wine-managed;
+    in property <string> setup-wine-text;
+    in-out property <string> setup-own-wine;
+    in-out property <bool> setup-show-own-wine;
+    in property <bool> setup-prefix-ok;
+    in-out property <string> setup-prefix;
+    in property <string> setup-libraries;
+    in property <bool> setup-busy;
+    in property <string> setup-message;
+    // 0..1, or below 0 while the size is not known.
+    in property <float> setup-progress: -1;
+    in property <bool> setup-complete;
     in property <string> game-log;
     // Logs page (page 3)
     in property <string> service-log;
@@ -1010,6 +1024,12 @@ export component AppWindow inherits Window {
     callback store-addon-install(int);
     callback store-addon-remove(int);
     callback check-updates();
+    callback setup-open();
+    callback setup-auto();
+    callback setup-install-wine();
+    callback setup-use-wine();
+    callback setup-prepare-prefix();
+    callback setup-finish();
     callback install-update(int);
     callback open-shot(int);
     callback confirm-install();
@@ -1298,6 +1318,226 @@ export component AppWindow inherits Window {
                     wrap: word-wrap;
                     width: parent.width - 40px;
                     horizontal-alignment: center;
+                }
+            }
+
+            // Setup page
+            if root.page == 9: PageTitle {
+                text: "Welcome to xTux";
+                height: 48px;
+            }
+            if root.page == 9: setup-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, setup-content.preferred-height);
+                setup-content := VerticalLayout {
+                    x: 0;
+                    width: setup-scroll.visible-width - 28px;
+                    spacing: 14px;
+                    alignment: start;
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+                            Text {
+                                text: "A few steps and your games are ready. \"Set everything up\" does them for you; you only sign in with your Microsoft account.";
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                ShinyButton {
+                                    big: true;
+                                    text: root.setup-complete && root.signed-in ? "Start playing" : "Set everything up";
+                                    enabled: !root.setup-busy;
+                                    clicked => {
+                                        if (root.setup-complete && root.signed-in) {
+                                            root.setup-finish();
+                                        } else {
+                                            root.setup-auto();
+                                        }
+                                    }
+                                }
+                                if !(root.setup-complete && root.signed-in): VerticalLayout {
+                                    alignment: center;
+                                    GhostButton {
+                                        text: "Later";
+                                        clicked => { root.setup-finish(); }
+                                    }
+                                }
+                            }
+                            if root.setup-busy || root.setup-message != "": VerticalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: root.setup-message;
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                                if root.setup-busy: Rectangle {
+                                    height: 6px;
+                                    border-radius: 3px;
+                                    background: Theme.glass-strong;
+                                    clip: true;
+                                    Rectangle {
+                                        x: root.setup-progress < 0
+                                            ? (parent.width * 0.7) * (0.5 + 0.5 * sin(animation-tick() * 0.25deg / 1ms))
+                                            : 0;
+                                        width: root.setup-progress < 0 ? parent.width * 0.3 : parent.width * clamp(root.setup-progress, 0, 1);
+                                        height: parent.height;
+                                        border-radius: 3px;
+                                        background: Theme.accent;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 1. Account
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 14px;
+                            Text { text: root.signed-in ? "✓" : "1"; color: root.signed-in ? Theme.accent : Theme.muted; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Heading { text: "Microsoft account"; }
+                                Text {
+                                    text: root.signed-in ? "Signed in as " + root.user : "Games need the licenses of your account. Microsoft's sign-in opens in its own window.";
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            if !root.signed-in: VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 0;
+                                GhostButton {
+                                    text: "Sign in";
+                                    clicked => { root.sign-in(); }
+                                }
+                            }
+                        }
+                    }
+                    // 2. Wine
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text { text: root.setup-wine-ok ? "✓" : "2"; color: root.setup-wine-ok ? Theme.accent : Theme.muted; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Heading { text: "Wine"; }
+                                    Text { text: root.setup-wine-text; color: Theme.muted; wrap: word-wrap; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    GhostButton {
+                                        text: root.setup-wine-managed ? "Check for update" : root.setup-wine-ok ? "Use Tux-Force Wine" : "Download";
+                                        clicked => { root.setup-install-wine(); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 42px;
+                                alignment: start;
+                                GhostButton {
+                                    text: root.setup-show-own-wine ? "Hide" : "Use my own Wine";
+                                    clicked => { root.setup-show-own-wine = !root.setup-show-own-wine; }
+                                }
+                            }
+                            if root.setup-show-own-wine: HorizontalLayout {
+                                padding-left: 42px;
+                                spacing: 8px;
+                                LineEdit { text <=> root.setup-own-wine; placeholder-text: "/path/to/wine/bin/wine"; }
+                                GhostButton {
+                                    text: "Use";
+                                    clicked => { root.setup-use-wine(); }
+                                }
+                            }
+                        }
+                    }
+                    // 3. Prefix
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text { text: root.setup-prefix-ok ? "✓" : "3"; color: root.setup-prefix-ok ? Theme.accent : Theme.muted; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Heading { text: "Wine prefix"; }
+                                    Text {
+                                        text: "The Windows folder games run in, with DXVK and vkd3d-proton for graphics and the certificates some games need.";
+                                        color: Theme.muted;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    GhostButton {
+                                        text: root.setup-prefix-ok ? "Prepare again" : "Prepare";
+                                        clicked => { root.setup-prepare-prefix(); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 42px;
+                                LineEdit { text <=> root.setup-prefix; placeholder-text: "~/Games/xtux-prefix"; }
+                            }
+                        }
+                    }
+                    // 4. Library
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 14px;
+                            Text { text: "✓"; color: Theme.accent; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Heading { text: "Game library"; }
+                                Text {
+                                    text: root.setup-libraries;
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "Found automatically, including XboxGames folders of Windows drives. Change them in Settings.";
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                    // 5. Controllers
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 14px;
+                            Text { text: "✓"; color: Theme.accent; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 6px;
+                                Heading { text: "PlayStation controllers"; }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 8px;
+                                    GhostButton { text: "As Xbox gamepad (recommended)"; active: root.controller-mode == "xbox"; clicked => { root.controller-mode = "xbox"; root.ui-changed(); } }
+                                    GhostButton { text: "As PlayStation controller"; active: root.controller-mode == "native"; clicked => { root.controller-mode = "native"; root.ui-changed(); } }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1686,6 +1926,11 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 alignment: end;
                                 padding-top: 6px;
+                                spacing: 10px;
+                                GhostButton {
+                                    text: "Run the setup…";
+                                    clicked => { root.setup-open(); }
+                                }
                                 ShinyButton {
                                     text: "Save";
                                     clicked => { root.save-settings(); }
