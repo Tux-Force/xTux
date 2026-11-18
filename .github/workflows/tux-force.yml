@@ -1,5 +1,6 @@
 # Tux-Force (xTux) CI: build the workspace on Linux x86_64, run the tests
-# and publish CLI, service, launcher and source archives as downloadable artifacts.
+# and publish the CLI, service and launcher archive as a downloadable artifact (GitHub attaches the source code to
+# every release itself).
 # A pushed v<version of xtux-cli> tag publishes a release after both checks succeed,
 # but only when the tagged commit is part of main (releases come from main, see README.md).
 # The licenses job checks the licenses and sources of all dependencies
@@ -137,10 +138,8 @@ jobs:
           printf '{"version":"%s","commit":"%s","build":"GitHub Actions","run_id":"%s"}\n' \
             "$VERSION" "$GITHUB_SHA" "$GITHUB_RUN_ID" > dist/BUILD-INFO.json
           archive="xtux-$VERSION-linux-x86_64.tar.gz"
-          source="xtux-$VERSION-source.tar.gz"
           tar -C dist -czf "release/$archive" .
-          git archive --format=tar.gz --prefix="xtux-$VERSION/" -o "release/$source" HEAD
-          (cd release && sha256sum "$archive" > "$archive.sha256" && sha256sum "$source" > "$source.sha256")
+          (cd release && sha256sum "$archive" > "$archive.sha256")
           smoke=$(mktemp -d)
           tar -C "$smoke" -xzf "release/$archive"
           (cd "$smoke" && sha256sum -c SHA256SUMS)
