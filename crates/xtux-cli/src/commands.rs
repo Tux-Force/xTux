@@ -14,6 +14,7 @@ pub mod logout;
 pub mod run;
 pub mod splicense;
 pub mod streaming;
+pub mod verify;
 
 /// Prints library progress messages on the terminal.
 pub struct Print;

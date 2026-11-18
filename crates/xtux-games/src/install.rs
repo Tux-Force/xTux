@@ -266,14 +266,15 @@ where
     std::fs::create_dir_all(out)
         .map_err(|e| Error::msg(format!("could not create {}: {e}", out.display())))?;
 
-    // Updates of Xbox app installs would replace its own package header; not done (yet).
+    // Installs of the Windows Xbox app are updated in place like xTux's own. Only its package header is
+    // replaced; its other bookkeeping files stay as they are. When the Xbox app began an update and did not
+    // finish it, its header already describes the new package while the files on disk are a mix of old files,
+    // new files and empty placeholders, so every file is checked against the package instead.
     let existing = crate::layout::detect(out);
-    if existing.as_ref().is_some_and(|l| l.windows_app) {
-        return Err(Error::msg(format!(
-            "{} is an install of the Windows Xbox app; update it from Windows",
-            out.display()
-        )));
-    }
+    let windows_app = existing.as_ref().is_some_and(|l| l.windows_app);
+    let check_files = existing
+        .as_ref()
+        .is_some_and(|l| crate::updates::windows_update_unresolved(out, l));
 
     let cache_path = out.join(CACHE_FILE);
     let (remote_xvd, rfiles) = cancel::until_cancelled(
@@ -314,7 +315,11 @@ where
             ),
         ),
     };
-    let lfiles = read_local_metadata(&final_path).await;
+    let lfiles = if check_files {
+        HashMap::new()
+    } else {
+        read_local_metadata(&final_path).await
+    };
 
     let market = options
         .market
@@ -355,7 +360,7 @@ where
     if finished.is_empty() {
         std::fs::write(&journal, format!("{identity}\n"))?;
     }
-    let mut jobs = Vec::new();
+    let mut candidates = Vec::new();
     let mut total_size: u64 = 0;
     let mut kept: u64 = 0;
     for (name, remote) in &rfiles {
@@ -383,6 +388,31 @@ where
                 "refusing to overwrite {name:?} from the package"
             )));
         }
+        candidates.push((name, remote, target));
+    }
+    let verified = if check_files {
+        cancel::until_cancelled(
+            cancel,
+            verify_files(
+                &remote_xvd,
+                &candidates,
+                full_key,
+                options.parallel,
+                progress,
+                cancel,
+            ),
+        )
+        .await?
+    } else {
+        Default::default()
+    };
+    let mut jobs = Vec::new();
+    for (name, remote, target) in candidates {
+        if verified.contains(name.as_str()) {
+            kept = kept.saturating_add(remote.length);
+            note_finished(&journal, name);
+            continue;
+        }
         total_size = total_size
             .checked_add(remote.length)
             .ok_or("the package announces more data than fits in 64 bits")?;
@@ -396,7 +426,8 @@ where
                 keep_encrypted: remote.keep_encrypted,
             },
             journal: journal.clone(),
-            resume: lfiles.is_empty(),
+            // Files left by the Xbox app may be old versions or placeholders; they are never continued.
+            resume: lfiles.is_empty() && !check_files,
         });
     }
 
@@ -423,7 +454,9 @@ where
     // Updates replace individual files. Keep launches blocked after pause, cancellation or a crash until
     // the complete new package metadata has been committed; the previous files are never deleted as a unit.
     let incomplete = out.join(crate::updates::INCOMPLETE);
-    if updating && (!jobs.is_empty() || lfiles.keys().any(|name| !rfiles.contains_key(name))) {
+    if updating
+        && (check_files || !jobs.is_empty() || lfiles.keys().any(|name| !rfiles.contains_key(name)))
+    {
         std::fs::write(&incomplete, &identity)?;
     }
     progress.message("Downloading");
@@ -451,9 +484,149 @@ where
             final_path.display()
         ))
     })?;
+    if windows_app {
+        crate::updates::note_windows_update_finished(out, &final_path)?;
+    }
     std::fs::remove_file(&journal).ok();
     std::fs::remove_file(&incomplete).ok();
     Ok(())
+}
+
+/// Names of the `candidates` whose installed copy already has the content of the package, checked page by page
+/// against the package's hashes (see [`XvdFile::verify_installed_file`]). Only files with a fitting size are read.
+async fn verify_files(
+    xvd: &XvdFile,
+    candidates: &[(&String, &SegmentFile, PathBuf)],
+    full_key: [u8; 32],
+    parallel: usize,
+    progress: &dyn Progress,
+    cancel: &CancellationToken,
+) -> Result<std::collections::HashSet<String>> {
+    use futures_util::StreamExt;
+
+    let page = msixvc::layout::PAGE_SIZE as u64;
+    let plausible: Vec<_> = candidates
+        .iter()
+        .filter_map(|(name, remote, target)| {
+            let meta = std::fs::symlink_metadata(target).ok()?;
+            let padded = remote.length.div_ceil(page) * page;
+            (meta.is_file()
+                && remote.length > 0
+                && (meta.len() == remote.length || (remote.keep_encrypted && meta.len() == padded)))
+                .then_some((name.as_str(), *remote, target.as_path(), meta.len()))
+        })
+        .collect();
+    let total: u64 = plausible.iter().map(|(_, _, _, len)| len).sum();
+    let checked = AtomicU64::new(0);
+    let shown = AtomicU64::new(u64::MAX);
+    progress.message("Checking installed files");
+    let (checked, shown) = (&checked, &shown);
+    let checks: Vec<_> = plausible
+        .into_iter()
+        .map(|(name, remote, target, len)| async move {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let ok = match File::open(target).await {
+                Ok(file) => xvd
+                    .verify_installed_file(file, len, remote, full_key)
+                    .await
+                    .unwrap_or_else(|err| {
+                        tracing::warn!("cannot check {}: {err}", target.display());
+                        false
+                    }),
+                Err(_) => false,
+            };
+            let done = checked.fetch_add(len, Ordering::Relaxed) + len;
+            let percent = done.saturating_mul(100) / total.max(1);
+            if shown.swap(percent, Ordering::Relaxed) != percent {
+                progress.message(&format!("Checking installed files ({percent}%)"));
+            }
+            ok.then_some(name)
+        })
+        .collect();
+    let results: Vec<Option<&str>> = stream::iter(checks)
+        .buffer_unordered(parallel.max(1))
+        .collect()
+        .await;
+    cancel::check(cancel)?;
+    let verified: std::collections::HashSet<String> =
+        results.into_iter().flatten().map(str::to_owned).collect();
+    tracing::info!(
+        "{} of {} package files are already installed",
+        verified.len(),
+        candidates.len()
+    );
+    Ok(verified)
+}
+
+/// Result of [`verify`].
+#[derive(Debug, Default)]
+pub struct VerifyReport {
+    /// Files whose content matches the installed package.
+    pub intact: usize,
+    /// Package files that are missing or differ, by name.
+    pub damaged: Vec<String>,
+}
+
+/// Checks the files of the installed game in `dir` against its own package header, page by page.
+pub async fn verify(
+    client: &reqwest::Client,
+    tokens: &TokenManager,
+    dir: &Path,
+    market: Option<String>,
+    progress: &dyn Progress,
+) -> Result<VerifyReport> {
+    let layout = crate::layout::detect(dir)
+        .ok_or_else(|| Error::msg(format!("{} is not a game folder", dir.display())))?;
+    let mut file = File::open(&layout.package).await?;
+    let xvd = XvdFile::parse(&mut file)
+        .await
+        .map_err(|e| Error::msg(format!("cannot read the package header: {e}")))?;
+    drop(file);
+    let files = read_local_metadata(&layout.package).await;
+    if files.is_empty() {
+        return Err(Error::msg("the package header lists no files"));
+    }
+    progress.message("Getting the license");
+    let (key, license) = get_license(
+        client,
+        tokens,
+        xvd.content_id().to_string(),
+        market.unwrap_or_else(|| "neutral".to_owned()),
+    )
+    .await?;
+    let (_, content_key) = license
+        .content_keys
+        .into_iter()
+        .next()
+        .ok_or("the license has no content key")?;
+    let full_key = *content_key
+        .unpack(&key)
+        .map_err(|e| Error::msg(format!("failed to unpack the content key: {e}")))?;
+    let mut candidates = Vec::new();
+    for (name, remote) in &files {
+        candidates.push((name, remote, safe_join(&layout.root, name)?));
+    }
+    let verified = verify_files(
+        &xvd,
+        &candidates,
+        full_key,
+        4,
+        progress,
+        &CancellationToken::new(),
+    )
+    .await?;
+    let mut damaged: Vec<String> = files
+        .keys()
+        .filter(|name| !verified.contains(*name))
+        .cloned()
+        .collect();
+    damaged.sort();
+    Ok(VerifyReport {
+        intact: verified.len(),
+        damaged,
+    })
 }
 
 /// Parses the remote package and collects its files, from the segment metadata and, unless
