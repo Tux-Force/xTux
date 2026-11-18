@@ -34,6 +34,7 @@ thread_local! {
     static ADDONS: std::rc::Rc<VecModel<AddonRow>> = std::rc::Rc::new(VecModel::default());
     static UPDATES: std::rc::Rc<VecModel<UpdateRow>> = std::rc::Rc::new(VecModel::default());
     static GRAPH: std::rc::Rc<VecModel<GraphPoint>> = std::rc::Rc::new(VecModel::default());
+    static LIBRARY_FOLDERS: std::rc::Rc<VecModel<SharedString>> = std::rc::Rc::new(VecModel::default());
     /// Counts gallery loads, so screenshots of a title left meanwhile are dropped.
     static SHOT_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -672,29 +673,124 @@ async fn refresh_library(ui: Weak<AppWindow>, state: Shared) {
 }
 
 /// The end of a log, newest line first.
-fn newest_first(path: &Path) -> String {
+/// How a log line is coloured: 0 plain, 1 quiet, 2 info, 3 warning, 4 error. Knows Wine (`0024:err:…`,
+/// `fixme:`), DXVK/vkd3d-proton (`err:`, `warn:`, `info:`) and tracing (` ERROR `, ` WARN `, …).
+fn log_level(line: &str) -> i32 {
+    let lower = line.to_ascii_lowercase();
+    let wine = |level: &str| {
+        lower.contains(&format!(":{level}:"))
+            || lower.trim_start().starts_with(&format!("{level}:"))
+    };
+    if wine("err")
+        || line.contains(" ERROR ")
+        || lower.contains("unhandled exception")
+        || lower.contains("panicked at")
+        || lower.starts_with("failed")
+    {
+        4
+    } else if wine("warn") || wine("warning") || line.contains(" WARN ") {
+        3
+    } else if wine("fixme") || wine("trace") || line.contains(" DEBUG ") || line.contains(" TRACE ")
+    {
+        1
+    } else if wine("info") || line.contains(" INFO ") {
+        2
+    } else {
+        0
+    }
+}
+
+/// The end of a log, newest line first, with levels.
+fn log_lines(path: &Path) -> Vec<LogLine> {
     let text = xtux_games::logs::tail(path, LOG_TAIL);
-    text.lines().rev().collect::<Vec<_>>().join("\n")
+    text.lines()
+        .rev()
+        .map(|line| LogLine {
+            level: log_level(line),
+            text: line.into(),
+        })
+        .collect()
+}
+
+fn note(text: String) -> ModelRc<LogLine> {
+    ModelRc::new(VecModel::from(vec![LogLine {
+        text: text.into(),
+        level: 0,
+    }]))
 }
 
 fn show_logs(ui: &AppWindow, game: Option<&Path>) {
     if let Some(log) = game.and_then(xtux_games::logs::game_log) {
-        let text = newest_first(&log);
-        ui.set_game_log(
-            if text.is_empty() {
-                format!(
-                    "No log yet. It is written when the game starts:\n{}",
-                    log.display()
-                )
-            } else {
-                text
-            }
-            .into(),
-        );
+        let lines = log_lines(&log);
+        ui.set_game_log(if lines.is_empty() {
+            note(format!(
+                "No log yet. It is written when the game starts:\n{}",
+                log.display()
+            ))
+        } else {
+            ModelRc::new(VecModel::from(lines))
+        });
+        ui.set_game_log_path(log.display().to_string().into());
     }
     if let Some(log) = xtux_games::logs::service_log() {
-        ui.set_service_log(newest_first(&log).into());
+        ui.set_service_log(ModelRc::new(VecModel::from(log_lines(&log))));
         ui.set_service_log_path(log.display().to_string().into());
+    }
+}
+
+/// Shows the library folders of the settings, one field each (UI thread).
+fn show_library_folders(ui: &AppWindow, dirs: &[PathBuf]) {
+    LIBRARY_FOLDERS.with(|model| {
+        model.set_vec(
+            dirs.iter()
+                .map(|d| SharedString::from(path_text(&Some(d.clone()))))
+                .collect::<Vec<_>>(),
+        );
+        ui.set_library_folders(ModelRc::from(model.clone()));
+    });
+}
+
+/// Puts a path chosen in the file dialog into the field `target` names (UI thread).
+fn apply_picked_path(ui: &AppWindow, target: &str, path: PathBuf) {
+    let text: SharedString = path_text(&Some(path.clone())).into();
+    match target {
+        "wine" => ui.set_wine(text),
+        "prefix" => ui.set_prefix(text),
+        "game-wine" => ui.set_game_wine(text),
+        "game-prefix" => ui.set_game_prefix(text),
+        "setup-own-wine" => ui.set_setup_own_wine(text),
+        "setup-prefix" => ui.set_setup_prefix(text),
+        // Package relative, with Windows separators; files outside the game are refused.
+        "game-exe" => {
+            let game = PathBuf::from(ui.get_game_path().as_str());
+            let content = [game.join("Content"), game.clone()]
+                .into_iter()
+                .find(|root| path.starts_with(root));
+            match content.and_then(|root| path.strip_prefix(&root).ok().map(Path::to_path_buf)) {
+                Some(relative) => {
+                    ui.set_game_exe(relative.to_string_lossy().replace('/', "\\").into())
+                }
+                None => ui.set_status("Choose an executable inside the game folder".into()),
+            }
+        }
+        _ => LIBRARY_FOLDERS.with(|model| {
+            use slint::Model;
+            match target.strip_prefix("library:") {
+                Some("new") => {
+                    if !model.iter().any(|row| row == text) {
+                        model.push(text);
+                    }
+                }
+                Some(index) => {
+                    if let Ok(index) = index.parse::<usize>()
+                        && index < model.row_count()
+                    {
+                        model.set_row_data(index, text);
+                    }
+                }
+                None => {}
+            }
+        }),
     }
 }
 
@@ -1963,6 +2059,8 @@ fn apply_theme(ui: &AppWindow) {
     theme.set_on_danger(p.on_danger.to_slint());
     theme.set_warning(p.warning.to_slint());
     theme.set_on_warning(p.on_warning.to_slint());
+    theme.set_log_error(p.log_error.to_slint());
+    theme.set_log_warning(p.log_warning.to_slint());
     theme.set_backdrop_opacity(p.backdrop_opacity);
     theme.set_veil_top(p.veil_min);
     ui.invoke_apply_theme();
@@ -2181,15 +2279,7 @@ fn main() {
     }
     ui.set_wine(settings.wine.clone().unwrap_or_default().into());
     ui.set_prefix(path_text(&settings.prefix).into());
-    ui.set_library_dirs(
-        settings
-            .library_dirs
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("\n")
-            .into(),
-    );
+    show_library_folders(&ui, &settings.library_dirs);
 
     {
         let weak = ui.as_weak();
@@ -2453,13 +2543,15 @@ fn main() {
             let Some(mut settings) = settings_for_saving(&ui) else {
                 return;
             };
-            settings.library_dirs = ui
-                .get_library_dirs()
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(expand_home)
-                .collect();
+            settings.library_dirs = LIBRARY_FOLDERS.with(|model| {
+                use slint::Model;
+                model
+                    .iter()
+                    .map(|dir| dir.trim().to_string())
+                    .filter(|dir| !dir.is_empty())
+                    .map(|dir| expand_home(&dir))
+                    .collect()
+            });
             settings.wine =
                 non_empty(&ui.get_wine()).map(|w| expand_home(&w).to_string_lossy().into_owned());
             settings.prefix = non_empty(&ui.get_prefix()).map(|p| expand_home(&p));
@@ -2629,6 +2721,64 @@ fn main() {
             let _ = std::process::Command::new("xdg-open")
                 .arg(url.as_str())
                 .spawn();
+        }
+    });
+
+    // The desktop's file dialog (XDG portal, also inside the Flatpak), starting next to the current value.
+    ui.on_browse_path({
+        let weak = ui.as_weak();
+        let handle = handle.clone();
+        move |target, folder, current| {
+            let weak = weak.clone();
+            let target = target.to_string();
+            let current = expand_home(current.as_str());
+            handle.spawn(async move {
+                let start = std::iter::successors(Some(current.as_path()), |p| p.parent())
+                    .find(|p| p.is_dir())
+                    .map(Path::to_path_buf)
+                    .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+                let mut dialog = rfd::AsyncFileDialog::new();
+                if let Some(start) = start {
+                    dialog = dialog.set_directory(start);
+                }
+                let picked = if folder {
+                    dialog.pick_folder().await
+                } else {
+                    dialog.pick_file().await
+                };
+                if let Some(picked) = picked {
+                    let path = picked.path().to_path_buf();
+                    with_ui(&weak, move |ui| apply_picked_path(&ui, &target, path));
+                }
+            });
+        }
+    });
+
+    ui.on_library_folder_edited(|index, value| {
+        LIBRARY_FOLDERS.with(|model| {
+            use slint::Model;
+            let index = index as usize;
+            if index < model.row_count() {
+                model.set_row_data(index, value);
+            }
+        });
+    });
+
+    ui.on_library_folder_remove(|index| {
+        LIBRARY_FOLDERS.with(|model| {
+            use slint::Model;
+            let index = index as usize;
+            if index < model.row_count() {
+                model.remove(index);
+            }
+        });
+    });
+
+    ui.on_open_log_file(|path| {
+        // Only the log files the launcher shows, as one argument, no shell.
+        let path = PathBuf::from(path.as_str());
+        if path.is_file() && path.extension().is_some_and(|e| e == "log") {
+            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
         }
     });
 
@@ -2911,6 +3061,49 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn log_lines_get_their_level() {
+        use super::log_level;
+        assert_eq!(
+            log_level("0024:err:ole:CoMarshalInterface Failed to marshal"),
+            4
+        );
+        assert_eq!(
+            log_level("11535.464:0020:0024:err:vkd3d-proton:d3d12_command_signature"),
+            4
+        );
+        assert_eq!(
+            log_level("2026-11-15T19:47:12.256510Z ERROR xtux_service: boom"),
+            4
+        );
+        assert_eq!(
+            log_level("Unhandled exception: page fault on read access"),
+            4
+        );
+        assert_eq!(log_level("Failed: could not find the game executable"), 4);
+        assert_eq!(
+            log_level("warn:  DxgiFactory::QueryInterface: Unknown interface query"),
+            3
+        );
+        assert_eq!(
+            log_level("2026-11-15T19:47:12.256510Z  WARN xodus::licensing: Unknown block"),
+            3
+        );
+        assert_eq!(
+            log_level("0024:fixme:ginput:GameInputCreate out 000000000010F588, stub!"),
+            1
+        );
+        assert_eq!(log_level("0068:trace:loaddll:build_module Loaded"), 1);
+        assert_eq!(log_level("info:  Game: Minecraft.Windows.exe"), 2);
+        assert_eq!(
+            log_level("2026-11-15T21:18:00.819091Z  INFO xtux_games::bridge: user token"),
+            2
+        );
+        assert_eq!(log_level("Starting the game"), 0);
+        // A word inside a message is not a level.
+        assert_eq!(log_level("Decrypting the error handler files"), 0);
+    }
+
     fn entry(name: &str, path: &str) -> super::Entry {
         super::Entry {
             info: xtux_protocol::GameInfo {
