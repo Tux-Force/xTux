@@ -23,8 +23,12 @@ pub mod packages;
 pub mod progress;
 pub mod queue;
 pub mod settings;
+#[cfg(unix)]
+pub mod setup;
 pub mod uninstall;
 pub mod updates;
+#[cfg(unix)]
+pub mod wine;
 
 #[cfg(unix)]
 pub mod bridge;

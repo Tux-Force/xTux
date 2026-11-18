@@ -412,6 +412,160 @@ fn show_backdrop(ui: &AppWindow, state: &Shared, index: usize, cause: BackdropCa
     ui.set_has_backdrop(true);
 }
 
+/// Shows the local setup state on the setup page (UI thread); returns it.
+fn refresh_setup(ui: &AppWindow) -> xtux_games::setup::SetupState {
+    let settings = Settings::load().unwrap_or_default();
+    let state = xtux_games::setup::state(&settings);
+    let wine_text = match (&state.wine, &state.managed_wine, &state.missing_wine) {
+        (Some(_), Some(managed), _) if settings.wine.is_none() => {
+            format!("Tux-Force Wine {} is installed.", managed.tag)
+        }
+        (Some(wine), _, _) => format!("Using {wine}."),
+        (None, _, Some(wine)) => format!(
+            "{wine} from the settings does not exist. Download the Tux-Force Wine or choose another."
+        ),
+        (None, _, None) => {
+            "xTux downloads the Tux-Force Wine for you, checked against its SHA-256 file.".into()
+        }
+    };
+    ui.set_setup_wine_ok(state.wine.is_some());
+    ui.set_setup_wine_managed(settings.wine.is_none() && state.managed_wine.is_some());
+    ui.set_setup_wine_text(wine_text.into());
+    ui.set_setup_prefix_ok(state.prefix_ready);
+    // What the user typed stays until it is used.
+    if ui.get_setup_prefix().is_empty() {
+        ui.set_setup_prefix(path_text(&Some(state.prefix.clone())).into());
+    }
+    let libraries: Vec<String> = settings
+        .library_dirs
+        .iter()
+        .map(|dir| {
+            let games = xtux_games::library::scan(std::slice::from_ref(dir)).len();
+            format!("{} ({games} games)", dir.display())
+        })
+        .collect();
+    ui.set_setup_libraries(libraries.join("\n").into());
+    ui.set_setup_complete(state.complete());
+    state
+}
+
+fn set_setup_progress(
+    ui: &Weak<AppWindow>,
+    message: Option<String>,
+    progress: Option<f32>,
+    busy: Option<bool>,
+) {
+    with_ui(ui, move |ui| {
+        if let Some(message) = message {
+            ui.set_setup_message(message.into());
+        }
+        if let Some(progress) = progress {
+            ui.set_setup_progress(progress);
+        }
+        if let Some(busy) = busy {
+            ui.set_setup_busy(busy);
+        }
+    });
+}
+
+/// Runs one service request of the setup with its progress on the setup page.
+async fn setup_request(ui: &Weak<AppWindow>, request: Request) -> Result<Response, String> {
+    set_setup_progress(ui, None, Some(-1.0), Some(true));
+    let events = ui.clone();
+    let result = ask(request, move |event| match event {
+        Event::Message { text } => set_setup_progress(&events, Some(text), Some(-1.0), None),
+        Event::Bytes {
+            done,
+            total: Some(total),
+        } if total > 0 => set_setup_progress(&events, None, Some(done as f32 / total as f32), None),
+        _ => {}
+    })
+    .await
+    .map_err(|e| e.to_string());
+    set_setup_progress(ui, None, None, Some(false));
+    result
+}
+
+/// The Wine the prefix is prepared with: the setup's state, read on the UI thread.
+fn setup_wine() -> Option<String> {
+    xtux_games::setup::state(&Settings::load().unwrap_or_default()).wine
+}
+
+async fn setup_install_wine(ui: &Weak<AppWindow>) -> bool {
+    match setup_request(ui, Request::InstallWine).await {
+        Ok(Response::WineReady { tag, .. }) => {
+            // Chosen here: games start with the Tux-Force Wine, not a path from earlier.
+            if let Ok(mut settings) = Settings::load()
+                && settings.wine.take().is_some()
+            {
+                let _ = settings.save();
+                with_ui(ui, |ui| ui.set_wine("".into()));
+            }
+            set_setup_progress(
+                ui,
+                Some(format!("Tux-Force Wine {tag} is ready.")),
+                None,
+                None,
+            );
+            true
+        }
+        Ok(other) => {
+            set_setup_progress(
+                ui,
+                Some(format!("Unexpected answer: {other:?}")),
+                None,
+                None,
+            );
+            false
+        }
+        Err(err) => {
+            set_setup_progress(
+                ui,
+                Some(format!(
+                    "Downloading Wine failed: {err}. You can choose your own Wine below."
+                )),
+                None,
+                None,
+            );
+            false
+        }
+    }
+}
+
+async fn setup_prepare_prefix(ui: &Weak<AppWindow>, prefix: String) -> bool {
+    let Some(wine) = setup_wine() else {
+        set_setup_progress(ui, Some("Set up Wine first.".into()), None, None);
+        return false;
+    };
+    let prefix = expand_home(&prefix);
+    // The prefix becomes the general setting, so games and the service use it.
+    if let Ok(mut settings) = Settings::load() {
+        settings.prefix = Some(prefix.clone());
+        let _ = settings.save();
+    }
+    let request = Request::PrefixInit {
+        wine,
+        prefix: Some(prefix.to_string_lossy().into_owned()),
+        from_proton: None,
+        skip_graphics: false,
+    };
+    match setup_request(ui, request).await {
+        Ok(_) => {
+            set_setup_progress(ui, Some("The prefix is ready.".into()), None, None);
+            true
+        }
+        Err(err) => {
+            set_setup_progress(
+                ui,
+                Some(format!("Preparing the prefix failed: {err}")),
+                None,
+                None,
+            );
+            false
+        }
+    }
+}
+
 async fn refresh_status(ui: Weak<AppWindow>) {
     match ask(Request::Status, |_| {}).await {
         Ok(Response::Status {
@@ -1861,7 +2015,7 @@ fn settings_for_saving(ui: &AppWindow) -> Option<Settings> {
     }
 }
 
-/// `XTUX_SNAPSHOT=<file.png>` renders one page (`XTUX_SNAPSHOT_PAGE`: library, list, game, settings, logs) to a
+/// `XTUX_SNAPSHOT=<file.png>` renders one page (`XTUX_SNAPSHOT_PAGE`: library, list, game, settings, setup, logs) to a
 /// PNG and quits; used to check the look without a person at the screen.
 fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle) {
     let Some(file) = std::env::var_os("XTUX_SNAPSHOT").map(PathBuf::from) else {
@@ -1877,6 +2031,10 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
             "list" => ui.set_view("list".into()),
             "game" => open_game(&ui, &state, &handle, 0),
             "settings" => ui.set_page(1),
+            "setup" => {
+                refresh_setup(&ui);
+                ui.set_page(9);
+            }
             "store" => {
                 ui.set_page(5);
                 open_store(&ui, &state, &handle, false);
@@ -2012,6 +2170,10 @@ fn main() {
         ui.set_icon_colour(settings.ui.icon_colour.clone().into());
         ui.set_anticheat_guess(settings.ui.anticheat_guess);
         ui.set_controller_mode(settings.controller.as_str().into());
+        // A new user starts on the setup page.
+        if !refresh_setup(&ui).complete() {
+            ui.set_page(9);
+        }
         if let Ok(mut s) = state.lock() {
             s.backdrop_mode = settings.ui.backdrop.clone();
         }
@@ -2072,6 +2234,144 @@ fn main() {
                 }
                 refresh_status(weak).await;
             });
+        }
+    });
+
+    ui.on_setup_open({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            refresh_setup(&ui);
+            ui.set_setup_message("".into());
+            ui.set_page(9);
+        }
+    });
+
+    ui.on_setup_install_wine({
+        let weak = ui.as_weak();
+        let handle = handle.clone();
+        move || {
+            let weak = weak.clone();
+            handle.spawn(async move {
+                setup_install_wine(&weak).await;
+                with_ui(&weak, |ui| {
+                    refresh_setup(&ui);
+                });
+            });
+        }
+    });
+
+    ui.on_setup_use_wine({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let path = expand_home(&ui.get_setup_own_wine())
+                .to_string_lossy()
+                .into_owned();
+            if !xtux_games::setup::wine_exists(&path) {
+                ui.set_setup_message(format!("{path} does not exist.").into());
+                return;
+            }
+            let Some(mut settings) = settings_for_saving(&ui) else {
+                return;
+            };
+            settings.wine = Some(path.clone());
+            match settings.save() {
+                Ok(()) => {
+                    ui.set_wine(path.clone().into());
+                    ui.set_setup_message(format!("Games start with {path}.").into());
+                    ui.set_setup_show_own_wine(false);
+                }
+                Err(err) => {
+                    ui.set_setup_message(format!("Could not save the settings: {err}").into())
+                }
+            }
+            refresh_setup(&ui);
+        }
+    });
+
+    ui.on_setup_prepare_prefix({
+        let weak = ui.as_weak();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let prefix = ui.get_setup_prefix().to_string();
+            let weak = weak.clone();
+            handle.spawn(async move {
+                setup_prepare_prefix(&weak, prefix).await;
+                with_ui(&weak, |ui| {
+                    refresh_setup(&ui);
+                });
+            });
+        }
+    });
+
+    // Everything that is missing, in order; only signing in needs the user.
+    ui.on_setup_auto({
+        let weak = ui.as_weak();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let signed_in = ui.get_signed_in();
+            let prefix = ui.get_setup_prefix().to_string();
+            let weak = weak.clone();
+            handle.spawn(async move {
+                if !signed_in {
+                    set_setup_progress(
+                        &weak,
+                        Some(
+                            "Sign in with your Microsoft account in the window that opens…".into(),
+                        ),
+                        Some(-1.0),
+                        Some(true),
+                    );
+                    let result = ask(
+                        Request::SignIn {
+                            env: std::env::vars().collect(),
+                        },
+                        |_| {},
+                    )
+                    .await;
+                    set_setup_progress(&weak, None, None, Some(false));
+                    refresh_status(weak.clone()).await;
+                    if let Err(err) = result {
+                        set_setup_progress(
+                            &weak,
+                            Some(format!("Not signed in: {err}")),
+                            None,
+                            None,
+                        );
+                        return;
+                    }
+                }
+                let state = xtux_games::setup::state(&Settings::load().unwrap_or_default());
+                if state.wine.is_none() && !setup_install_wine(&weak).await {
+                    return;
+                }
+                if !state.prefix_ready && !setup_prepare_prefix(&weak, prefix).await {
+                    return;
+                }
+                set_setup_progress(
+                    &weak,
+                    Some("All set. Pick a game and play.".into()),
+                    None,
+                    None,
+                );
+                with_ui(&weak, |ui| {
+                    refresh_setup(&ui);
+                });
+            });
+        }
+    });
+
+    ui.on_setup_finish({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            ui.set_page(0);
+            handle.spawn(refresh_library(weak.clone(), state.clone()));
         }
     });
 

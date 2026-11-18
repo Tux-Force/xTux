@@ -10715,6 +10715,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "console",
  "console-subscriber",
  "ctrlc",
  "eappx",

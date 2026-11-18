@@ -154,9 +154,51 @@ jobs:
           path: release/
           if-no-files-found: error
 
+  # The Flatpak packs the binaries of the build job on the GNOME runtime (WebKitGTK for the sign-in).
+  flatpak:
+    name: Flatpak bundle
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtux-linux-x86_64
+          path: release
+
+      - name: Unpack the CI-built binaries
+        run: |
+          mkdir -p packaging/flatpak/dist
+          tar -C packaging/flatpak/dist -xzf release/xtux-*-linux-x86_64.tar.gz
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: xtux-linux-x86_64.flatpak
+          manifest-path: packaging/flatpak/io.github.tux_force.xTux.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+          upload-artifact: false
+
+      # The app starts, and the tools the prefix and Wine setup call exist in the runtime.
+      - name: Smoke test
+        run: |
+          flatpak install --user -y --noninteractive xtux-linux-x86_64.flatpak
+          flatpak run --command=xtux-cli io.github.tux_force.xTux --version
+          flatpak run --command=sh io.github.tux_force.xTux -c \
+            'for tool in tar xz zstd; do command -v "$tool" >/dev/null || { echo "missing in the runtime: $tool"; exit 1; }; done'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xtux-flatpak
+          path: xtux-linux-x86_64.flatpak
+          if-no-files-found: error
+
   release:
     name: Release
-    needs: [build, licenses]
+    needs: [build, licenses, flatpak]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -181,13 +223,19 @@ jobs:
           name: xtux-linux-x86_64
           path: release
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtux-flatpak
+          path: release
+
       - name: Publish release and upload CI-built assets
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          (cd release && sha256sum xtux-linux-x86_64.flatpak > xtux-linux-x86_64.flatpak.sha256)
           (cd release && sha256sum -c *.sha256)
-          assets=(release/*.tar.gz release/*.sha256)
+          assets=(release/*.tar.gz release/*.flatpak release/*.sha256)
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
