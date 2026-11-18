@@ -35,7 +35,12 @@ contributions (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main
   - store license tokens (`XStoreQueryLicenseToken`),
   - title-bound, signed Xbox Live tokens (device, title and user token, as on Windows), with relying parties from the
     title's own endpoint table.
-- **Game start fixes:** software video decoders for intro videos, identity and license state for xgameruntime.
+- **Game start fixes:** software video decoders for intro videos, identity and license state for xgameruntime,
+  games whose entry executable is not encrypted, the Windows package identity for games depending on the Windows App
+  Runtime, and the GameInput redistributable a game ships (installed into the prefix at launch). Minecraft for
+  Windows runs this way.
+- **Controllers:** PlayStation controllers (DualShock 4, DualSense, DualSense Edge) reach games as Xbox gamepads by
+  default, the kind XInput and GameInput games understand; per game they can stay PlayStation controllers.
 - **Merged upstream pull requests** that are not in Xodus `main` yet (#216, #237, #242, #243, #217, #212, #197, #215).
 
 The matching runtime and Wine changes live in [Tux-Force/xgameruntime](https://github.com/Tux-Force/xgameruntime)
@@ -64,12 +69,17 @@ Supported packages can be installed through a persistent service-owned download 
 reordering and activity graphs. The CLI shares it via `xtux-cli downloads`. Catalog presence does not establish
 an entitlement; Microsoft checks the license when the game starts.
 
+The Updates page checks installed games and DLCs, including Windows Xbox app installs, and updates them in place;
+`xtux-cli verify` checks an install against its package (see [Game and DLC updates](docs/Updates.md)). When a game
+ends abnormally, the launcher names the cause and a hint, with a button to open the log.
+
 **Delete game…** removes the entire game folder after confirmation, including Windows Xbox app installs and any
-saves inside that folder. Installed-game update checks, verify, automatic first-launch prefix setup and Flatpak
-packaging remain planned. Initialize prefixes with `xtux-cli prefix init` before using them.
+saves inside that folder. Downloading Wine, automatic first-launch prefix setup and Flatpak packaging remain
+planned: set the Wine binary in Settings → Games and initialize the prefix with `xtux-cli prefix init` once.
 
 Global and per-game settings share `$XDG_CONFIG_HOME/xtux/settings.toml` (normally `~/.config/xtux/settings.toml`).
-Per-game overrides are keyed by game folder. See the [launcher guide](https://tux-force.github.io/guide/launcher/)
+Per-game overrides are keyed by game folder. `controller = "xbox"` (default) or `"native"` sets how PlayStation
+controllers reach games; games of one prefix share the mode, so a change applies once they are all closed. See the [launcher guide](https://tux-force.github.io/guide/launcher/)
 for pages, launch options, appearance settings and log locations.
 
 ## Launcher screenshots
