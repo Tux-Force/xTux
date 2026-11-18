@@ -37,6 +37,13 @@ pub fn run(paths: bool) -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    // The copy xtux-service downloaded; the list does not go online.
+    let reports = Settings::load()
+        .unwrap_or_default()
+        .ui
+        .anticheat_list
+        .then(xtux_games::awacy::Database::cached)
+        .flatten();
     let width = games
         .iter()
         .map(|g| g.name.chars().count())
@@ -65,6 +72,9 @@ pub fn run(paths: bool) -> ExitCode {
             game.title_id.as_deref().unwrap_or("-"),
             game.path.display(),
         );
+        if let Some(report) = reports.as_ref().and_then(|db| db.find(&game.name)) {
+            println!("{:<width$}  AreWeAntiCheatYet: {}", "", report.summary());
+        }
     }
     ExitCode::SUCCESS
 }

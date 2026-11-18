@@ -133,6 +133,26 @@ pub struct GameInfo {
     /// The anti-cheat is a kernel driver Wine cannot load: the game runs on Windows only.
     #[serde(default)]
     pub anticheat_blocks: bool,
+    /// What AreWeAntiCheatYet says about the game (when turned on in the settings).
+    #[serde(default)]
+    pub anticheat_report: Option<AntiCheatReport>,
+}
+
+/// What AreWeAntiCheatYet (areweanticheatyet.com) says about a game, found by its name.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AntiCheatReport {
+    /// The game's name in the list, which may differ from the Store's.
+    pub name: String,
+    /// `Supported`, `Running`, `Planned`, `Broken` or `Denied`.
+    pub status: String,
+    pub anticheats: Vec<String>,
+    pub url: String,
+    /// How likely the report belongs to this game, 60 to 100: 95 and more is certain, 80 and more likely.
+    pub likelihood: u8,
+    /// `Broken` or `Denied`: the game does not start or play online on Linux.
+    pub blocks: bool,
+    /// One line for users, for example `Denied (BattlEye), certain match "DayZ" 100%`.
+    pub summary: String,
 }
 
 /// A change of the download queue.
@@ -220,8 +240,12 @@ pub struct CatalogTitle {
     /// Format of the PC package (`MSIXVC`, `EAppx`, `Appx` …); `None` when the Store lists no PC package.
     #[serde(default)]
     pub package_format: Option<String>,
-    /// Kernel anti-cheat guessed from xTux's own title list (only when turned on in the settings).
+    /// Why the title likely runs on Windows only: AreWeAntiCheatYet lists it as `Broken` or `Denied` and the
+    /// names match with at least 80 % (only when turned on in the settings).
     pub windows_only: Option<String>,
+    /// What AreWeAntiCheatYet says about the title (when turned on in the settings).
+    #[serde(default)]
+    pub anticheat_report: Option<AntiCheatReport>,
     /// Folder of the installed game, when it is in the library.
     pub installed: Option<PathBuf>,
     /// Products this one belongs to (for example the product group of all editions).

@@ -22,17 +22,6 @@ const BATCH: usize = 20;
 const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_ANSWER_BYTES: usize = 8 * 1024 * 1024;
 
-/// Titles guessed to use a kernel anti-cheat, by the start of their name. xTux's own list, written from general
-/// knowledge and not verified per title, so it is off unless the user turns it on (`[ui] anticheat_guess`);
-/// installed games are checked by their files instead (anticheat.rs).
-const KNOWN_WINDOWS_ONLY: &[(&str, &str)] = &[
-    ("Call of Duty", "Ricochet (Activision)"),
-    ("Battlefield 2042", "EA AntiCheat"),
-    ("Battlefield 6", "EA AntiCheat"),
-    ("EA SPORTS FC", "EA AntiCheat"),
-    ("Madden NFL", "EA AntiCheat"),
-];
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Title {
     /// Store ID (product ID).
@@ -56,8 +45,6 @@ pub struct Title {
     pub owned: bool,
     /// xTux can install it: a GDK package (MSIXVC) for Windows PCs.
     pub installable: bool,
-    /// Kernel anti-cheat known for this title: it runs on Windows only.
-    pub windows_only: Option<String>,
     /// Products this one belongs to (the catalog's `Parent` and `Extends` relations), for example the product
     /// group of all editions of a game. Add-ons name these as their parent.
     #[serde(default)]
@@ -153,7 +140,7 @@ fn write_cache(market: &str, account: &str, catalog: &Catalog) {
 }
 
 /// Reads an answer of at most `MAX_ANSWER_BYTES`.
-async fn body(response: reqwest::Response) -> Result<Vec<u8>> {
+pub(crate) async fn body(response: reqwest::Response) -> Result<Vec<u8>> {
     let mut response = response.error_for_status()?;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
@@ -423,13 +410,6 @@ fn screenshots(images: &[Image]) -> Vec<String> {
         .collect()
 }
 
-fn windows_only(name: &str) -> Option<String> {
-    KNOWN_WINDOWS_ONLY
-        .iter()
-        .find(|(prefix, _)| name.starts_with(prefix))
-        .map(|(_, anticheat)| anticheat.to_string())
-}
-
 fn to_title(product: Product) -> Option<Title> {
     let parents = related(&product, &["Parent", "Extends"]);
     let addon_parents = related(&product, &["addOnParent"]);
@@ -454,7 +434,6 @@ fn to_title(product: Product) -> Option<Title> {
     .take(1200)
     .collect();
     Some(Title {
-        windows_only: windows_only(&localized.product_title),
         installable: package_format.as_deref() == Some("MSIXVC"),
         product_id: product.product_id,
         name: localized.product_title,
@@ -592,7 +571,6 @@ mod tests {
             title.poster_url.as_deref(),
             Some("https://store-images.s-microsoft.com/image/a")
         );
-        assert_eq!(title.windows_only, None);
     }
 
     const ADDON: &str = r#"{"Products":[{"ProductId":"9PCR7TSM1S96",
@@ -647,12 +625,6 @@ mod tests {
     }
 
     #[test]
-    fn knows_kernel_anti_cheat_titles() {
-        assert!(windows_only("Call of Duty®: Black Ops 6").is_some());
-        assert!(windows_only("Farming Simulator 25 (PC)").is_none());
-    }
-
-    #[test]
     fn markets_are_checked() {
         assert_eq!(valid_market(Some("de")), "DE");
         assert_eq!(valid_market(Some("../x")), "US");
@@ -669,12 +641,11 @@ mod tests {
             .unwrap();
         let count = |f: &dyn Fn(&Title) -> bool| catalog.titles.iter().filter(|t| f(t)).count();
         println!(
-            "{} titles: {} Game Pass, {} owned, {} installable, {} Windows only",
+            "{} titles: {} Game Pass, {} owned, {} installable",
             catalog.titles.len(),
             count(&|t| t.in_game_pass),
             count(&|t| t.owned),
             count(&|t| t.installable),
-            count(&|t| t.windows_only.is_some()),
         );
     }
 }

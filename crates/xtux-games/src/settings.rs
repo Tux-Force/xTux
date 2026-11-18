@@ -75,9 +75,9 @@ pub struct UiSettings {
     pub icon: String,
     /// Icon colours: `brand` or `accent`.
     pub icon_colour: String,
-    /// Mark store titles as likely Windows only from xTux's own, unverified list of titles with kernel
-    /// anti-cheat. Off by default; installed games are checked by their files regardless.
-    pub anticheat_guess: bool,
+    /// Look games up on AreWeAntiCheatYet: its public list is downloaded from GitHub once a week (no game names
+    /// are sent). Installed games are checked by their files regardless.
+    pub anticheat_list: bool,
 }
 
 impl Default for UiSettings {
@@ -91,7 +91,7 @@ impl Default for UiSettings {
             backdrop: "dynamic".into(),
             icon: "mascot".into(),
             icon_colour: "brand".into(),
-            anticheat_guess: false,
+            anticheat_list: true,
         }
     }
 }
