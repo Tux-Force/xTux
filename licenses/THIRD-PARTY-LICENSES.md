@@ -5,7 +5,7 @@ components; each is listed with its license, followed by the full license texts.
 
 ## Overview
 
-- **MIT License** (MIT): 835 crates
+- **MIT License** (MIT): 839 crates
 - **Apache License 2.0** (Apache-2.0): 36 crates
 - **ISC License** (ISC): 29 crates
 - **Unicode License v3** (Unicode-3.0): 26 crates
@@ -8799,6 +8799,39 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
+Used by: [pollster 1.0.2](https://github.com/zesterer/pollster)
+
+```text
+Copyright (c) 2020-2021 Joshua Barretto
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
 Used by: [p384 0.13.1](https://github.com/RustCrypto/elliptic-curves/tree/master/p384)
 
 ```text
@@ -11482,6 +11515,35 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
+Used by: [rfd 0.18.0](https://github.com/PolyMeilex/rfd)
+
+```text
+MIT License
+
+Copyright (c) 2020 Bilal Elmoussaoui
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
 Used by: [cfg_aliases 0.2.2](https://github.com/katharostech/cfg_aliases)
 
 ```text
@@ -11818,7 +11880,7 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [sctk-adwaita 0.10.1](https://github.com/PolyMeilex/sctk-adwaita)
+Used by: [rfd 0.18.0](https://github.com/PolyMeilex/rfd), [sctk-adwaita 0.10.1](https://github.com/PolyMeilex/sctk-adwaita)
 
 ```text
 MIT License
@@ -12228,7 +12290,7 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [accesskit 0.24.1](https://github.com/AccessKit/accesskit), [accesskit_atspi_common 0.19.1](https://github.com/AccessKit/accesskit), [accesskit_consumer 0.38.0](https://github.com/AccessKit/accesskit), [accesskit_ios 0.1.2](https://github.com/AccessKit/accesskit), [accesskit_macos 0.26.3](https://github.com/AccessKit/accesskit), [accesskit_unix 0.22.1](https://github.com/AccessKit/accesskit), [accesskit_windows 0.34.0](https://github.com/AccessKit/accesskit), [binrw 0.13.4](https://github.com/jam1garner/binrw), [binrw_derive 0.13.4](https://github.com/jam1garner/binrw), [block2 0.5.1](https://github.com/madsmtm/objc2), [block2 0.6.2](https://github.com/madsmtm/objc2), [cesu8 1.1.0](https://github.com/emk/cesu8-rs), [chrono 0.4.45](https://github.com/chronotope/chrono), [cms 0.2.3](https://github.com/RustCrypto/formats/tree/master/cms), [cvlib 0.1.2](https://github.com/TransientError/CorrelationVector-rust), [dispatch2 0.3.1](https://github.com/madsmtm/objc2), [dispatch 0.2.0](http://github.com/SSheldon/rust-dispatch), [dlopen2 0.8.2](https://github.com/OpenByteDev/dlopen2), [dlopen2_derive 0.4.3](https://github.com/OpenByteDev/dlopen2), [dpi 0.1.2](https://github.com/rust-windowing/winit), [inquire 0.9.4](https://github.com/mikaelmello/inquire), [jni-macros 0.22.4](https://github.com/jni-rs/jni-rs), [jni-sys-macros 0.4.1](https://github.com/jni-rs/jni-sys), [jni 0.22.4](https://github.com/jni-rs/jni-rs), [libm 0.2.16](https://github.com/rust-lang/compiler-builtins), [lyon_algorithms 1.0.22](https://github.com/nical/lyon), [lyon_extra 1.1.0](https://github.com/nical/lyon), [lyon_geom 1.0.20](https://github.com/nical/lyon), [lyon_path 1.0.19](https://github.com/nical/lyon), [ndk-context 0.1.1](https://github.com/rust-windowing/android-ndk-rs), [ndk-sys 0.6.0+11769913](https://github.com/rust-mobile/ndk), [ndk 0.9.0](https://github.com/rust-mobile/ndk), [objc-sys 0.3.5](https://github.com/madsmtm/objc2), [objc2-app-kit 0.2.2](https://github.com/madsmtm/objc2), [objc2-app-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-cloud-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-data 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-graphics 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-image 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-location 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-text 0.3.2](https://github.com/madsmtm/objc2), [objc2-encode 4.1.0](https://github.com/madsmtm/objc2), [objc2-exception-helper 0.1.1](https://github.com/madsmtm/objc2), [objc2-foundation 0.2.2](https://github.com/madsmtm/objc2), [objc2-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2-metal 0.3.2](https://github.com/madsmtm/objc2), [objc2-quartz-core 0.3.2](https://github.com/madsmtm/objc2), [objc2-ui-kit 0.2.2](https://github.com/madsmtm/objc2), [objc2-ui-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-user-notifications 0.3.2](https://github.com/madsmtm/objc2), [objc2-web-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2 0.5.3](https://github.com/madsmtm/objc2), [objc2 0.6.4](https://github.com/madsmtm/objc2), [profiling 1.0.18](https://github.com/aclysma/profiling), [rspolib 0.1.2](https://github.com/mondeja/rspolib), [rustls-platform-verifier-android 0.1.1](https://github.com/rustls/rustls-platform-verifier), [siphasher 1.0.3](https://github.com/jedisct1/rust-siphash), [skia-bindings 0.153.3](https://github.com/rust-skia/rust-skia), [skia-safe 0.153.3](https://github.com/rust-skia/rust-skia), [system-configuration-sys 0.5.0](https://github.com/mullvad/system-configuration-rs), [system-configuration 0.5.1](https://github.com/mullvad/system-configuration-rs), [taffy 0.10.1](https://github.com/DioxusLabs/taffy), [webview2-com-macros 0.8.1](https://github.com/wravery/webview2-rs), [webview2-com-sys 0.38.2](https://github.com/wravery/webview2-rs), [webview2-com 0.38.2](https://github.com/wravery/webview2-rs), [winapi-i686-pc-windows-gnu 0.4.0](https://github.com/retep998/winapi-rs), [winapi-x86_64-pc-windows-gnu 0.4.0](https://github.com/retep998/winapi-rs), [windows-collections 0.2.0](https://github.com/microsoft/windows-rs), [windows-collections 0.3.2](https://github.com/microsoft/windows-rs), [windows-core 0.61.2](https://github.com/microsoft/windows-rs), [windows-core 0.62.2](https://github.com/microsoft/windows-rs), [windows-future 0.2.1](https://github.com/microsoft/windows-rs), [windows-future 0.3.2](https://github.com/microsoft/windows-rs), [windows-implement 0.60.2](https://github.com/microsoft/windows-rs), [windows-interface 0.59.3](https://github.com/microsoft/windows-rs), [windows-link 0.1.3](https://github.com/microsoft/windows-rs), [windows-link 0.2.1](https://github.com/microsoft/windows-rs), [windows-numerics 0.2.0](https://github.com/microsoft/windows-rs), [windows-numerics 0.3.1](https://github.com/microsoft/windows-rs), [windows-registry 0.6.1](https://github.com/microsoft/windows-rs), [windows-result 0.3.4](https://github.com/microsoft/windows-rs), [windows-result 0.4.1](https://github.com/microsoft/windows-rs), [windows-strings 0.4.2](https://github.com/microsoft/windows-rs), [windows-strings 0.5.1](https://github.com/microsoft/windows-rs), [windows-sys 0.45.0](https://github.com/microsoft/windows-rs), [windows-sys 0.48.0](https://github.com/microsoft/windows-rs), [windows-sys 0.52.0](https://github.com/microsoft/windows-rs), [windows-sys 0.61.2](https://github.com/microsoft/windows-rs), [windows-targets 0.42.2](https://github.com/microsoft/windows-rs), [windows-targets 0.48.5](https://github.com/microsoft/windows-rs), [windows-targets 0.52.6](https://github.com/microsoft/windows-rs), [windows-threading 0.1.0](https://github.com/microsoft/windows-rs), [windows-threading 0.2.1](https://github.com/microsoft/windows-rs), [windows-version 0.1.7](https://github.com/microsoft/windows-rs), [windows 0.61.3](https://github.com/microsoft/windows-rs), [windows 0.62.2](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.42.2](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.48.5](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.42.2](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.48.5](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.52.6](https://github.com/microsoft/windows-rs), [xmlserde 0.7.2](https://github.com/ImJeremyHe/xmlserde), [xmlserde_derives 0.7.2](https://github.com/ImJeremyHe/xmlserde), [yasna 0.5.2](https://github.com/qnighy/yasna.rs)
+Used by: [accesskit 0.24.1](https://github.com/AccessKit/accesskit), [accesskit_atspi_common 0.19.1](https://github.com/AccessKit/accesskit), [accesskit_consumer 0.38.0](https://github.com/AccessKit/accesskit), [accesskit_ios 0.1.2](https://github.com/AccessKit/accesskit), [accesskit_macos 0.26.3](https://github.com/AccessKit/accesskit), [accesskit_unix 0.22.1](https://github.com/AccessKit/accesskit), [accesskit_windows 0.34.0](https://github.com/AccessKit/accesskit), [binrw 0.13.4](https://github.com/jam1garner/binrw), [binrw_derive 0.13.4](https://github.com/jam1garner/binrw), [block2 0.5.1](https://github.com/madsmtm/objc2), [block2 0.6.2](https://github.com/madsmtm/objc2), [cesu8 1.1.0](https://github.com/emk/cesu8-rs), [chrono 0.4.45](https://github.com/chronotope/chrono), [cms 0.2.3](https://github.com/RustCrypto/formats/tree/master/cms), [cvlib 0.1.2](https://github.com/TransientError/CorrelationVector-rust), [dispatch2 0.3.1](https://github.com/madsmtm/objc2), [dispatch 0.2.0](http://github.com/SSheldon/rust-dispatch), [dlopen2 0.8.2](https://github.com/OpenByteDev/dlopen2), [dlopen2_derive 0.4.3](https://github.com/OpenByteDev/dlopen2), [dpi 0.1.2](https://github.com/rust-windowing/winit), [inquire 0.9.4](https://github.com/mikaelmello/inquire), [jni-macros 0.22.4](https://github.com/jni-rs/jni-rs), [jni-sys-macros 0.4.1](https://github.com/jni-rs/jni-sys), [jni 0.22.4](https://github.com/jni-rs/jni-rs), [libm 0.2.16](https://github.com/rust-lang/compiler-builtins), [lyon_algorithms 1.0.22](https://github.com/nical/lyon), [lyon_extra 1.1.0](https://github.com/nical/lyon), [lyon_geom 1.0.20](https://github.com/nical/lyon), [lyon_path 1.0.19](https://github.com/nical/lyon), [ndk-context 0.1.1](https://github.com/rust-windowing/android-ndk-rs), [ndk-sys 0.6.0+11769913](https://github.com/rust-mobile/ndk), [ndk 0.9.0](https://github.com/rust-mobile/ndk), [objc-sys 0.3.5](https://github.com/madsmtm/objc2), [objc2-app-kit 0.2.2](https://github.com/madsmtm/objc2), [objc2-app-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-cloud-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-data 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-graphics 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-image 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-location 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-text 0.3.2](https://github.com/madsmtm/objc2), [objc2-encode 4.1.0](https://github.com/madsmtm/objc2), [objc2-exception-helper 0.1.1](https://github.com/madsmtm/objc2), [objc2-foundation 0.2.2](https://github.com/madsmtm/objc2), [objc2-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2-metal 0.3.2](https://github.com/madsmtm/objc2), [objc2-quartz-core 0.3.2](https://github.com/madsmtm/objc2), [objc2-ui-kit 0.2.2](https://github.com/madsmtm/objc2), [objc2-ui-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-uniform-type-identifiers 0.3.2](https://github.com/madsmtm/objc2), [objc2-user-notifications 0.3.2](https://github.com/madsmtm/objc2), [objc2-web-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2 0.5.3](https://github.com/madsmtm/objc2), [objc2 0.6.4](https://github.com/madsmtm/objc2), [profiling 1.0.18](https://github.com/aclysma/profiling), [rspolib 0.1.2](https://github.com/mondeja/rspolib), [rustls-platform-verifier-android 0.1.1](https://github.com/rustls/rustls-platform-verifier), [siphasher 1.0.3](https://github.com/jedisct1/rust-siphash), [skia-bindings 0.153.3](https://github.com/rust-skia/rust-skia), [skia-safe 0.153.3](https://github.com/rust-skia/rust-skia), [system-configuration-sys 0.5.0](https://github.com/mullvad/system-configuration-rs), [system-configuration 0.5.1](https://github.com/mullvad/system-configuration-rs), [taffy 0.10.1](https://github.com/DioxusLabs/taffy), [webview2-com-macros 0.8.1](https://github.com/wravery/webview2-rs), [webview2-com-sys 0.38.2](https://github.com/wravery/webview2-rs), [webview2-com 0.38.2](https://github.com/wravery/webview2-rs), [winapi-i686-pc-windows-gnu 0.4.0](https://github.com/retep998/winapi-rs), [winapi-x86_64-pc-windows-gnu 0.4.0](https://github.com/retep998/winapi-rs), [windows-collections 0.2.0](https://github.com/microsoft/windows-rs), [windows-collections 0.3.2](https://github.com/microsoft/windows-rs), [windows-core 0.61.2](https://github.com/microsoft/windows-rs), [windows-core 0.62.2](https://github.com/microsoft/windows-rs), [windows-future 0.2.1](https://github.com/microsoft/windows-rs), [windows-future 0.3.2](https://github.com/microsoft/windows-rs), [windows-implement 0.60.2](https://github.com/microsoft/windows-rs), [windows-interface 0.59.3](https://github.com/microsoft/windows-rs), [windows-link 0.1.3](https://github.com/microsoft/windows-rs), [windows-link 0.2.1](https://github.com/microsoft/windows-rs), [windows-numerics 0.2.0](https://github.com/microsoft/windows-rs), [windows-numerics 0.3.1](https://github.com/microsoft/windows-rs), [windows-registry 0.6.1](https://github.com/microsoft/windows-rs), [windows-result 0.3.4](https://github.com/microsoft/windows-rs), [windows-result 0.4.1](https://github.com/microsoft/windows-rs), [windows-strings 0.4.2](https://github.com/microsoft/windows-rs), [windows-strings 0.5.1](https://github.com/microsoft/windows-rs), [windows-sys 0.45.0](https://github.com/microsoft/windows-rs), [windows-sys 0.48.0](https://github.com/microsoft/windows-rs), [windows-sys 0.52.0](https://github.com/microsoft/windows-rs), [windows-sys 0.61.2](https://github.com/microsoft/windows-rs), [windows-targets 0.42.2](https://github.com/microsoft/windows-rs), [windows-targets 0.48.5](https://github.com/microsoft/windows-rs), [windows-targets 0.52.6](https://github.com/microsoft/windows-rs), [windows-threading 0.1.0](https://github.com/microsoft/windows-rs), [windows-threading 0.2.1](https://github.com/microsoft/windows-rs), [windows-version 0.1.7](https://github.com/microsoft/windows-rs), [windows 0.61.3](https://github.com/microsoft/windows-rs), [windows 0.62.2](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.42.2](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.48.5](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.42.2](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.48.5](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.52.6](https://github.com/microsoft/windows-rs), [xmlserde 0.7.2](https://github.com/ImJeremyHe/xmlserde), [xmlserde_derives 0.7.2](https://github.com/ImJeremyHe/xmlserde), [yasna 0.5.2](https://github.com/qnighy/yasna.rs)
 
 ```text
 MIT License
