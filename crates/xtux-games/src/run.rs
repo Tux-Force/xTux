@@ -170,12 +170,9 @@ async fn prepare(_lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Str
     Ok((Box::pin(async {}), String::new()))
 }
 
-/// Folder of the Proton BattlEye Runtime: `PROTON_BATTLEYE_RUNTIME`, or the Steam tool of that name in one of the
-/// Steam libraries.
-fn battleye_runtime() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("PROTON_BATTLEYE_RUNTIME") {
-        return Some(PathBuf::from(dir));
-    }
+/// Folder of the Steam tool `name` (for example `Proton BattlEye Runtime`) in one of the Steam libraries, when it
+/// has the subfolder `version`.
+fn steam_tool(name: &str, version: &str) -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
     let roots = [
         home.join(".local/share/Steam"),
@@ -198,8 +195,73 @@ fn battleye_runtime() -> Option<PathBuf> {
     }
     libraries
         .into_iter()
-        .map(|library| library.join("steamapps/common/Proton BattlEye Runtime"))
-        .find(|dir| dir.join("v1").is_dir())
+        .map(|library| library.join("steamapps/common").join(name))
+        .find(|dir| dir.join(version).is_dir())
+}
+
+/// Folder of the Proton BattlEye Runtime: `PROTON_BATTLEYE_RUNTIME`, or the Steam tool of that name.
+fn battleye_runtime() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PROTON_BATTLEYE_RUNTIME") {
+        return Some(PathBuf::from(dir));
+    }
+    steam_tool("Proton BattlEye Runtime", "v1")
+}
+
+/// Folder of the Proton EasyAntiCheat Runtime: `PROTON_EAC_RUNTIME`, or the Steam tool of that name (Steam app
+/// 1826330). Wine takes its bridge from `v2/lib32` and `v2/lib64`.
+fn eac_runtime() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PROTON_EAC_RUNTIME") {
+        return Some(PathBuf::from(dir));
+    }
+    steam_tool("Proton EasyAntiCheat Runtime", "v2")
+}
+
+/// Easy Anti-Cheat in a game folder.
+#[derive(Debug, PartialEq, Eq)]
+struct EasyAntiCheat {
+    /// The game ships EAC's Linux client (`easyanticheat_x64.so` next to `easyanticheat_x64.dll`). Without it Wine
+    /// loads the Windows client, which needs a kernel driver: the developer has not enabled EAC for Linux in this
+    /// version of the game.
+    linux_client: bool,
+}
+
+/// Looks for EAC's client DLL in the game folder and up to three folders deep.
+fn easyanticheat(content: &Path) -> Option<EasyAntiCheat> {
+    const DLLS: &[&str] = &[
+        "easyanticheat_x64.dll",
+        "easyanticheat_x86.dll",
+        "easyanticheat.dll",
+    ];
+    let mut found = None;
+    let mut folders = vec![(content.to_path_buf(), 0)];
+    while let Some((folder, depth)) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        let names: Vec<(String, std::fs::FileType, PathBuf)> = entries
+            .flatten()
+            .filter_map(|e| {
+                Some((
+                    e.file_name().to_string_lossy().to_lowercase(),
+                    e.file_type().ok()?,
+                    e.path(),
+                ))
+            })
+            .collect();
+        for (name, kind, path) in &names {
+            if kind.is_dir() && depth < 3 {
+                folders.push((path.clone(), depth + 1));
+            } else if DLLS.contains(&name.as_str()) {
+                let so = name.replace(".dll", ".so");
+                let linux_client = names.iter().any(|(other, _, _)| *other == so);
+                // One folder with the Linux client is enough.
+                if linux_client || found.is_none() {
+                    found = Some(EasyAntiCheat { linux_client });
+                }
+            }
+        }
+    }
+    found
 }
 
 /// The `Battleye/BELauncher.ini` of a game folder, whatever the case of its folder name.
@@ -569,6 +631,32 @@ pub async fn launch(
         }
         _ => nt_entry,
     };
+    // Easy Anti-Cheat runs on Linux through the Proton EasyAntiCheat Runtime: Wine loads its bridge instead of the
+    // game's easyanticheat DLL when the game ships EAC's Linux client next to it.
+    if let Some(eac) = easyanticheat(out) {
+        match (eac_runtime(), eac.linux_client) {
+            (Some(runtime), linux_client) => {
+                env.push((
+                    "PROTON_EAC_RUNTIME",
+                    runtime.to_string_lossy().into_owned(),
+                ));
+                progress.message(if linux_client {
+                    "Easy Anti-Cheat runs through the Proton EasyAntiCheat Runtime"
+                } else {
+                    "Easy Anti-Cheat: this version of the game has no Linux client of EAC (the developer has not \
+                     enabled it), so protected modes and online play will likely not work"
+                });
+            }
+            (None, true) => progress.message(
+                "Easy Anti-Cheat needs the Proton EasyAntiCheat Runtime from Steam (Library, Tools, or \
+                 steam://install/1826330); online play will not work",
+            ),
+            (None, false) => progress.message(
+                "Easy Anti-Cheat: this version of the game has no Linux client of EAC, so protected modes and \
+                 online play will likely not work",
+            ),
+        }
+    }
     // Read by GetCurrentPackageFamilyName/FullName of the Tux-Force Wine build.
     if let Some((family, full)) =
         crate::library::read_config(out).and_then(|c| crate::library::package_identity(&c))
@@ -676,5 +764,30 @@ mod process_tests {
             .unwrap()
             .unwrap();
         assert_eq!(status.signal(), Some(9));
+    }
+}
+
+#[cfg(test)]
+mod anticheat_tests {
+    use super::*;
+
+    #[test]
+    fn finds_easyanticheat_and_its_linux_client() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(easyanticheat(dir.path()), None);
+        let bin = dir.path().join("Game/Binaries/Win64");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("EasyAntiCheat_x64.dll"), b"").unwrap();
+        assert_eq!(
+            easyanticheat(dir.path()),
+            Some(EasyAntiCheat {
+                linux_client: false
+            })
+        );
+        std::fs::write(bin.join("easyanticheat_x64.so"), b"").unwrap();
+        assert_eq!(
+            easyanticheat(dir.path()),
+            Some(EasyAntiCheat { linux_client: true })
+        );
     }
 }
