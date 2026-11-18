@@ -86,8 +86,19 @@ async fn run_init(
     progress.message(&format!("Prefix: {}", prefix.display()));
 
     if !prefix.join("drive_c").is_dir() {
+        // Wine creates only the last folder of WINEPREFIX and fails when its parent is missing too.
+        std::fs::create_dir_all(&prefix)
+            .map_err(|e| format!("could not create {}: {e}", prefix.display()))?;
         progress.message("Creating the prefix with wineboot");
-        wine(&options.wine, &prefix, &["wineboot", "-u"]).await?;
+        // Without the Mono and Gecko overrides, wineboot opens Wine's installer dialogs and downloads both (about
+        // 100 MB) when the system has no wine-mono; GDK games need neither.
+        wine_with_env(
+            &options.wine,
+            &prefix,
+            &["wineboot", "-u"],
+            &[("WINEDLLOVERRIDES", "mscoree,mshtml=")],
+        )
+        .await?;
         wait_wineserver(&options.wine, &prefix).await;
     }
     let system32 = prefix.join("drive_c/windows/system32");
@@ -269,9 +280,19 @@ pub fn server_running(prefix: &Path) -> bool {
 /// Runs `wine args…` in the prefix. Wine's own output (first-run notes, 32-bit loader messages of a 64-bit-only
 /// build) would break progress displays, so it is kept and shown only when the command fails.
 async fn wine(wine: &str, prefix: &Path, args: &[&str]) -> Result<(), String> {
+    wine_with_env(wine, prefix, args, &[]).await
+}
+
+async fn wine_with_env(
+    wine: &str,
+    prefix: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<(), String> {
     let output = Command::new(wine)
         .args(args)
         .env("WINEPREFIX", prefix)
+        .envs(env.iter().copied())
         .env("WINEDEBUG", "-all")
         .stdin(std::process::Stdio::null())
         .output()
