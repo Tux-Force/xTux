@@ -74,8 +74,13 @@ The Updates page checks installed games and DLCs, including Windows Xbox app ins
 ends abnormally, the launcher names the cause and a hint, with a button to open the log.
 
 **Delete game…** removes the entire game folder after confirmation, including Windows Xbox app installs and any
-saves inside that folder. Downloading Wine, automatic first-launch prefix setup and Flatpak packaging remain
-planned: set the Wine binary in Settings → Games and initialize the prefix with `xtux-cli prefix init` once.
+saves inside that folder.
+
+On the first start the launcher opens **Welcome to xTux**: "Set everything up" signs in, downloads the
+[Tux-Force Wine](https://github.com/Tux-Force/wine/releases) (checked against its SHA-256 file), prepares the prefix
+and finds the game folders. `xtux-cli` without a command shows the same state with a menu and runs the setup in
+the terminal. Releases also come as a Flatpak (`xtux-linux-x86_64.flatpak`), which brings WebKitGTK for the sign-in.
+See [Setup](docs/Setup.md).
 
 Global and per-game settings share `$XDG_CONFIG_HOME/xtux/settings.toml` (normally `~/.config/xtux/settings.toml`).
 Per-game overrides are keyed by game folder. `controller = "xbox"` (default) or `"native"` sets how PlayStation
@@ -124,6 +129,7 @@ The project structure is as follows.
 
 - Rust version 1.98 or later
 - Right now CLI relies on wry and tao to show a login page. Consult https://docs.rs/wry/latest/wry/#platform-considerations
+  (the Flatpak, `packaging/flatpak`, gets WebKitGTK from the GNOME runtime)
 - xtux-service relies on `protoc` to compile `proto/` definitions make sure to install it for your platform
 
 ### Running
