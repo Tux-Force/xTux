@@ -13,7 +13,7 @@ use slint::{
     ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel, Weak,
 };
 use xtux_games::art::{self, Artwork};
-use xtux_games::settings::{GameSettings, Settings};
+use xtux_games::settings::{ControllerMode, GameSettings, Settings};
 use xtux_protocol::{
     Canceller, Client, ClientError, DownloadCommand, ErrorKind, Event, GameInfo, Request, Response,
 };
@@ -565,6 +565,7 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
     ui.set_game_wine(own.wine.unwrap_or_default().into());
     ui.set_game_prefix(path_text(&own.prefix).into());
     ui.set_game_exe(own.exe.unwrap_or_default().into());
+    ui.set_game_controller(own.controller.map_or("", ControllerMode::as_str).into());
     ui.set_game_args(own.args.join("\n").into());
     ui.set_game_env(
         own.env
@@ -1948,6 +1949,7 @@ fn main() {
         ui.set_icon_choice(settings.ui.icon.clone().into());
         ui.set_icon_colour(settings.ui.icon_colour.clone().into());
         ui.set_anticheat_guess(settings.ui.anticheat_guess);
+        ui.set_controller_mode(settings.controller.as_str().into());
         if let Ok(mut s) = state.lock() {
             s.backdrop_mode = settings.ui.backdrop.clone();
         }
@@ -2056,6 +2058,8 @@ fn main() {
             settings.ui.icon = ui.get_icon_choice().into();
             settings.ui.icon_colour = ui.get_icon_colour().into();
             settings.ui.anticheat_guess = ui.get_anticheat_guess();
+            settings.controller =
+                ControllerMode::parse(&ui.get_controller_mode()).unwrap_or_default();
             apply_theme(&ui);
             // Show the backdrop setting at once.
             if let Ok(mut s) = state.lock() {
@@ -2148,6 +2152,7 @@ fn main() {
                     .map(str::to_string)
                     .collect(),
                 env: parse_env(&ui.get_game_env()),
+                controller: ControllerMode::parse(&ui.get_game_controller()),
             };
             let Some(mut settings) = settings_for_saving(&ui) else {
                 return;

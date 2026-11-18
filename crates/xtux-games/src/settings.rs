@@ -18,11 +18,41 @@ pub struct Settings {
     pub prefix: Option<PathBuf>,
     /// Store market (for example `DE`); taken from the system language when not set.
     pub market: Option<String>,
+    /// How PlayStation controllers reach games.
+    pub controller: ControllerMode,
     /// Look of the launcher.
     pub ui: UiSettings,
     /// Settings of single games, by game folder.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub games: BTreeMap<String, GameSettings>,
+}
+
+/// How Wine hands PlayStation controllers (DualShock 4, DualSense) to games.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ControllerMode {
+    /// As an Xbox gamepad, the only kind XInput and GameInput games know (through SDL).
+    #[default]
+    Xbox,
+    /// As the raw PlayStation device (hidraw), for games with their own PlayStation support.
+    Native,
+}
+
+impl ControllerMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Xbox => "xbox",
+            Self::Native => "native",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "xbox" => Some(Self::Xbox),
+            "native" => Some(Self::Native),
+            _ => None,
+        }
+    }
 }
 
 /// Look of the launcher.
@@ -85,6 +115,9 @@ pub struct GameSettings {
     /// Extra environment variables for the game.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// How PlayStation controllers reach this game.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controller: Option<ControllerMode>,
 }
 
 /// The same folder gives the same key however it was written (`./Game`, `Game/`, through a link).
@@ -221,6 +254,7 @@ impl Settings {
         let mut game = self.game(game_dir);
         game.wine = game.wine.or_else(|| self.wine.clone());
         game.prefix = game.prefix.or_else(|| self.prefix.clone());
+        game.controller = game.controller.or(Some(self.controller));
         game
     }
 
@@ -249,6 +283,7 @@ mod tests {
             wine: Some("/opt/wine/bin/wine".into()),
             prefix: None,
             market: Some("DE".into()),
+            controller: ControllerMode::Native,
             ui: UiSettings::default(),
             games: BTreeMap::new(),
         };
@@ -283,6 +318,24 @@ mod tests {
         assert_eq!(
             back.effective(Path::new("/other")).args,
             Vec::<String>::new()
+        );
+
+        assert_eq!(effective.controller, Some(ControllerMode::Xbox));
+        settings.set_game(
+            game,
+            GameSettings {
+                controller: Some(ControllerMode::Native),
+                ..GameSettings::default()
+            },
+        );
+        assert_eq!(
+            settings.effective(game).controller,
+            Some(ControllerMode::Native)
+        );
+        assert!(
+            toml::to_string_pretty(&settings)
+                .unwrap()
+                .contains("controller = \"native\"")
         );
 
         settings.set_game(game, GameSettings::default());

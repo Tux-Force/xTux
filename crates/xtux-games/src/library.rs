@@ -219,6 +219,42 @@ pub(crate) fn attribute(xml: &str, tag: &str, attr: &str) -> Option<String> {
     Some(head[value_start..value_end].to_string())
 }
 
+/// Publisher ID of a package family name: the first 64 bits of the SHA-256 of the UTF-16LE publisher, in
+/// Crockford base32 (13 characters, the last one padded with a zero bit).
+fn publisher_id(publisher: &str) -> String {
+    use sha2::{Digest, Sha256};
+    const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+    let utf16: Vec<u8> = publisher
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let digest = Sha256::digest(&utf16);
+    let bits = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes")) as u128;
+    let bits = bits << 1; // 65 bits, a multiple of 5
+    (0..13)
+        .rev()
+        .map(|i| ALPHABET[((bits >> (i * 5)) & 0x1f) as usize] as char)
+        .collect()
+}
+
+/// Package family and full name the game has on Windows, for games that need a package identity.
+///
+/// Only games depending on the Windows App Runtime get one: they skip its bootstrapper when they run packaged,
+/// as on Windows, while the bootstrapper itself cannot find the runtime under Wine (Minecraft for Windows).
+pub(crate) fn package_identity(xml: &str) -> Option<(String, String)> {
+    if !xml.contains("Name=\"Microsoft.WindowsAppRuntime") {
+        return None;
+    }
+    let name = attribute(xml, "Identity", "Name")?;
+    let publisher = attribute(xml, "Identity", "Publisher")?;
+    let version = attribute(xml, "Identity", "Version")?;
+    let id = publisher_id(&publisher);
+    Some((
+        format!("{name}_{id}"),
+        format!("{name}_{version}_x64__{id}"),
+    ))
+}
+
 /// The desktop entry point, rather than an arbitrary encrypted helper executable.
 pub(crate) fn desktop_executable(xml: &str) -> Option<String> {
     for (start, _) in xml.match_indices("<Executable") {
@@ -246,6 +282,22 @@ mod tests {
 
     const CONFIG: &str = r#"<Game><Identity Name="X" /><TitleId>604cc91b</TitleId><StoreId>9NXN8GF8N9ZQ</StoreId>
         <ShellVisuals DefaultDisplayName="Farming Simulator 25" StoreLogo="a.png" /></Game>"#;
+
+    #[test]
+    fn package_identity_of_runtime_dependents() {
+        let config = r#"<Game><Identity Name="Microsoft.MinecraftUWP"
+            Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+            Version="1.26.6301.0" />
+            <DependencyList><Dependency Name="Microsoft.WindowsAppRuntime.1.8" /></DependencyList></Game>"#;
+        assert_eq!(
+            package_identity(config),
+            Some((
+                "Microsoft.MinecraftUWP_8wekyb3d8bbwe".to_string(),
+                "Microsoft.MinecraftUWP_1.26.6301.0_x64__8wekyb3d8bbwe".to_string()
+            ))
+        );
+        assert_eq!(package_identity(CONFIG), None);
+    }
 
     #[test]
     fn reads_config_fields() {

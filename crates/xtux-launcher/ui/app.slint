@@ -929,6 +929,9 @@ export component AppWindow inherits Window {
     in-out property <string> game-exe;
     in-out property <string> game-args;
     in-out property <string> game-env;
+    // "" follows the general setting, else "xbox" or "native".
+    in-out property <string> game-controller;
+    in-out property <string> controller-mode: "xbox";
     in property <string> game-log;
     // Logs page (page 3)
     in property <string> service-log;
@@ -1448,6 +1451,14 @@ export component AppWindow inherits Window {
                                 LineEdit { text <=> root.game-prefix; placeholder-text: "Default: general setting"; }
                                 Label { text: "Executable, package relative (for example x64\\Game.exe)"; }
                                 LineEdit { text <=> root.game-exe; placeholder-text: "Default: from MicrosoftGame.config"; }
+                                Label { text: "PlayStation controllers"; }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 8px;
+                                    GhostButton { text: "General setting"; active: root.game-controller == ""; clicked => { root.game-controller = ""; } }
+                                    GhostButton { text: "As Xbox gamepad"; active: root.game-controller == "xbox"; clicked => { root.game-controller = "xbox"; } }
+                                    GhostButton { text: "As PlayStation controller"; active: root.game-controller == "native"; clicked => { root.game-controller = "native"; } }
+                                }
                                 HorizontalLayout {
                                     spacing: 10px;
                                     VerticalLayout {
@@ -1630,6 +1641,18 @@ export component AppWindow inherits Window {
                             LineEdit { text <=> root.prefix; placeholder-text: "~/Games/xtux-prefix"; }
                             Label { text: "Library folders, one per line"; }
                             TextEdit { text <=> root.library-dirs; height: 110px; }
+                            Label { text: "PlayStation controllers"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "As Xbox gamepad"; active: root.controller-mode == "xbox"; clicked => { root.controller-mode = "xbox"; root.ui-changed(); } }
+                                GhostButton { text: "As PlayStation controller"; active: root.controller-mode == "native"; clicked => { root.controller-mode = "native"; root.ui-changed(); } }
+                            }
+                            Label {
+                                text: "Xbox games read controllers as Xbox gamepads; choose PlayStation only for games with their own DualShock or DualSense support. Games of the same prefix share the mode, a change applies once they are all closed.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
                             HorizontalLayout {
                                 alignment: end;
                                 padding-top: 6px;

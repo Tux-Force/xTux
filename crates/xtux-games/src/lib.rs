@@ -9,6 +9,8 @@ mod cancel;
 pub mod catalog;
 pub mod download;
 pub mod error;
+#[cfg(unix)]
+pub mod gameinput;
 pub mod install;
 pub mod layout;
 pub mod library;
