@@ -266,19 +266,33 @@ pub fn server_running(prefix: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
 
+/// Runs `wine args…` in the prefix. Wine's own output (first-run notes, 32-bit loader messages of a 64-bit-only
+/// build) would break progress displays, so it is kept and shown only when the command fails.
 async fn wine(wine: &str, prefix: &Path, args: &[&str]) -> Result<(), String> {
-    let status = Command::new(wine)
+    let output = Command::new(wine)
         .args(args)
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", "-all")
-        .status()
+        .stdin(std::process::Stdio::null())
+        .output()
         .await
         .map_err(|e| format!("could not start {wine}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`wine {}` failed with {status}", args.join(" ")))
+    if output.status.success() {
+        return Ok(());
     }
+    let text = String::from_utf8_lossy(&output.stderr);
+    let tail: Vec<&str> = text.lines().rev().take(5).collect();
+    let tail: Vec<&str> = tail.into_iter().rev().collect();
+    Err(format!(
+        "`wine {}` failed with {}{}",
+        args.join(" "),
+        output.status,
+        if tail.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", tail.join(" / "))
+        }
+    ))
 }
 
 /// Waits until the prefix's wineserver has written the registry to disk.

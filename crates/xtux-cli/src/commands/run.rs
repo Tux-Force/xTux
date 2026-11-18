@@ -38,7 +38,7 @@ pub fn prepare(
     let effective = settings.effective(&source);
     let wine = wine
         .or(effective.wine)
-        .ok_or("No Wine binary given and none set in the settings")?;
+        .ok_or("No Wine yet: run `xtux-cli setup`, or pass a Wine binary")?;
     let mut env: Vec<(String, String)> = effective.env.into_iter().collect();
     // A prefix of the game wins over WINEPREFIX, which wins over the general setting.
     let prefix = game.prefix.or_else(|| {

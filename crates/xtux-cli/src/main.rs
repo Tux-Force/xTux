@@ -8,6 +8,8 @@ use xodus::tokens::TokenManager;
 
 mod banner;
 mod commands;
+#[cfg(unix)]
+mod interactive;
 mod package;
 mod webview;
 
@@ -50,7 +52,11 @@ enum SubCommand {
         #[arg(short, long, help = "Path to a keyfile with content decryption keys")]
         key_file: Option<String>,
     },
+    #[command(about = "Sign in with your Microsoft account")]
     Login,
+    #[cfg(unix)]
+    #[command(about = "Guided setup: sign-in, Tux-Force Wine, prefix, game library, controllers")]
+    Setup,
     Logout {
         #[arg(long, default_value_t = false, help = "Remove device license")]
         device: bool,
@@ -108,9 +114,7 @@ enum SubCommand {
     #[command(
         about = "The download queue of xtux-service: list, add <Store ID> [library], pause|resume|remove|up|down <n>, clear"
     )]
-    Downloads {
-        action: Vec<String>,
-    },
+    Downloads { action: Vec<String> },
     #[cfg(unix)]
     #[command(about = "List the installed games of the library folders")]
     List {
@@ -138,9 +142,7 @@ enum SubCommand {
         action: ClepAction,
     },
     #[command(about = "Decode SPLicenseBlock")]
-    SpLicense {
-        block: String,
-    },
+    SpLicense { block: String },
 }
 
 #[cfg(unix)]
@@ -187,9 +189,18 @@ enum ClepAction {
 }
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(
+    version,
+    about = "xTux: play your Xbox PC games on Linux. Without a command it opens the interactive home screen.",
+    long_about = None
+)]
 struct CliArgs {
     #[command(subcommand)]
+    command: Option<SubCommand>,
+}
+
+/// The arguments once a command was given.
+struct Args {
     command: SubCommand,
 }
 
@@ -241,6 +252,19 @@ async fn main() -> ExitCode {
     xodus::secrets::init_secrets().expect("Unable to initialize credentials");
     let tokens = TokenManager::with_keychain_and_memory();
 
+    // Without a command: the home screen, which starts the setup when something is missing.
+    let Some(command) = args.command else {
+        xodus::tokens::device::ensure_device_credentials(&client, &tokens).await;
+        #[cfg(unix)]
+        return interactive::home(&client, &tokens).await;
+        #[cfg(not(unix))]
+        {
+            let _ = CliArgs::command().print_help();
+            return ExitCode::SUCCESS;
+        }
+    };
+    let args = Args { command };
+
     // Clep/SpLicense are pure local data transforms and Logout only removes
     // stored credentials - none of them need a device identity, so don't
     // force provisioning (network + keychain access) just to run them. This
@@ -255,7 +279,7 @@ async fn main() -> ExitCode {
         xodus::tokens::device::ensure_device_credentials(&client, &tokens).await;
     }
 
-    // The mascot greets long running commands.
+    // The mascot greets long running commands (the setup shows it itself).
     #[cfg(unix)]
     if matches!(
         args.command,
@@ -287,6 +311,8 @@ async fn main() -> ExitCode {
             .await
         }
         SubCommand::Login => commands::login::run(&client, &tokens).await,
+        #[cfg(unix)]
+        SubCommand::Setup => interactive::setup(&client, &tokens).await,
         SubCommand::Logout { device } => commands::logout::run(&tokens, device).await,
         SubCommand::Extract {
             path,

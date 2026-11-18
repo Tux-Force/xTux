@@ -532,6 +532,18 @@ impl Job {
                     .map_err(error_body)?;
                 Ok(Response::PrefixReady { prefix })
             }
+            Request::InstallWine => {
+                let release = xtux_games::wine::latest(&self.client)
+                    .await
+                    .map_err(error_body)?;
+                let installed = xtux_games::wine::install(&self.client, &release, &progress)
+                    .await
+                    .map_err(error_body)?;
+                Ok(Response::WineReady {
+                    tag: installed.tag,
+                    wine: installed.wine,
+                })
+            }
             Request::Install {
                 source,
                 destination,

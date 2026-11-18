@@ -12,7 +12,7 @@ use crate::{Error, Result};
 pub struct Settings {
     /// Folders with one folder per game (xTux installs, Windows `XboxGames` folders).
     pub library_dirs: Vec<PathBuf>,
-    /// Wine binary used to start games.
+    /// Wine binary used to start games; empty uses the Tux-Force Wine xTux installs (see `wine.rs`).
     pub wine: Option<String>,
     /// Wine prefix used for games without their own.
     pub prefix: Option<PathBuf>,
@@ -148,10 +148,12 @@ pub fn default_games_dir() -> Option<PathBuf> {
     Some(base.join("xtux/games"))
 }
 
-/// `XboxGames` folders of the Windows Xbox app on mounted drives.
+/// `XboxGames` folders of the Windows Xbox app on mounted drives (`/mnt`, `/media`, `/run/media/$USER`, the home folder).
 pub fn detect_windows_libraries() -> Vec<PathBuf> {
     let user = std::env::var("USER").unwrap_or_default();
     let mut roots = vec![PathBuf::from("/mnt"), PathBuf::from("/media")];
+    // Windows partitions mounted below the home folder, for example ~/winGames/XboxGames.
+    roots.extend(home());
     if !user.is_empty() {
         roots.push(Path::new("/run/media").join(&user));
         roots.push(Path::new("/media").join(&user));
@@ -162,6 +164,10 @@ pub fn detect_windows_libraries() -> Vec<PathBuf> {
             continue;
         };
         for entry in entries.flatten() {
+            // Hidden folders (caches, Wine prefixes) are not where libraries live.
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             let candidate = entry.path().join("XboxGames");
             if candidate.is_dir() && !found.contains(&candidate) {
                 if writable_by_others(&candidate) {
@@ -253,6 +259,13 @@ impl Settings {
     pub fn effective(&self, game_dir: &Path) -> GameSettings {
         let mut game = self.game(game_dir);
         game.wine = game.wine.or_else(|| self.wine.clone());
+        // Without a Wine of its own choice, the user gets the Tux-Force Wine xTux installed.
+        #[cfg(unix)]
+        {
+            game.wine = game.wine.or_else(|| {
+                crate::wine::installed().map(|w| w.wine.to_string_lossy().into_owned())
+            });
+        }
         game.prefix = game.prefix.or_else(|| self.prefix.clone());
         game.controller = game.controller.or(Some(self.controller));
         game
