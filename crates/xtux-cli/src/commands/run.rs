@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -7,37 +6,94 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use xodus::tokens::TokenManager;
 use xtux_games::run::{LaunchOptions, launch};
+use xtux_games::settings::Settings;
 use xtux_protocol::{Client, Event, Request, Response};
 
 use super::{Print, direct_mode};
 
+/// Launch options from the command line, the game's own settings and the general settings, in that order.
+pub fn prepare(
+    source: String,
+    wine: Option<String>,
+    exe: Option<String>,
+    market: Option<String>,
+    args: Vec<String>,
+) -> Result<LaunchOptions, String> {
+    let settings = Settings::load().unwrap_or_default();
+    let source = super::list::resolve(&source)?;
+    if let Some(anticheat) = xtux_games::library::inspect(&source).and_then(|g| g.anticheat) {
+        if anticheat.blocks {
+            eprintln!(
+                "Warning: this game uses the kernel anti-cheat {}, which Wine cannot load; it runs on Windows only.",
+                anticheat.name
+            );
+        } else {
+            eprintln!(
+                "Note: this game uses {}, which works on Linux only if the developer allows it.",
+                anticheat.name
+            );
+        }
+    }
+    let game = settings.game(&source);
+    let effective = settings.effective(&source);
+    let wine = wine
+        .or(effective.wine)
+        .ok_or("No Wine yet: run `xtux-cli setup`, or pass a Wine binary")?;
+    let mut env: Vec<(String, String)> = effective.env.into_iter().collect();
+    // A prefix of the game wins over WINEPREFIX, which wins over the general setting.
+    let prefix = game.prefix.or_else(|| {
+        std::env::var_os("WINEPREFIX")
+            .is_none()
+            .then_some(settings.prefix.clone())
+            .flatten()
+    });
+    if let Some(prefix) = prefix {
+        env.push(("WINEPREFIX".into(), prefix.to_string_lossy().into_owned()));
+    }
+    Ok(LaunchOptions {
+        source,
+        wine,
+        exe: exe.or(effective.exe),
+        market: market.or(settings.market),
+        env,
+        args: if args.is_empty() {
+            effective.args
+        } else {
+            args
+        },
+        log: None,
+    })
+}
+
 pub async fn run(
     client: &reqwest::Client,
     tokens: &TokenManager,
-    source: String,
-    wine: String,
-    exe: Option<String>,
-    market: Option<String>,
+    options: LaunchOptions,
 ) -> ExitCode {
+    // Only a warning: the game starts anyway.
+    if let Some(warning) = xtux_games::gpu::status().await.low_memory_warning() {
+        eprintln!("Warning: {warning}");
+    }
     if direct_mode() {
-        return run_direct(client, tokens, source, wine, exe, market).await;
+        return run_direct(client, tokens, options).await;
     }
 
     // The daemon has its own working directory and environment: send absolute paths and ours.
-    let source = match std::fs::canonicalize(&source) {
+    let source = match std::fs::canonicalize(&options.source) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("Failed to resolve {source:?}: {err}");
+            eprintln!("Failed to resolve {:?}: {err}", options.source);
             return ExitCode::FAILURE;
         }
     };
-    let wine = absolute_command(&wine);
+    let source_dir = source.clone();
     let request = Request::Launch {
         source,
-        wine,
-        exe,
-        market,
-        env: std::env::vars().collect(),
+        wine: absolute_command(&options.wine),
+        exe: options.exe,
+        market: options.market,
+        env: std::env::vars().chain(options.env).collect(),
+        args: options.args,
     };
 
     let mut daemon = match Client::connect_or_spawn().await {
@@ -68,7 +124,16 @@ pub async fn run(
         })
         .await;
     match result {
-        Ok(Response::GameExited { code }) => ExitCode::from(code.map(|c| c as u8).unwrap_or(0)),
+        Ok(Response::GameExited { code, crash }) => {
+            if let Some(crash) = crash {
+                eprintln!("The game crashed: {}", crash.reason);
+                eprintln!("{}", crash.hint);
+                if let Some(log) = xtux_games::logs::game_log(&source_dir) {
+                    eprintln!("Log: {}", log.display());
+                }
+            }
+            ExitCode::from(code.map(|c| c as u8).unwrap_or(0))
+        }
         Ok(other) => {
             eprintln!("unexpected answer from xtux-service: {other:?}");
             ExitCode::FAILURE
@@ -95,18 +160,8 @@ fn absolute_command(command: &str) -> String {
 async fn run_direct(
     client: &reqwest::Client,
     tokens: &TokenManager,
-    source: String,
-    wine: String,
-    exe: Option<String>,
-    market: Option<String>,
+    options: LaunchOptions,
 ) -> ExitCode {
-    let options = LaunchOptions {
-        source: PathBuf::from(source),
-        wine,
-        exe,
-        market,
-        env: Vec::new(),
-    };
     let game = match launch(client, tokens, options, &Print).await {
         Ok(game) => game,
         Err(err) => {

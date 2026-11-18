@@ -1,16 +1,20 @@
 pub mod clep;
 pub mod download;
+#[cfg(unix)]
+pub mod downloads;
 pub mod extract;
 pub mod extract_eappx;
 pub mod license;
 #[cfg(unix)]
 pub mod link;
+pub mod list;
 pub mod login;
 pub mod logout;
 #[cfg(unix)]
 pub mod run;
 pub mod splicense;
 pub mod streaming;
+pub mod verify;
 
 /// Prints library progress messages on the terminal.
 pub struct Print;
@@ -27,7 +31,10 @@ pub fn direct_mode() -> bool {
 }
 
 #[cfg(unix)]
-pub async fn prefix_init(client: &reqwest::Client, options: xtux_games::prefix::InitOptions) -> std::process::ExitCode {
+pub async fn prefix_init(
+    client: &reqwest::Client,
+    options: xtux_games::prefix::InitOptions,
+) -> std::process::ExitCode {
     use std::process::ExitCode;
 
     let result = if direct_mode() {
@@ -61,8 +68,17 @@ async fn prefix_init_daemon(options: xtux_games::prefix::InitOptions) -> Result<
             .unwrap_or_else(|_| p.to_string())
     };
     let request = xtux_protocol::Request::PrefixInit {
-        wine: if options.wine.contains('/') { absolute(&options.wine) } else { options.wine },
-        prefix: Some(std::path::absolute(&prefix).unwrap_or(prefix).to_string_lossy().into_owned()),
+        wine: if options.wine.contains('/') {
+            absolute(&options.wine)
+        } else {
+            options.wine
+        },
+        prefix: Some(
+            std::path::absolute(&prefix)
+                .unwrap_or(prefix)
+                .to_string_lossy()
+                .into_owned(),
+        ),
         from_proton: options.from_proton.as_deref().map(absolute),
         skip_graphics: options.skip_graphics,
     };

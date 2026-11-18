@@ -12,8 +12,7 @@ use xtux_games::install::{self, InstallOptions, Source};
 
 use crate::package::get_content_id;
 
-const TEMPLATE: &str =
-    "{msg:30!} {bytes:>12}/{total_bytes:>12} {bytes_per_sec:>12} [{bar:40.green/black}] {percent:>3}%";
+const TEMPLATE: &str = "{msg:30!} {bytes:>12}/{total_bytes:>12} {bytes_per_sec:>12} [{bar:40.green/black}] {percent:>3}%";
 
 pub async fn run(
     client: &reqwest::Client,
@@ -39,7 +38,14 @@ pub async fn run(
     };
 
     if !super::direct_mode() {
-        return run_daemon(source, destination, try_skip_ntfs, parallel.unwrap_or(4), market).await;
+        return run_daemon(
+            source,
+            destination,
+            try_skip_ntfs,
+            parallel.unwrap_or(4),
+            market,
+        )
+        .await;
     }
 
     let mut options = InstallOptions::new(destination);
@@ -48,7 +54,15 @@ pub async fn run(
     options.market = market;
 
     let bars = Bars::new();
-    let result = install::install(client, tokens, source, &options, &bars, &CancellationToken::new()).await;
+    let result = install::install(
+        client,
+        tokens,
+        source,
+        &options,
+        &bars,
+        &CancellationToken::new(),
+    )
+    .await;
     bars.total.abandon();
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -147,7 +161,10 @@ impl Bars {
 fn shown(name: &str) -> String {
     let chars: Vec<char> = name.chars().collect();
     if chars.len() > 30 {
-        format!("...{}", chars[chars.len() - 27..].iter().collect::<String>())
+        format!(
+            "...{}",
+            chars[chars.len() - 27..].iter().collect::<String>()
+        )
     } else {
         name.to_owned()
     }

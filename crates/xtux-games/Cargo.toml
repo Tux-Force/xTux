@@ -8,6 +8,7 @@ license = "GPL-3.0-or-later"
 [dependencies]
 xodus = { path = "../xodus" }
 msixvc = { path = "../msixvc" }
+msixvc-common = { path = "../msixvc-common" }
 base64 = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
@@ -15,12 +16,18 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde_json = "1.0.151"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "0.8"
 fs2 = "0.4.3"
 futures-util = "0.3.34"
 tokio-util = "0.7.19"
 sha1 = "0.10"
+sha2 = "0.11.0"
 tempfile = "3.27.0"
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+cfb = "0.16.0"
+cab = "0.6.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 uuid = { workspace = true, features = ["v4"] }

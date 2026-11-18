@@ -1,0 +1,46 @@
+# Flatpak of xTux: the launcher, CLI and service as built by the CI (packaging/flatpak/dist, unpacked from
+# xtux-<version>-linux-x86_64.tar.gz), on the GNOME runtime, which brings WebKitGTK for the Microsoft sign-in.
+# xTux downloads the Tux-Force Wine into the app's data folder and runs games inside the sandbox.
+#
+# Build: unpack the release archive into packaging/flatpak/dist, then
+#   flatpak-builder --user --install-deps-from=flathub --force-clean build packaging/flatpak/io.github.tux_force.xTux.yml
+app-id: io.github.tux_force.xTux
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: xtux-launcher
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=all # GPU, controllers (hidraw, input) and ntsync for Wine
+  - --filesystem=home # library folders and the Wine prefix
+  - --filesystem=/mnt
+  - --filesystem=/media
+  - --filesystem=/run/media
+  - --talk-name=org.freedesktop.secrets # account tokens in the keyring
+  - --talk-name=org.freedesktop.Notifications
+  - --env=XTUX_FLATPAK=1
+modules:
+  - name: xtux
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 xtux-launcher xtux-cli xtux-service -t /app/bin
+      - install -Dm644 LICENSE THIRD-PARTY-LICENSES.md -t /app/share/licenses/xtux
+      - install -Dm644 io.github.tux_force.xTux.desktop -t /app/share/applications
+      - install -Dm644 io.github.tux_force.xTux.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 io.github.tux_force.xTux.png /app/share/icons/hicolor/512x512/apps/io.github.tux_force.xTux.png
+      # Every library the binaries need must come from the runtime.
+      - "! ldd /app/bin/xtux-launcher /app/bin/xtux-cli /app/bin/xtux-service | grep 'not found'"
+    sources:
+      - type: dir
+        path: dist
+      - type: file
+        path: io.github.tux_force.xTux.desktop
+      - type: file
+        path: io.github.tux_force.xTux.metainfo.xml
+      - type: file
+        path: ../../crates/xtux-launcher/assets/icon-mascot.png
+        dest-filename: io.github.tux_force.xTux.png

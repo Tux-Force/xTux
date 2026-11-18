@@ -905,6 +905,93 @@ impl XvdFile {
         Ok(())
     }
 
+    /// Whether an installed copy of `sfile` (read from `local`, `local_len` bytes long) has the package's content.
+    ///
+    /// Each page is encrypted the way the package stores it (files kept encrypted on disk are compared as they
+    /// are) and its truncated SHA-256 is compared with the page hash of the package. The tail of the last page is
+    /// taken as zeros. Files kept encrypted at their logical size (as the Windows Xbox app stores them) lack the
+    /// end of their last page; that page is skipped, so such a file needs at least one whole page to be verified.
+    /// `false` when the package has no page hashes or no encrypted section for the file.
+    pub async fn verify_installed_file<Reader>(
+        &self,
+        local: Reader,
+        local_len: u64,
+        sfile: &SegmentFile,
+        full_key: [u8; 32],
+    ) -> io::Result<bool>
+    where
+        Reader: AsyncRead + Unpin,
+    {
+        use sha2::{Digest, Sha256};
+
+        let page_size = PAGE_SIZE as u64;
+        let page_count = sfile.length.div_ceil(page_size);
+        let padded = page_count * page_size;
+        if sfile.length == 0 {
+            return Ok(local_len == 0);
+        }
+        if sfile.data_hashs.len() as u64 != page_count {
+            return Ok(false);
+        }
+        let Some(section) = self.encrypted_section_infos.iter().find(|s| {
+            sfile.offset >= s.section_offset && sfile.offset < s.section_offset + s.section_length
+        }) else {
+            return Ok(false);
+        };
+        let pages_to_check = if local_len == sfile.length {
+            if sfile.keep_encrypted && !sfile.length.is_multiple_of(page_size) {
+                page_count - 1
+            } else {
+                page_count
+            }
+        } else if sfile.keep_encrypted && local_len == padded {
+            page_count
+        } else {
+            return Ok(false);
+        };
+        if pages_to_check == 0 {
+            return Ok(false);
+        }
+
+        let mut tweak_key = [0u8; 16];
+        let mut data_key = [0u8; 16];
+        tweak_key.copy_from_slice(&full_key[..16]);
+        data_key.copy_from_slice(&full_key[16..]);
+        let tweak = TweakGenerator::new(section.header_id, section.vduid);
+        let tweak_cipher = Aes128Enc::new((&tweak_key).into());
+        let data_cipher = Aes128Enc::new((&data_key).into());
+        let page_start = (sfile.offset - section.section_offset) / page_size;
+
+        let mut reader = BufReader::with_capacity(16 * PAGE_SIZE, local);
+        let mut page = [0u8; PAGE_SIZE];
+        for index in 0..pages_to_check {
+            let take = (local_len - index * page_size).min(page_size) as usize;
+            page.fill(0);
+            reader.read_exact(&mut page[..take]).await?;
+            if !sfile.keep_encrypted {
+                let page_in_section = page_start + index;
+                let unit = match &section.data_units {
+                    Some(units) => match units.get(page_in_section as usize) {
+                        Some(unit) => *unit,
+                        None => return Ok(false),
+                    },
+                    None => page_in_section as u32,
+                };
+                crate::crypt::encrypt_page_xts(
+                    &mut page,
+                    tweak.with_data_unit(unit),
+                    &tweak_cipher,
+                    &data_cipher,
+                );
+            }
+            let hash = Sha256::digest(page);
+            if hash[..20] != sfile.data_hashs[index as usize] {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     async fn extract_file_ex<Writer, Reader, Progress>(
         &self,
         i: &mut Reader,

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub use client::{Canceller, Client};
+pub use client::{Canceller, Client, ClientError};
 
 /// `"XTX2"` read as a little endian `u32`.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"XTX2");
@@ -56,6 +56,8 @@ pub enum Request {
     Ping,
     /// Daemon version and who is signed in.
     Status,
+    /// Games in the library folders of the user's settings.
+    Library,
     /// Starts a game; answered when the game has exited, with `GameStarted`/`GameExited` events in between.
     Launch {
         source: PathBuf,
@@ -65,6 +67,9 @@ pub enum Request {
         /// Extra environment for the game, for example `WINEPREFIX`.
         #[serde(default)]
         env: Vec<(String, String)>,
+        /// Command line arguments for the game.
+        #[serde(default)]
+        args: Vec<String>,
     },
     /// Prepares a Wine prefix (DXVK, vkd3d-proton, certificates).
     PrefixInit {
@@ -73,6 +78,9 @@ pub enum Request {
         from_proton: Option<String>,
         skip_graphics: bool,
     },
+    /// Downloads the newest Tux-Force Wine release, checks it against its SHA-256 file and makes it the Wine
+    /// games start with when the settings name none; answered with `WineReady`, with progress events in between.
+    InstallWine,
     /// Installs a game by streaming its package; answered when done, with progress events in between.
     Install {
         source: InstallSource,
@@ -81,6 +89,20 @@ pub enum Request {
         parallel: usize,
         market: Option<String>,
     },
+    /// The store catalog: PC Game Pass and the games the account owns (cached for a day unless `refresh`).
+    Catalog {
+        market: Option<String>,
+        #[serde(default)]
+        refresh: bool,
+    },
+    /// Check installed games and DLCs against the current authenticated package offer.
+    CheckUpdates,
+    /// The download queue: list it or change it; answered with the queue.
+    Downloads(DownloadCommand),
+    /// Deletes a game folder of the library with everything in it.
+    Uninstall {
+        path: PathBuf,
+    },
     /// Signs a user in: the daemon opens the Microsoft sign-in window in a helper process (`xtux-cli login`)
     /// with this environment (it needs the client's display) and answers with the new status.
     SignIn {
@@ -88,7 +110,136 @@ pub enum Request {
         env: Vec<(String, String)>,
     },
     /// Stops the request with this id.
-    Cancel { target: u64 },
+    Cancel {
+        target: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GameInfo {
+    pub name: String,
+    /// Game folder, the `source` of a launch.
+    pub path: PathBuf,
+    /// `installed` (by xTux) or `windows` (installed by the Windows Xbox app).
+    pub kind: String,
+    pub title_id: Option<String>,
+    pub store_id: Option<String>,
+    /// Why the last license check failed (for example not entitled); `None` when it passed or never ran.
+    #[serde(default)]
+    pub license_problem: Option<String>,
+    /// Anti-cheat found in the game folder, for example `Ricochet (Activision)`.
+    #[serde(default)]
+    pub anticheat: Option<String>,
+    /// The anti-cheat is a kernel driver Wine cannot load: the game runs on Windows only.
+    #[serde(default)]
+    pub anticheat_blocks: bool,
+}
+
+/// A change of the download queue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum DownloadCommand {
+    List,
+    /// Update this existing xTux installation in place.
+    Update {
+        path: PathBuf,
+    },
+    /// Queues a game into `library/<name>`; `library` must be a library folder of the settings.
+    Add {
+        product_id: String,
+        name: String,
+        content_id: String,
+        library: PathBuf,
+    },
+    Pause {
+        id: u64,
+    },
+    Resume {
+        id: u64,
+    },
+    /// Takes the item out; an unfinished download folder the queue created is deleted.
+    Remove {
+        id: u64,
+    },
+    Move {
+        id: u64,
+        up: bool,
+    },
+    ClearDone,
+}
+
+/// Bytes per second at one moment of the download history.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RateSample {
+    pub network: u64,
+    pub disk_write: u64,
+    pub disk_read: u64,
+}
+
+/// An item of the download queue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DownloadItem {
+    pub id: u64,
+    pub product_id: String,
+    pub name: String,
+    pub destination: PathBuf,
+    #[serde(default)]
+    pub update: bool,
+    /// `queued`, `running`, `pausing`, `removing`, `paused`, `failed` or `done`.
+    pub state: String,
+    pub done: u64,
+    pub total: Option<u64>,
+    /// Bytes per second while running.
+    #[serde(default)]
+    pub speed: u64,
+    /// Last step or error.
+    pub message: String,
+}
+
+/// A title of the store catalog.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogTitle {
+    /// Store ID.
+    pub product_id: String,
+    pub name: String,
+    pub publisher: String,
+    pub description: String,
+    pub category: String,
+    /// Content ID of the PC package (what an install downloads).
+    pub content_id: Option<String>,
+    pub download_size: Option<u64>,
+    pub poster_url: Option<String>,
+    pub hero_url: Option<String>,
+    /// Screenshot URLs of the Store.
+    #[serde(default)]
+    pub screenshots: Vec<String>,
+    pub in_game_pass: bool,
+    pub owned: bool,
+    /// A GDK package xTux can install.
+    pub installable: bool,
+    /// Format of the PC package (`MSIXVC`, `EAppx`, `Appx` …); `None` when the Store lists no PC package.
+    #[serde(default)]
+    pub package_format: Option<String>,
+    /// Kernel anti-cheat guessed from xTux's own title list (only when turned on in the settings).
+    pub windows_only: Option<String>,
+    /// Folder of the installed game, when it is in the library.
+    pub installed: Option<PathBuf>,
+    /// Products this one belongs to (for example the product group of all editions).
+    #[serde(default)]
+    pub parents: Vec<String>,
+    /// For an add-on: the products it adds to. A game's add-ons name its `product_id` or one of its `parents`.
+    #[serde(default)]
+    pub addon_parents: Vec<String>,
+}
+
+impl CatalogTitle {
+    /// Whether `addon` adds to this game.
+    pub fn has_addon(&self, addon: &CatalogTitle) -> bool {
+        addon
+            .addon_parents
+            .iter()
+            .any(|p| *p == self.product_id || self.parents.contains(p))
+    }
 }
 
 /// What to install from.
@@ -106,8 +257,14 @@ pub enum InstallSource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    Response { id: u64, result: Result<Response, ErrorBody> },
-    Event { id: u64, event: Event },
+    Response {
+        id: u64,
+        result: Result<Response, ErrorBody>,
+    },
+    Event {
+        id: u64,
+        event: Event,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,21 +276,106 @@ pub enum Response {
         signed_in: bool,
         user: Option<String>,
     },
-    GameExited { code: Option<i32> },
-    PrefixReady { prefix: PathBuf },
-    Installed { destination: PathBuf },
+    GameExited {
+        code: Option<i32>,
+        /// Why the game ended abnormally, when a known cause was found. Absent for older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crash: Option<CrashInfo>,
+    },
+    PrefixReady {
+        prefix: PathBuf,
+    },
+    WineReady {
+        /// Release name, for example `wine-20261118-1d9aa74`.
+        tag: String,
+        /// The `wine` binary.
+        wine: PathBuf,
+    },
+    Installed {
+        destination: PathBuf,
+    },
+    Library {
+        games: Vec<GameInfo>,
+    },
+    Uninstalled {
+        path: PathBuf,
+    },
+    Catalog {
+        titles: Vec<CatalogTitle>,
+        /// Add-ons (DLC) the account owns that have a PC package.
+        #[serde(default)]
+        addons: Vec<CatalogTitle>,
+    },
+    Downloads {
+        items: Vec<DownloadItem>,
+        /// Network and disk rates of the last minutes, oldest first, one sample per second.
+        #[serde(default)]
+        history: Vec<RateSample>,
+    },
+    Updates {
+        items: Vec<UpdateInfo>,
+    },
     Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateInfo {
+    pub path: PathBuf,
+    pub name: String,
+    pub installed_version: String,
+    pub latest_version: Option<String>,
+    pub state: String,
+    pub can_update: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    Message { text: String },
-    Bytes { done: u64, total: Option<u64> },
-    GameStarted { pid: u32 },
+    Message {
+        text: String,
+    },
+    Bytes {
+        done: u64,
+        total: Option<u64>,
+    },
+    GameStarted {
+        pid: u32,
+    },
     /// Byte progress of one file being downloaded.
-    File { name: String, done: u64, total: u64 },
-    FileFinished { name: String },
+    File {
+        name: String,
+        done: u64,
+        total: u64,
+    },
+    FileFinished {
+        name: String,
+    },
+}
+
+/// A game crash told in plain words, for a message to the user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrashInfo {
+    pub kind: CrashKind,
+    /// What happened, one sentence.
+    pub reason: String,
+    /// What the user can do.
+    pub hint: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CrashKind {
+    License,
+    OutOfMemory,
+    GpuLost,
+    MissingDll,
+    Unimplemented,
+    Exception,
+    Killed,
+    /// A kind this client does not know yet.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, thiserror::Error)]
@@ -182,6 +424,34 @@ mod tests {
         };
         let text = serde_json::to_string(&reply).unwrap();
         assert_eq!(serde_json::from_str::<ServerMessage>(&text).unwrap(), reply);
+    }
+
+    #[test]
+    fn game_exited_stays_compatible() {
+        // An older daemon sends no crash; an older client ignores it.
+        let old: Response = serde_json::from_str(r#"{"type":"game_exited","code":84}"#).unwrap();
+        assert_eq!(
+            old,
+            Response::GameExited {
+                code: Some(84),
+                crash: None
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"type":"game_exited","code":84}"#
+        );
+        let new: Response = serde_json::from_str(
+            r#"{"type":"game_exited","code":84,"crash":{"kind":"some_future_kind","reason":"r","hint":"h"}}"#,
+        )
+        .unwrap();
+        let Response::GameExited {
+            crash: Some(crash), ..
+        } = new
+        else {
+            panic!("no crash: {new:?}");
+        };
+        assert_eq!(crash.kind, CrashKind::Unknown);
     }
 
     #[test]

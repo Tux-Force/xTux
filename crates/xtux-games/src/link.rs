@@ -22,10 +22,7 @@ fn find_package(dir: &Path) -> Option<PathBuf> {
     fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
         let path = entry.path();
         let name = path.file_name()?.to_str()?.to_owned();
-        let is_guid = name.len() == 36
-            && name
-                .chars()
-                .all(|c| c.is_ascii_hexdigit() || c == '-');
+        let is_guid = name.len() == 36 && name.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
         (is_guid && path.is_file() && dir.join(format!("{name}.xvi")).is_file()).then_some(path)
     })
 }

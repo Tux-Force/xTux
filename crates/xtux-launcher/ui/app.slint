@@ -1,0 +1,2846 @@
+// xTux Launcher: library (cover grid or list), game page, settings, logs.
+// Look: glass panels over a blurred game backdrop; themes and accent colours in the global Theme.
+
+import { LineEdit, TextEdit, Palette, ScrollView } from "std-widgets.slint";
+
+export global Theme {
+    // The choice; the colours below are set by the launcher (src/theme.rs, contrast checked).
+    // system | brand | anthracite | light
+    in-out property <string> choice: "system";
+    // brand | anthracite: the dark theme when following a dark system
+    in-out property <string> dark-variant: "brand";
+    // lime | emerald | cyan | violet | amber
+    in-out property <string> accent-name: "lime";
+    // The desktop's scheme, captured before the launcher sets its own.
+    in-out property <bool> system-dark: true;
+
+    in property <bool> light;
+    in property <color> accent: #A3E635;
+    in property <color> accent-text: #A3E635;
+    in property <color> on-accent: #06140F;
+    in property <color> danger: #DC2626;
+    in property <color> on-danger: #FFFFFF;
+    in property <color> warning: #F59E0B;
+    in property <color> on-warning: #06140F;
+    in property <color> base: #04100C;
+    in property <color> base-2: #0F3B2E;
+    in property <color> text: #F4F7FB;
+    in property <color> muted: #A9C9BA;
+    in property <color> glass: #0B2E239E;
+    in property <color> glass-strong: #082219E0;
+    in property <color> glass-border: #FFFFFF24;
+    in property <color> shine: #FFFFFF1A;
+    in property <color> shadow: #000000A8;
+    in property <color> field: #00000057;
+    in property <float> backdrop-opacity: 0.55;
+    // Opacity of the veil over the backdrop at the top of the window.
+    in property <float> veil-top: 0.4;
+}
+
+export struct StoreRow {
+    name: string,
+    publisher: string,
+    category: string,
+    description: string,
+    size: string,
+    cover: image,
+    has-cover: bool,
+    in-game-pass: bool,
+    owned: bool,
+    installable: bool,
+    installed: bool,
+    cover-blur: image,
+    // The Store lists no PC package (other launcher, or not offered for PC here).
+    no-package: bool,
+    package-format: string,
+    // Kernel anti-cheat guessed from xTux's list (opt-in); empty otherwise.
+    windows-only: string,
+    // In the download queue: queued | running | pausing | paused | failed (empty: not queued).
+    dl-state: string,
+    dl-progress: float,
+    // What the labels mean, shown on hover.
+    hint: string,
+}
+
+export struct DownloadRow {
+    id: int,
+    name: string,
+    // queued | running | paused | failed | done
+    state: string,
+    progress: float,
+    detail: string,
+    // Finished and in the library: it can be played from here.
+    playable: bool,
+    running: bool,
+    cover: image,
+    cover-blur: image,
+    has-cover: bool,
+}
+
+// An add-on (DLC) of the store title the account owns.
+export struct AddonRow {
+    name: string,
+    size: string,
+    // install | queued | installed
+    state: string,
+}
+
+export struct UpdateRow {
+    name: string,
+    versions: string,
+    detail: string,
+    available: bool,
+    queued: bool,
+}
+
+export struct GraphPoint {
+    // Share of the graph's top value, 0 to 1.
+    network: float,
+    disk: float,
+}
+
+export struct ShotRow {
+    image: image,
+    blur: image,
+    loaded: bool,
+}
+
+export struct LibraryChoice {
+    path: string,
+    free: string,
+}
+
+export struct LicenseRow {
+    name: string,
+    crates: string,
+    count: int,
+    text: string,
+}
+
+export struct GameRow {
+    name: string,
+    detail: string,
+    windows: bool,
+    running: bool,
+    // Why the last license check failed; empty when it passed or never ran.
+    license-problem: string,
+    // Anti-cheat found in the game folder; blocks: a kernel driver, Windows only.
+    anticheat: string,
+    anticheat-blocks: bool,
+    cover: image,
+    cover-blur: image,
+    has-cover: bool,
+    logo: image,
+    has-logo: bool,
+}
+
+// An image that arrives softly: its blurred copy fades in first, then the sharp image over it.
+component SoftImage inherits Rectangle {
+    in property <image> sharp;
+    in property <image> soft;
+    in property <bool> loaded;
+    Image {
+        source: root.soft;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.loaded ? 1 : 0;
+        animate opacity { duration: 250ms; easing: ease-out; }
+    }
+    Image {
+        source: root.sharp;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.loaded ? 1 : 0;
+        animate opacity { duration: 700ms; delay: 200ms; easing: ease-out; }
+    }
+}
+
+// A ring that fills with the download progress, like an App Store download.
+component ProgressRing inherits Rectangle {
+    in property <float> progress;
+    in property <bool> paused;
+    in property <length> stroke: 5px;
+    property <float> p: max(0.001, min(0.999, root.progress));
+    property <angle> a: 360deg * root.p;
+    width: 44px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: Theme.glass-strong;
+    border-width: root.stroke;
+    border-color: Theme.field;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        stroke: root.paused ? Theme.muted : Theme.accent;
+        stroke-width: root.stroke;
+        fill: transparent;
+        commands: "M 50 " + (50 - 50 * (1 - root.stroke / root.width) + 0) + " A " + (50 - 50 * root.stroke / root.width) + " " + (50 - 50 * root.stroke / root.width) + " 0 " + (root.p > 0.5 ? "1" : "0") + " 1 " + (50 + (50 - 50 * root.stroke / root.width) * sin(root.a)) + " " + (50 - (50 - 50 * root.stroke / root.width) * cos(root.a));
+    }
+    // Pause bars or a play triangle in the middle.
+    if !root.paused: HorizontalLayout {
+        alignment: center;
+        spacing: root.width * 0.08;
+        padding-top: root.width * 0.33;
+        padding-bottom: root.width * 0.33;
+        Rectangle { width: root.width * 0.08; border-radius: 1px; background: Theme.text; }
+        Rectangle { width: root.width * 0.08; border-radius: 1px; background: Theme.text; }
+    }
+    if root.paused: Text {
+        text: "▶";
+        color: Theme.text;
+        font-size: root.width * 0.32;
+    }
+}
+
+// Frosted glass: translucent fill, light edge, top shine and a soft shadow.
+component Glass inherits Rectangle {
+    in property <bool> strong;
+    border-radius: 18px;
+    background: strong ? Theme.glass-strong : Theme.glass;
+    border-width: 1px;
+    border-color: Theme.glass-border;
+    drop-shadow-blur: 28px;
+    drop-shadow-offset-y: 10px;
+    drop-shadow-color: Theme.shadow;
+    Rectangle {
+        border-radius: root.border-radius;
+        background: @linear-gradient(180deg, Theme.shine 0%, transparent 38%);
+    }
+    @children
+}
+
+component ShinyButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> big;
+    callback clicked();
+    height: big ? 48px : 36px;
+    min-width: max(big ? 150px : 96px, shiny-label.preferred-width + 40px);
+    border-radius: big ? 24px : 18px;
+    background: !enabled ? Theme.glass : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 55%, Theme.accent.darker(18%) 100%);
+    drop-shadow-blur: touch.has-hover && enabled ? 22px : 10px;
+    drop-shadow-color: enabled ? Theme.accent.transparentize(touch.has-hover ? 35% : 65%) : transparent;
+    transform-scale: touch.pressed ? 0.97 : touch.has-hover && enabled ? 1.04 : 1;
+    animate transform-scale, drop-shadow-blur { duration: 140ms; easing: ease-out; }
+    // Glossy top half.
+    Rectangle {
+        y: 1px;
+        height: parent.height / 2;
+        width: parent.width - 6px;
+        border-radius: root.border-radius;
+        background: @linear-gradient(180deg, #FFFFFF66 0%, #FFFFFF00 100%);
+        visible: root.enabled;
+    }
+    shiny-label := Text {
+        text: root.text;
+        color: root.enabled ? Theme.on-accent : Theme.muted;
+        font-size: root.big ? 17px : 14px;
+        font-weight: 800;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component GhostButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 36px;
+    min-width: 72px;
+    border-radius: 18px;
+    background: active ? Theme.accent.transparentize(75%) : touch.has-hover ? Theme.glass-strong : Theme.glass;
+    border-width: 1px;
+    border-color: active || touch.has-hover ? Theme.accent : Theme.glass-border;
+    animate background, border-color { duration: 140ms; }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-weight: root.active ? 800 : 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component DangerButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 36px;
+    min-width: 96px;
+    border-radius: 18px;
+    background: !enabled ? Theme.glass : touch.has-hover ? Theme.danger.brighter(10%) : Theme.danger;
+    drop-shadow-blur: touch.has-hover && enabled ? 18px : 0px;
+    drop-shadow-color: Theme.danger.transparentize(50%);
+    animate background, drop-shadow-blur { duration: 140ms; }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        Text {
+            text: root.text;
+            color: root.enabled ? Theme.on-danger : Theme.muted;
+            font-weight: 800;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Marks a game whose last license check failed.
+component LicenseChip inherits Rectangle {
+    height: 26px;
+    width: license-row.preferred-width;
+    border-radius: 13px;
+    background: Theme.danger;
+    drop-shadow-blur: 10px;
+    drop-shadow-color: Theme.danger.transparentize(50%);
+    license-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        Text {
+            text: "⚠  No license";
+            color: Theme.on-danger;
+            font-size: 12px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Marks a game with anti-cheat: red for kernel anti-cheat (Windows only), amber when it may not run.
+component AntiCheatChip inherits Rectangle {
+    in property <bool> blocks;
+    height: 26px;
+    width: ac-row.preferred-width;
+    border-radius: 13px;
+    background: root.blocks ? Theme.danger : Theme.warning;
+    ac-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        Text {
+            text: root.blocks ? "⛔  Windows only" : "⚠  Anti-cheat";
+            color: root.blocks ? Theme.on-danger : Theme.on-warning;
+            font-size: 12px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Small label chip on store tiles.
+component Badge inherits Rectangle {
+    in property <string> text;
+    in property <color> fill;
+    in property <color> ink;
+    height: 22px;
+    width: badge-row.preferred-width;
+    border-radius: 11px;
+    background: root.fill;
+    badge-row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-size: 11px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component StoreTile inherits Rectangle {
+    in property <StoreRow> title;
+    callback open();
+    property <bool> hover: touch.has-hover;
+    art := Rectangle {
+        height: root.width * 1.5;
+        y: 0;
+        border-radius: 16px;
+        clip: true;
+        background: Theme.base-2;
+        border-width: 1px;
+        border-color: root.hover ? Theme.accent : Theme.glass-border;
+        drop-shadow-blur: root.hover ? 30px : 14px;
+        drop-shadow-offset-y: root.hover ? 12px : 5px;
+        drop-shadow-color: root.hover ? Theme.accent.transparentize(60%) : Theme.shadow;
+        transform-scale: root.hover ? 1.04 : 1;
+        animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
+        if !root.title.has-cover: Rectangle {
+            background: @linear-gradient(150deg, Theme.base-2 0%, Theme.accent.transparentize(70%) 100%);
+            Text {
+                text: root.title.name;
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 800;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                width: parent.width - 24px;
+            }
+        }
+        SoftImage {
+            width: parent.width;
+            height: parent.height;
+            sharp: root.title.cover;
+            soft: root.title.cover-blur;
+            loaded: root.title.has-cover;
+        }
+        Rectangle {
+            background: @linear-gradient(135deg, #FFFFFF30 0%, #FFFFFF00 40%);
+            opacity: root.hover ? 1 : 0.5;
+        }
+        VerticalLayout {
+            padding: 8px;
+            spacing: 4px;
+            alignment: start;
+            if root.title.installed: HorizontalLayout { alignment: start; Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; } }
+            if root.title.windows-only != "": HorizontalLayout { alignment: start; Badge { text: "Likely Windows only"; fill: Theme.danger; ink: Theme.on-danger; } }
+            if root.title.windows-only == "" && !root.title.installable && !root.title.no-package: HorizontalLayout { alignment: start; Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; } }
+            if root.title.windows-only == "" && root.title.no-package: HorizontalLayout { alignment: start; Badge { text: "No PC package"; fill: Theme.glass-strong; ink: Theme.text; } }
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open(); }
+        }
+        if root.title.dl-state != "": ProgressRing {
+            x: parent.width - self.width - 8px;
+            y: 8px;
+            width: 38px;
+            stroke: 4px;
+            progress: root.title.dl-progress;
+            paused: root.title.dl-state == "paused" || root.title.dl-state == "failed" || root.title.dl-state == "queued";
+        }
+        // On hover: what the labels mean, on frosted glass (only titles with a label).
+        if root.title.hint != "": Rectangle {
+            y: root.hover ? parent.height - self.height : parent.height;
+            height: hint-text.preferred-height + 20px;
+            background: Theme.glass-strong;
+            border-width: 1px;
+            border-color: Theme.glass-border;
+            animate y { duration: 180ms; easing: ease-out; }
+            hint-text := Text {
+                x: 10px;
+                width: parent.width - 20px;
+                text: root.title.hint;
+                color: Theme.text;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+    }
+    Text {
+        y: art.height + 10px;
+        width: root.width;
+        text: root.title.name;
+        color: Theme.text;
+        font-size: 14px;
+        font-weight: 700;
+        overflow: elide;
+    }
+    Text {
+        y: art.height + 30px;
+        width: root.width;
+        text: (root.title.owned ? "Owned" : root.title.in-game-pass ? "Game Pass" : "") + (root.title.size != "" ? " · " + root.title.size : "");
+        color: Theme.muted;
+        font-size: 12px;
+        overflow: elide;
+    }
+}
+
+// Pulsing "Running" chip.
+component RunningChip inherits Rectangle {
+    height: 26px;
+    width: chip-row.preferred-width;
+    border-radius: 13px;
+    background: Theme.glass-strong;
+    border-width: 1px;
+    border-color: Theme.accent;
+    chip-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        spacing: 7px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 9px;
+                height: 9px;
+                border-radius: 4.5px;
+                background: Theme.accent;
+                opacity: 0.55 + 0.45 * sin(animation-tick() * 0.25deg / 1ms);
+                drop-shadow-blur: 8px;
+                drop-shadow-color: Theme.accent;
+            }
+        }
+        Text {
+            text: "Running";
+            color: Theme.text;
+            font-size: 12px;
+            font-weight: 800;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component Swatch inherits Rectangle {
+    in property <color> tint;
+    in property <bool> active;
+    callback clicked();
+    width: 30px;
+    height: 30px;
+    border-radius: 15px;
+    background: @linear-gradient(160deg, root.tint.brighter(30%) 0%, root.tint 60%, root.tint.darker(20%) 100%);
+    border-width: active ? 3px : 1px;
+    border-color: active ? Theme.text : Theme.glass-border;
+    drop-shadow-blur: active ? 14px : 0px;
+    drop-shadow-color: root.tint.transparentize(40%);
+    transform-scale: touch.has-hover ? 1.12 : 1;
+    animate transform-scale { duration: 120ms; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Label inherits Text {
+    color: Theme.muted;
+    font-size: 13px;
+}
+
+component Heading inherits Text {
+    color: Theme.text;
+    font-size: 18px;
+    font-weight: 800;
+}
+
+component NavItem inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <bool> active;
+    callback clicked();
+    height: 42px;
+    border-radius: 12px;
+    background: root.active ? Theme.accent.transparentize(80%) : touch.has-hover ? Theme.glass : transparent;
+    animate background { duration: 140ms; }
+    Rectangle {
+        x: 0;
+        width: 4px;
+        height: root.active ? parent.height - 16px : 0;
+        y: (parent.height - self.height) / 2;
+        border-radius: 2px;
+        background: Theme.accent;
+        animate height { duration: 160ms; easing: ease-out; }
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        spacing: 12px;
+        Text {
+            text: root.glyph;
+            color: root.active ? Theme.accent-text : Theme.muted;
+            font-size: 16px;
+            vertical-alignment: center;
+            width: 18px;
+        }
+        Text {
+            text: root.text;
+            color: root.active ? Theme.text : Theme.muted;
+            font-size: 15px;
+            font-weight: root.active ? 700 : 500;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Placeholder art: a brand gradient with the logo or the name.
+component ArtFallback inherits Rectangle {
+    in property <GameRow> game;
+    background: @linear-gradient(150deg, Theme.base-2 0%, Theme.accent.transparentize(70%) 100%);
+    if root.game.has-logo: Image {
+        source: root.game.logo;
+        width: min(parent.width, parent.height) * 0.55;
+        height: self.width;
+        image-fit: contain;
+    }
+    if !root.game.has-logo: Text {
+        text: root.game.name;
+        color: Theme.text;
+        font-size: 18px;
+        font-weight: 800;
+        wrap: word-wrap;
+        horizontal-alignment: center;
+        width: parent.width - 24px;
+    }
+}
+
+component CoverTile inherits Rectangle {
+    in property <GameRow> game;
+    in property <bool> busy;
+    callback play();
+    callback stop();
+    callback open();
+    callback hovered();
+    out property <bool> hover: touch.has-hover || play-touch.has-hover || gear-touch.has-hover;
+    property <bool> bar-up: root.hover || root.game.running;
+    changed hover => {
+        if self.hover {
+            root.hovered();
+        }
+    }
+
+    art := Rectangle {
+        height: root.width * 1.5;
+        y: 0;
+        border-radius: 16px;
+        clip: true;
+        background: Theme.base-2;
+        border-width: 1px;
+        border-color: root.hover ? Theme.accent : Theme.glass-border;
+        drop-shadow-blur: root.hover ? 34px : 16px;
+        drop-shadow-offset-y: root.hover ? 14px : 6px;
+        drop-shadow-color: root.hover ? Theme.accent.transparentize(60%) : Theme.shadow;
+        transform-scale: root.hover ? 1.04 : 1;
+        animate transform-scale, drop-shadow-blur, drop-shadow-offset-y { duration: 180ms; easing: ease-out; }
+
+        if !root.game.has-cover: ArtFallback {
+            game: root.game;
+            width: parent.width;
+            height: parent.height;
+        }
+        SoftImage {
+            width: parent.width;
+            height: parent.height;
+            sharp: root.game.cover;
+            soft: root.game.cover-blur;
+            loaded: root.game.has-cover;
+        }
+        // Gloss sweep.
+        Rectangle {
+            background: @linear-gradient(135deg, #FFFFFF30 0%, #FFFFFF00 40%);
+            opacity: root.hover ? 1 : 0.5;
+            animate opacity { duration: 180ms; }
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.open(); }
+        }
+        if root.game.running: RunningChip {
+            x: 10px;
+            y: 10px;
+        }
+        if !root.game.running && root.game.license-problem != "": LicenseChip {
+            x: 10px;
+            y: 10px;
+        }
+        if !root.game.running && root.game.license-problem == "" && root.game.anticheat != "": AntiCheatChip {
+            x: 10px;
+            y: 10px;
+            blocks: root.game.anticheat-blocks;
+        }
+        // Frosted action bar: the blurred cover, aligned with the cover, under a glass tint.
+        bar := Rectangle {
+            y: root.bar-up ? parent.height - self.height : parent.height;
+            height: 62px;
+            clip: true;
+            animate y { duration: 180ms; easing: ease-out; }
+            if root.game.has-cover: Image {
+                source: root.game.cover-blur;
+                x: 0;
+                y: -bar.y;
+                width: art.width;
+                height: art.height;
+                image-fit: cover;
+            }
+            Rectangle {
+                background: Theme.glass;
+                border-width: 1px;
+                border-color: Theme.glass-border;
+            }
+            Rectangle {
+                background: @linear-gradient(180deg, Theme.shine 0%, transparent 70%);
+            }
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 10px;
+                Rectangle {
+                    border-radius: 19px;
+                    background: root.game.running ? Theme.danger
+                        : root.busy || root.game.anticheat-blocks ? Theme.glass
+                        : @linear-gradient(180deg, Theme.accent.brighter(25%) 0%, Theme.accent 60%, Theme.accent.darker(15%) 100%);
+                    Text {
+                        text: root.game.running ? "■  Stop" : root.game.anticheat-blocks ? "Windows only" : "▶  Play";
+                        color: root.game.running ? Theme.on-danger : root.busy || root.game.anticheat-blocks ? Theme.muted : Theme.on-accent;
+                        font-weight: 800;
+                    }
+                    play-touch := TouchArea {
+                        enabled: root.game.running || (!root.busy && !root.game.anticheat-blocks);
+                        mouse-cursor: pointer;
+                        clicked => {
+                            if root.game.running {
+                                root.stop();
+                            } else {
+                                root.play();
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 38px;
+                    border-radius: 19px;
+                    background: gear-touch.has-hover ? Theme.accent.transparentize(70%) : Theme.glass;
+                    border-width: 1px;
+                    border-color: Theme.glass-border;
+                    Text {
+                        text: "⚙";
+                        color: Theme.text;
+                        font-size: 17px;
+                    }
+                    gear-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open(); }
+                    }
+                }
+            }
+        }
+    }
+    Text {
+        y: art.height + 10px;
+        width: root.width;
+        text: root.game.name;
+        color: Theme.text;
+        font-size: 14px;
+        font-weight: 700;
+        overflow: elide;
+    }
+    Text {
+        y: art.height + 30px;
+        width: root.width;
+        text: root.game.running ? "Running"
+            : root.game.license-problem != "" ? "License check failed"
+            : root.game.anticheat-blocks ? root.game.anticheat + ": Windows only"
+            : root.game.anticheat != "" ? root.game.anticheat + ": may not run"
+            : root.game.windows ? "Windows install" : "xTux install";
+        color: root.game.license-problem != "" && !root.game.running ? Theme.text : Theme.muted;
+        overflow: elide;
+        font-size: 12px;
+    }
+}
+
+component ListRow inherits Rectangle {
+    in property <GameRow> game;
+    in property <bool> busy;
+    callback play();
+    callback stop();
+    callback open();
+    callback hovered();
+    out property <bool> hover: touch.has-hover;
+    changed hover => {
+        if self.hover {
+            root.hovered();
+        }
+    }
+    height: 76px;
+    border-radius: 14px;
+    background: root.hover ? Theme.glass-strong : Theme.glass;
+    border-width: 1px;
+    border-color: root.hover ? Theme.accent.transparentize(30%) : Theme.glass-border;
+    animate background, border-color { duration: 140ms; }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
+    }
+    HorizontalLayout {
+        padding: 10px;
+        padding-right: 14px;
+        spacing: 14px;
+        Rectangle {
+            width: 56px;
+            border-radius: 10px;
+            clip: true;
+            if !root.game.has-cover: ArtFallback {
+                game: root.game;
+                width: parent.width;
+                height: parent.height;
+            }
+            SoftImage {
+                width: parent.width;
+                height: parent.height;
+                sharp: root.game.cover;
+                soft: root.game.cover-blur;
+                loaded: root.game.has-cover;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            Text {
+                text: root.game.name;
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                text: root.game.detail;
+                color: Theme.muted;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+        if root.game.running: VerticalLayout {
+            alignment: center;
+            RunningChip { }
+        }
+        if !root.game.running && root.game.license-problem != "": VerticalLayout {
+            alignment: center;
+            LicenseChip { }
+        }
+        if !root.game.running && root.game.license-problem == "" && root.game.anticheat != "": VerticalLayout {
+            alignment: center;
+            AntiCheatChip { blocks: root.game.anticheat-blocks; }
+        }
+        VerticalLayout {
+            alignment: center;
+            GhostButton {
+                text: "⚙";
+                width: 44px;
+                clicked => { root.open(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            if !root.game.running: ShinyButton {
+                text: root.game.anticheat-blocks ? "Windows only" : "▶  Play";
+                width: 120px;
+                enabled: !root.busy && !root.game.anticheat-blocks;
+                clicked => { root.play(); }
+            }
+            if root.game.running: DangerButton {
+                text: "■  Stop";
+                width: 120px;
+                clicked => { root.stop(); }
+            }
+        }
+    }
+}
+
+component LogView inherits Rectangle {
+    in property <string> text;
+    border-radius: 12px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: Theme.glass-border;
+    TextEdit {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        read-only: true;
+        font-size: 12px;
+        wrap: no-wrap;
+    }
+}
+
+component PageTitle inherits Text {
+    color: Theme.text;
+    font-size: 30px;
+    font-weight: 900;
+    vertical-alignment: center;
+}
+
+export component AppWindow inherits Window {
+    title: "xTux Launcher";
+    icon: root.app-icon;
+    preferred-width: 1240px;
+    preferred-height: 800px;
+    min-width: 860px;
+    min-height: 560px;
+    background: Theme.base;
+    default-font-size: 14px;
+
+    in property <bool> signed-in;
+    in property <string> user;
+    in property <string> status: "Connecting to xtux-service…";
+    in property <bool> busy;
+    in property <[GameRow]> games;
+    in property <int> game-count;
+    in-out property <string> search;
+    in-out property <string> view: "grid";
+    in-out property <bool> online-art: true;
+    in-out property <string> wine;
+    in-out property <string> prefix;
+    in-out property <string> library-dirs;
+    in-out property <int> page: 0;
+    // Ambient backdrop: two layers that cross-fade.
+    in property <image> backdrop-a;
+    in property <image> backdrop-b;
+    in property <bool> show-a: true;
+    in property <bool> has-backdrop;
+    // Game art behind library, game, store and title pages; settings, logs and about stay neutral.
+    property <bool> art-page: root.page == 0 || root.page == 2 || root.page == 5 || root.page == 6;
+    // Logo of the sidebar and the window icon, chosen in Settings.
+    in property <image> app-icon;
+    in-out property <string> icon-choice: "mascot";
+    in-out property <string> icon-colour: "brand";
+    // dynamic | static | off
+    in-out property <string> backdrop-mode: "dynamic";
+    in property <bool> game-running;
+    in property <string> game-license-problem;
+    in property <string> game-anticheat;
+    in property <bool> game-anticheat-blocks;
+    in property <bool> game-windows;
+    in-out property <bool> confirm-delete;
+    // Crash dialog after a game ended abnormally.
+    in-out property <bool> crash-open;
+    in property <string> crash-title;
+    in property <string> crash-reason;
+    in property <string> crash-hint;
+    in property <bool> crash-has-log;
+    callback open-crash-log();
+    // Low graphics memory before a start; only a hint, the game starts anyway.
+    in-out property <string> vram-warning;
+    in-out property <bool> deleting-addon;
+    in property <string> delete-addon-name;
+    in property <string> delete-addon-path;
+    // Game page (page 2)
+    in property <string> game-name;
+    in property <string> game-path;
+    in property <string> game-kind;
+    in property <image> game-hero;
+    in property <bool> has-game-hero;
+    in property <image> game-hero-soft;
+    in property <image> game-logo;
+    in property <bool> has-game-logo;
+    in-out property <string> game-wine;
+    in-out property <string> game-prefix;
+    in-out property <string> game-exe;
+    in-out property <string> game-args;
+    in-out property <string> game-env;
+    // "" follows the general setting, else "xbox" or "native".
+    in-out property <string> game-controller;
+    in-out property <string> controller-mode: "xbox";
+    // Setup page (page 9)
+    in property <bool> setup-wine-ok;
+    in property <bool> setup-wine-managed;
+    in property <string> setup-wine-text;
+    in-out property <string> setup-own-wine;
+    in-out property <bool> setup-show-own-wine;
+    in property <bool> setup-prefix-ok;
+    in-out property <string> setup-prefix;
+    in property <string> setup-libraries;
+    in property <bool> setup-busy;
+    in property <string> setup-message;
+    // 0..1, or below 0 while the size is not known.
+    in property <float> setup-progress: -1;
+    in property <bool> setup-complete;
+    in property <string> game-log;
+    // Logs page (page 3)
+    in property <string> service-log;
+    in property <string> service-log-path;
+    // Store (page 5) and a store title (page 6)
+    in property <[StoreRow]> store;
+    in property <int> store-count;
+    in property <int> store-total;
+    in property <bool> store-loading;
+    in-out property <string> store-search;
+    in-out property <string> store-source: "all";
+    in-out property <bool> store-installable;
+    in-out property <bool> store-hide-windows-only;
+    in-out property <bool> anticheat-guess;
+    // Scroll positions kept while a game or title page is open.
+    in-out property <length> library-scroll;
+    in-out property <length> store-scroll;
+    in property <StoreRow> store-title;
+    in property <image> store-hero;
+    in property <bool> has-store-hero;
+    in property <image> store-hero-soft;
+    // Downloads (page 7) and the install dialog
+    in property <[DownloadRow]> downloads;
+    in property <int> downloads-active;
+    in-out property <bool> install-open;
+    in property <[LibraryChoice]> install-libraries;
+    in-out property <int> install-choice;
+    in property <bool> store-title-queued;
+    in property <[ShotRow]> store-shots;
+    // Owned add-ons of the store title with a PC package.
+    in property <[AddonRow]> store-addons;
+    in property <[UpdateRow]> updates;
+    in-out property <bool> updates-loading;
+    in property <string> updates-status: "Check installed games and add-ons for updates.";
+    in-out property <int> shot-open: -1;
+    // Download history graph: one point per second, oldest first, and its label.
+    in property <[GraphPoint]> graph;
+    in property <string> graph-label;
+    // About page (page 4)
+    in property <string> version;
+    in property <[LicenseRow]> licenses;
+    in-out property <int> license-open: -1;
+
+    callback sign-in();
+    callback refresh();
+    callback play(int);
+    callback stop(int);
+    callback stop-game();
+    callback delete-game();
+    callback open-game(int);
+    callback hover-game(int);
+    callback play-game();
+    callback save-game();
+    callback refresh-logs();
+    callback save-settings();
+    callback search-edited(string);
+    callback ui-changed();
+    callback open-url(string);
+    callback open-store();
+    callback store-filter-changed();
+    callback store-more();
+    callback open-store-title(int);
+    callback store-play();
+    callback store-refresh();
+    callback store-install();
+    callback store-download-toggle();
+    callback store-addon-install(int);
+    callback store-addon-remove(int);
+    callback check-updates();
+    callback setup-open();
+    callback setup-auto();
+    callback setup-install-wine();
+    callback setup-use-wine();
+    callback setup-prepare-prefix();
+    callback setup-finish();
+    callback install-update(int);
+    callback open-shot(int);
+    callback confirm-install();
+    callback open-downloads();
+    callback download-action(int, string);
+
+    // The std widgets follow the launcher's theme.
+    public function apply-theme() {
+        Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
+    }
+    function pick-theme(choice: string) {
+        Theme.choice = choice;
+        root.ui-changed();
+    }
+    init => {
+        Theme.system-dark = Palette.color-scheme != ColorScheme.light;
+    }
+
+    // A click on empty space takes the focus away from text fields.
+    TouchArea {
+        clicked => { focus-sink.focus(); }
+    }
+    focus-sink := FocusScope {
+        width: 0;
+        height: 0;
+    }
+
+    // Background: brand gradient, blurred game art, a veil for legibility.
+    Rectangle {
+        background: @linear-gradient(160deg, Theme.base-2 0%, Theme.base 60%);
+    }
+    Image {
+        source: root.backdrop-a;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.has-backdrop && root.show-a && root.art-page ? Theme.backdrop-opacity : 0;
+        animate opacity { duration: 450ms; easing: ease-in-out; }
+    }
+    Image {
+        source: root.backdrop-b;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: root.has-backdrop && !root.show-a && root.art-page ? Theme.backdrop-opacity : 0;
+        animate opacity { duration: 450ms; easing: ease-in-out; }
+    }
+    Rectangle {
+        background: @linear-gradient(180deg, Theme.base.with-alpha(Theme.veil-top) 0%, Theme.base.transparentize(25%) 100%);
+    }
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 14px;
+
+        // Sidebar
+        Glass {
+            width: 230px;
+            strong: true;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 6px;
+                Image {
+                    source: root.app-icon;
+                    height: 88px;
+                    image-fit: contain;
+                }
+                Text {
+                    text: "xTux";
+                    color: Theme.accent-text;
+                    font-size: 28px;
+                    font-weight: 900;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "by Tux-Force";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+                Rectangle { height: 18px; }
+                NavItem {
+                    glyph: "▦";
+                    text: "Library";
+                    active: root.page == 0 || root.page == 2;
+                    clicked => { root.page = 0; }
+                }
+                NavItem {
+                    glyph: "🛒";
+                    text: "Store";
+                    active: root.page == 5 || root.page == 6;
+                    clicked => {
+                        root.page = 5;
+                        root.open-store();
+                    }
+                }
+                Rectangle {
+                    height: 42px;
+                    NavItem {
+                        glyph: "⤓";
+                        text: "Downloads";
+                        active: root.page == 7;
+                        clicked => {
+                            root.page = 7;
+                            root.open-downloads();
+                        }
+                    }
+                    if root.downloads-active > 0: Rectangle {
+                        x: parent.width - self.width - 12px;
+                        y: (parent.height - self.height) / 2;
+                        width: max(22px, count-text.preferred-width + 12px);
+                        height: 22px;
+                        border-radius: 11px;
+                        background: Theme.accent;
+                        count-text := Text {
+                            text: root.downloads-active;
+                            color: Theme.on-accent;
+                            font-size: 12px;
+                            font-weight: 800;
+                        }
+                    }
+                }
+                NavItem {
+                    glyph: "↻";
+                    text: "Updates";
+                    active: root.page == 8;
+                    clicked => { root.page = 8; }
+                }
+                NavItem {
+                    glyph: "⚙";
+                    text: "Settings";
+                    active: root.page == 1;
+                    clicked => { root.page = 1; }
+                }
+                NavItem {
+                    glyph: "ⓘ";
+                    text: "About";
+                    active: root.page == 4;
+                    clicked => { root.page = 4; }
+                }
+                NavItem {
+                    glyph: "≡";
+                    text: "Logs";
+                    active: root.page == 3;
+                    clicked => {
+                        root.page = 3;
+                        root.refresh-logs();
+                    }
+                }
+                Rectangle { }
+                Rectangle {
+                    height: account.preferred-height;
+                    border-radius: 12px;
+                    background: Theme.glass;
+                    border-width: 1px;
+                    border-color: Theme.glass-border;
+                    account := VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        Text {
+                            text: root.signed-in ? "Signed in as" : "Not signed in";
+                            color: Theme.muted;
+                            font-size: 12px;
+                        }
+                        if root.signed-in: Text {
+                            text: root.user;
+                            color: Theme.text;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        if !root.signed-in: ShinyButton {
+                            text: "Sign in";
+                            enabled: !root.busy;
+                            clicked => { root.sign-in(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Content
+        VerticalLayout {
+            spacing: 12px;
+
+            // Library header
+            if root.page == 0: HorizontalLayout {
+                spacing: 10px;
+                height: 48px;
+                PageTitle { text: "Library"; }
+                Text {
+                    text: root.game-count + " games";
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    LineEdit {
+                        width: 240px;
+                        text <=> root.search;
+                        placeholder-text: "Search";
+                        edited(text) => { root.search-edited(text); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "▦";
+                        min-width: 44px;
+                        active: root.view == "grid";
+                        clicked => {
+                            root.view = "grid";
+                            root.ui-changed();
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "☰";
+                        min-width: 44px;
+                        active: root.view == "list";
+                        clicked => {
+                            root.view = "list";
+                            root.ui-changed();
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "↻";
+                        min-width: 44px;
+                        clicked => { root.refresh(); }
+                    }
+                }
+            }
+
+            // Cover grid
+            if root.page == 0 && root.view == "grid" && root.games.length > 0: lib-grid := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-y <=> root.library-scroll;
+                content-width: self.visible-width;
+                property <length> tile: 176px;
+                property <length> gap: 26px;
+                property <int> cols: max(1, floor((self.visible-width - 40px + self.gap) / (self.tile + self.gap)));
+                property <length> row-height: self.tile * 1.5 + 54px;
+                content-height: ceil(root.games.length / self.cols) * (self.row-height + self.gap) + 24px;
+                for game[index] in root.games: CoverTile {
+                    x: 12px + mod(index, lib-grid.cols) * (lib-grid.tile + lib-grid.gap);
+                    y: 14px + floor(index / lib-grid.cols) * (lib-grid.row-height + lib-grid.gap);
+                    width: lib-grid.tile;
+                    height: lib-grid.row-height;
+                    game: game;
+                    busy: root.busy;
+                    play => { root.play(index); }
+                    stop => { root.stop(index); }
+                    open => { root.open-game(index); }
+                    hovered => { root.hover-game(index); }
+                }
+            }
+
+            // List
+            if root.page == 0 && root.view == "list" && root.games.length > 0: lib-list := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-y <=> root.library-scroll;
+                content-width: self.visible-width;
+                content-height: root.games.length * 86px + 10px;
+                for game[index] in root.games: ListRow {
+                    x: 2px;
+                    y: 4px + index * 86px;
+                    width: lib-list.visible-width - 28px;
+                    game: game;
+                    busy: root.busy;
+                    play => { root.play(index); }
+                    stop => { root.stop(index); }
+                    open => { root.open-game(index); }
+                    hovered => { root.hover-game(index); }
+                }
+            }
+
+            if root.page == 0 && root.games.length == 0: Glass {
+                Text {
+                    text: root.search != "" ? "No game matches \"" + root.search + "\"." : "No games found. Add library folders in Settings, or install a game with xtux-cli streaming.";
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                    width: parent.width - 40px;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Setup page
+            if root.page == 9: PageTitle {
+                text: "Welcome to xTux";
+                height: 48px;
+            }
+            if root.page == 9: setup-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, setup-content.preferred-height);
+                setup-content := VerticalLayout {
+                    x: 0;
+                    width: setup-scroll.visible-width - 28px;
+                    spacing: 14px;
+                    alignment: start;
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+                            Text {
+                                text: "A few steps and your games are ready. \"Set everything up\" does them for you; you only sign in with your Microsoft account.";
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                ShinyButton {
+                                    big: true;
+                                    text: root.setup-complete && root.signed-in ? "Start playing" : "Set everything up";
+                                    enabled: !root.setup-busy;
+                                    clicked => {
+                                        if (root.setup-complete && root.signed-in) {
+                                            root.setup-finish();
+                                        } else {
+                                            root.setup-auto();
+                                        }
+                                    }
+                                }
+                                if !(root.setup-complete && root.signed-in): VerticalLayout {
+                                    alignment: center;
+                                    GhostButton {
+                                        text: "Later";
+                                        clicked => { root.setup-finish(); }
+                                    }
+                                }
+                            }
+                            if root.setup-busy || root.setup-message != "": VerticalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: root.setup-message;
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                                if root.setup-busy: Rectangle {
+                                    height: 6px;
+                                    border-radius: 3px;
+                                    background: Theme.glass-strong;
+                                    clip: true;
+                                    Rectangle {
+                                        x: root.setup-progress < 0
+                                            ? (parent.width * 0.7) * (0.5 + 0.5 * sin(animation-tick() * 0.25deg / 1ms))
+                                            : 0;
+                                        width: root.setup-progress < 0 ? parent.width * 0.3 : parent.width * clamp(root.setup-progress, 0, 1);
+                                        height: parent.height;
+                                        border-radius: 3px;
+                                        background: Theme.accent;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 1. Account
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 14px;
+                            Text { text: root.signed-in ? "✓" : "1"; color: root.signed-in ? Theme.accent : Theme.muted; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Heading { text: "Microsoft account"; }
+                                Text {
+                                    text: root.signed-in ? "Signed in as " + root.user : "Games need the licenses of your account. Microsoft's sign-in opens in its own window.";
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            if !root.signed-in: VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 0;
+                                GhostButton {
+                                    text: "Sign in";
+                                    clicked => { root.sign-in(); }
+                                }
+                            }
+                        }
+                    }
+                    // 2. Wine
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text { text: root.setup-wine-ok ? "✓" : "2"; color: root.setup-wine-ok ? Theme.accent : Theme.muted; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Heading { text: "Wine"; }
+                                    Text { text: root.setup-wine-text; color: Theme.muted; wrap: word-wrap; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    GhostButton {
+                                        text: root.setup-wine-managed ? "Check for update" : root.setup-wine-ok ? "Use Tux-Force Wine" : "Download";
+                                        clicked => { root.setup-install-wine(); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 42px;
+                                alignment: start;
+                                GhostButton {
+                                    text: root.setup-show-own-wine ? "Hide" : "Use my own Wine";
+                                    clicked => { root.setup-show-own-wine = !root.setup-show-own-wine; }
+                                }
+                            }
+                            if root.setup-show-own-wine: HorizontalLayout {
+                                padding-left: 42px;
+                                spacing: 8px;
+                                LineEdit { text <=> root.setup-own-wine; placeholder-text: "/path/to/wine/bin/wine"; }
+                                GhostButton {
+                                    text: "Use";
+                                    clicked => { root.setup-use-wine(); }
+                                }
+                            }
+                        }
+                    }
+                    // 3. Prefix
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text { text: root.setup-prefix-ok ? "✓" : "3"; color: root.setup-prefix-ok ? Theme.accent : Theme.muted; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Heading { text: "Wine prefix"; }
+                                    Text {
+                                        text: "The Windows folder games run in, with DXVK and vkd3d-proton for graphics and the certificates some games need.";
+                                        color: Theme.muted;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    GhostButton {
+                                        text: root.setup-prefix-ok ? "Prepare again" : "Prepare";
+                                        clicked => { root.setup-prepare-prefix(); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 42px;
+                                LineEdit { text <=> root.setup-prefix; placeholder-text: "~/Games/xtux-prefix"; }
+                            }
+                        }
+                    }
+                    // 4. Library
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 14px;
+                            Text { text: "✓"; color: Theme.accent; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Heading { text: "Game library"; }
+                                Text {
+                                    text: root.setup-libraries;
+                                    color: Theme.muted;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "Found automatically, including XboxGames folders of Windows drives. Change them in Settings.";
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                    // 5. Controllers
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 14px;
+                            Text { text: "✓"; color: Theme.accent; font-size: 22px; font-weight: 800; vertical-alignment: center; width: 28px; }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 6px;
+                                Heading { text: "PlayStation controllers"; }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 8px;
+                                    GhostButton { text: "As Xbox gamepad (recommended)"; active: root.controller-mode == "xbox"; clicked => { root.controller-mode = "xbox"; root.ui-changed(); } }
+                                    GhostButton { text: "As PlayStation controller"; active: root.controller-mode == "native"; clicked => { root.controller-mode = "native"; root.ui-changed(); } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Game page
+            if root.page == 2: game-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, page-content.preferred-height);
+                page-content := VerticalLayout {
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: game-scroll.visible-width - 28px;
+                    spacing: 14px;
+                    // Hero banner
+                    Rectangle {
+                        height: 280px;
+                        border-radius: 20px;
+                        clip: true;
+                        background: Theme.base-2;
+                        border-width: 1px;
+                        border-color: Theme.glass-border;
+                        SoftImage {
+                            width: parent.width;
+                            height: parent.height;
+                            sharp: root.game-hero;
+                            soft: root.game-hero-soft;
+                            loaded: root.has-game-hero;
+                        }
+                        Rectangle {
+                            background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
+                        }
+                        Rectangle {
+                            background: @linear-gradient(135deg, #FFFFFF26 0%, #FFFFFF00 35%);
+                        }
+                        HorizontalLayout {
+                            padding: 24px;
+                            spacing: 18px;
+                            if root.has-game-logo: VerticalLayout {
+                                alignment: end;
+                                Rectangle {
+                                    width: 96px;
+                                    height: 96px;
+                                    border-radius: 18px;
+                                    clip: true;
+                                    border-width: 1px;
+                                    border-color: Theme.glass-border;
+                                    Image {
+                                        source: root.game-logo;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        image-fit: cover;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                spacing: 4px;
+                                Text {
+                                    text: root.game-name;
+                                    color: Theme.text;
+                                    font-size: 34px;
+                                    font-weight: 900;
+                                    overflow: elide;
+                                }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    alignment: start;
+                                    Text {
+                                        text: root.game-kind;
+                                        color: Theme.muted;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.game-running: RunningChip { }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        GhostButton {
+                                            text: "← Back";
+                                            clicked => { root.page = 0; }
+                                        }
+                                    }
+                                    if !root.game-running: ShinyButton {
+                                        text: root.game-anticheat-blocks ? "Windows only" : "▶  Play";
+                                        big: true;
+                                        enabled: !root.busy && !root.game-anticheat-blocks;
+                                        clicked => { root.play-game(); }
+                                    }
+                                    if root.game-running: DangerButton {
+                                        text: "■  Stop";
+                                        height: 48px;
+                                        min-width: 150px;
+                                        border-radius: 24px;
+                                        clicked => { root.stop-game(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.vram-warning != "": Rectangle {
+                        border-radius: 14px;
+                        background: Theme.warning.transparentize(78%);
+                        border-width: 1px;
+                        border-color: Theme.warning;
+                        height: vram-box.preferred-height;
+                        vram-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            Text {
+                                text: root.vram-warning;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                            GhostButton {
+                                text: "Dismiss";
+                                clicked => { root.vram-warning = ""; }
+                            }
+                        }
+                    }
+                    if root.game-anticheat != "": Rectangle {
+                        border-radius: 14px;
+                        background: (root.game-anticheat-blocks ? Theme.danger : Theme.warning).transparentize(78%);
+                        border-width: 1px;
+                        border-color: root.game-anticheat-blocks ? Theme.danger : Theme.warning;
+                        height: ac-box.preferred-height;
+                        ac-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            AntiCheatChip { blocks: root.game-anticheat-blocks; }
+                            Text {
+                                text: root.game-anticheat-blocks
+                                    ? "This game uses the kernel anti-cheat " + root.game-anticheat + ". It loads a Windows driver, which Wine cannot do, so the game runs on Windows only. Only the publisher can change this; getting around an anti-cheat breaks its terms and gets accounts banned."
+                                    : "This game uses " + root.game-anticheat + ". It runs on Linux only if the developer has allowed it; if the game stops at start, that is the reason.";
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    if root.game-license-problem != "": Rectangle {
+                        border-radius: 14px;
+                        background: Theme.danger.transparentize(78%);
+                        border-width: 1px;
+                        border-color: Theme.danger;
+                        height: license-box.preferred-height;
+                        license-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            LicenseChip { }
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text {
+                                    text: "The last license check failed. The game starts again once Microsoft grants the license (Game Pass active, game owned, signed in with the right account).";
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.game-license-problem;
+                                    color: Theme.text;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 14px;
+                        Glass {
+                            VerticalLayout {
+                                padding: 18px;
+                                spacing: 6px;
+                                alignment: start;
+                                Heading { text: "Game settings"; }
+                                Label { text: "Wine binary"; }
+                                LineEdit { text <=> root.game-wine; placeholder-text: "Default: general setting"; }
+                                Label { text: "Wine prefix"; }
+                                LineEdit { text <=> root.game-prefix; placeholder-text: "Default: general setting"; }
+                                Label { text: "Executable, package relative (for example x64\\Game.exe)"; }
+                                LineEdit { text <=> root.game-exe; placeholder-text: "Default: from MicrosoftGame.config"; }
+                                Label { text: "PlayStation controllers"; }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 8px;
+                                    GhostButton { text: "General setting"; active: root.game-controller == ""; clicked => { root.game-controller = ""; } }
+                                    GhostButton { text: "As Xbox gamepad"; active: root.game-controller == "xbox"; clicked => { root.game-controller = "xbox"; } }
+                                    GhostButton { text: "As PlayStation controller"; active: root.game-controller == "native"; clicked => { root.game-controller = "native"; } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        spacing: 6px;
+                                        Label { text: "Arguments, one per line"; }
+                                        TextEdit { text <=> root.game-args; height: 70px; }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 6px;
+                                        Label { text: "Environment, NAME=value per line"; }
+                                        TextEdit {
+                                            text <=> root.game-env;
+                                            height: 70px;
+                                            placeholder-text: "for example DXVK_HUD=fps";
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    padding-top: 6px;
+                                    spacing: 10px;
+                                    GhostButton {
+                                        text: "Delete game…";
+                                        clicked => { root.deleting-addon = false; root.confirm-delete = true; }
+                                    }
+                                    Rectangle { }
+                                    ShinyButton {
+                                        text: "Save";
+                                        clicked => { root.save-game(); }
+                                    }
+                                }
+                            }
+                        }
+                        Glass {
+                            VerticalLayout {
+                                padding: 18px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    Heading { text: "Last start"; vertical-alignment: center; }
+                                    Rectangle { }
+                                    GhostButton {
+                                        text: "↻ Reload";
+                                        clicked => { root.refresh-logs(); }
+                                    }
+                                }
+                                Label { text: root.game-path; overflow: elide; font-size: 11px; }
+                                LogView { min-height: 220px; text: root.game-log; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Settings
+            if root.page == 1: PageTitle {
+                text: "Settings";
+                height: 48px;
+            }
+            if root.page == 1: settings-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, settings-content.preferred-height);
+                settings-content := VerticalLayout {
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: settings-scroll.visible-width - 28px;
+                    spacing: 14px;
+                    alignment: start;
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+                            Heading { text: "Appearance"; }
+                            Label { text: "Theme"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Follow system"; active: Theme.choice == "system"; clicked => { root.pick-theme("system"); } }
+                                GhostButton { text: "Dark"; active: Theme.choice == "brand"; clicked => { root.pick-theme("brand"); } }
+                                GhostButton { text: "Anthracite"; active: Theme.choice == "anthracite"; clicked => { root.pick-theme("anthracite"); } }
+                                GhostButton { text: "Light"; active: Theme.choice == "light"; clicked => { root.pick-theme("light"); } }
+                            }
+                            if Theme.choice == "system": Label { text: "Dark theme when the system is dark"; }
+                            if Theme.choice == "system": HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Dark"; active: Theme.dark-variant == "brand"; clicked => { Theme.dark-variant = "brand"; root.ui-changed(); } }
+                                GhostButton { text: "Anthracite"; active: Theme.dark-variant == "anthracite"; clicked => { Theme.dark-variant = "anthracite"; root.ui-changed(); } }
+                            }
+                            Label { text: "Accent colour"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 12px;
+                                Swatch { tint: #A3E635; active: Theme.accent-name == "lime"; clicked => { Theme.accent-name = "lime"; root.ui-changed(); } }
+                                Swatch { tint: #10B981; active: Theme.accent-name == "emerald"; clicked => { Theme.accent-name = "emerald"; root.ui-changed(); } }
+                                Swatch { tint: #22D3EE; active: Theme.accent-name == "cyan"; clicked => { Theme.accent-name = "cyan"; root.ui-changed(); } }
+                                Swatch { tint: #A78BFA; active: Theme.accent-name == "violet"; clicked => { Theme.accent-name = "violet"; root.ui-changed(); } }
+                                Swatch { tint: #FBBF24; active: Theme.accent-name == "amber"; clicked => { Theme.accent-name = "amber"; root.ui-changed(); } }
+                            }
+                            Label { text: "Background"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Follows the game"; active: root.backdrop-mode == "dynamic"; clicked => { root.backdrop-mode = "dynamic"; root.ui-changed(); } }
+                                GhostButton { text: "Fixed"; active: root.backdrop-mode == "static"; clicked => { root.backdrop-mode = "static"; root.ui-changed(); } }
+                                GhostButton { text: "Off"; active: root.backdrop-mode == "off"; clicked => { root.backdrop-mode = "off"; root.ui-changed(); } }
+                            }
+                            Label { text: "App icon"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                for choice in [
+                                    { id: "mascot", img: @image-url("../assets/icon-mascot.png") },
+                                    { id: "mark", img: @image-url("../assets/icon-mark.png") },
+                                    { id: "symbol", img: @image-url("../assets/icon-symbol.png") },
+                                    { id: "mono", img: @image-url("../assets/icon-mono.png") },
+                                ]: Rectangle {
+                                    width: 56px;
+                                    height: 56px;
+                                    border-radius: 14px;
+                                    background: root.icon-choice == choice.id ? Theme.accent.transparentize(75%) : icon-touch.has-hover ? Theme.glass-strong : Theme.glass;
+                                    border-width: root.icon-choice == choice.id ? 2px : 1px;
+                                    border-color: root.icon-choice == choice.id ? Theme.accent : Theme.glass-border;
+                                    Image {
+                                        source: choice.img;
+                                        width: 40px;
+                                        height: 40px;
+                                        colorize: choice.id == "mono" ? Theme.text : transparent;
+                                    }
+                                    icon-touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.icon-choice = choice.id;
+                                            root.ui-changed();
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    GhostButton { text: "Brand colours"; active: root.icon-colour == "brand"; clicked => { root.icon-colour = "brand"; root.ui-changed(); } }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    GhostButton { text: "Accent colour"; active: root.icon-colour == "accent"; clicked => { root.icon-colour = "accent"; root.ui-changed(); } }
+                                }
+                            }
+                            Label { text: "Store: guess kernel anti-cheat"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Off"; active: !root.anticheat-guess; clicked => { root.anticheat-guess = false; root.ui-changed(); root.store-refresh(); } }
+                                GhostButton { text: "From xTux's own list"; active: root.anticheat-guess; clicked => { root.anticheat-guess = true; root.ui-changed(); root.store-refresh(); } }
+                            }
+                            Label {
+                                text: "The list matches title names (for example Call of Duty, EA SPORTS FC) and is not verified per title. Installed games are always checked by their files.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
+                            Label { text: "Game artwork"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "From the Microsoft Store"; active: root.online-art; clicked => { root.online-art = true; root.ui-changed(); root.refresh(); } }
+                                GhostButton { text: "Only from the game folder"; active: !root.online-art; clicked => { root.online-art = false; root.ui-changed(); } }
+                            }
+                            Label {
+                                text: "Covers and hero images come from the public Store catalog. xTux sends only the Store IDs of your installed games and your market, no account data; images are cached in ~/.cache/xtux/art.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 6px;
+                            Heading { text: "Games"; }
+                            Label { text: "Wine binary"; }
+                            LineEdit { text <=> root.wine; placeholder-text: "/path/to/tux-force-wine/bin/wine"; }
+                            Label { text: "Wine prefix (empty: WINEPREFIX or ~/Games/xtux-prefix)"; }
+                            LineEdit { text <=> root.prefix; placeholder-text: "~/Games/xtux-prefix"; }
+                            Label { text: "Library folders, one per line"; }
+                            TextEdit { text <=> root.library-dirs; height: 110px; }
+                            Label { text: "PlayStation controllers"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "As Xbox gamepad"; active: root.controller-mode == "xbox"; clicked => { root.controller-mode = "xbox"; root.ui-changed(); } }
+                                GhostButton { text: "As PlayStation controller"; active: root.controller-mode == "native"; clicked => { root.controller-mode = "native"; root.ui-changed(); } }
+                            }
+                            Label {
+                                text: "Xbox games read controllers as Xbox gamepads; choose PlayStation only for games with their own DualShock or DualSense support. Games of the same prefix share the mode, a change applies once they are all closed.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
+                            HorizontalLayout {
+                                alignment: end;
+                                padding-top: 6px;
+                                spacing: 10px;
+                                GhostButton {
+                                    text: "Run the setup…";
+                                    clicked => { root.setup-open(); }
+                                }
+                                ShinyButton {
+                                    text: "Save";
+                                    clicked => { root.save-settings(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Store
+            if root.page == 5: HorizontalLayout {
+                spacing: 10px;
+                height: 48px;
+                PageTitle { text: "Store"; }
+                Text {
+                    text: root.store-loading ? "Loading…" : root.store-count + " of " + root.store-total + " titles";
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    LineEdit {
+                        width: 240px;
+                        text <=> root.store-search;
+                        placeholder-text: "Search the store";
+                        edited => { root.store-filter-changed(); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "↻";
+                        min-width: 44px;
+                        clicked => { root.store-refresh(); }
+                    }
+                }
+            }
+            if root.page == 5: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                GhostButton { text: "All"; active: root.store-source == "all"; clicked => { root.store-source = "all"; root.store-filter-changed(); } }
+                GhostButton { text: "Game Pass"; active: root.store-source == "gamepass"; clicked => { root.store-source = "gamepass"; root.store-filter-changed(); } }
+                GhostButton { text: "Owned"; active: root.store-source == "owned"; clicked => { root.store-source = "owned"; root.store-filter-changed(); } }
+                GhostButton { text: "Installed"; active: root.store-source == "installed"; clicked => { root.store-source = "installed"; root.store-filter-changed(); } }
+                Rectangle { width: 12px; }
+                GhostButton { text: "Installable only"; active: root.store-installable; clicked => { root.store-installable = !root.store-installable; root.store-filter-changed(); } }
+                if root.anticheat-guess: GhostButton { text: "Hide likely Windows only"; active: root.store-hide-windows-only; clicked => { root.store-hide-windows-only = !root.store-hide-windows-only; root.store-filter-changed(); } }
+            }
+            if root.page == 5: store-grid := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-y <=> root.store-scroll;
+                content-width: self.visible-width;
+                property <length> tile: 160px;
+                property <length> gap: 24px;
+                property <int> cols: max(1, floor((self.visible-width - 40px + self.gap) / (self.tile + self.gap)));
+                property <length> row-height: self.tile * 1.5 + 54px;
+                property <length> grid-height: ceil(root.store.length / self.cols) * (self.row-height + self.gap);
+                content-height: self.grid-height + 90px;
+                for title[index] in root.store: StoreTile {
+                    x: 12px + mod(index, store-grid.cols) * (store-grid.tile + store-grid.gap);
+                    y: 14px + floor(index / store-grid.cols) * (store-grid.row-height + store-grid.gap);
+                    width: store-grid.tile;
+                    height: store-grid.row-height;
+                    title: title;
+                    open => { root.open-store-title(index); }
+                }
+                if root.store.length < root.store-count: GhostButton {
+                    x: (store-grid.visible-width - self.width) / 2;
+                    y: store-grid.grid-height + 24px;
+                    text: "Show more";
+                    clicked => { root.store-more(); }
+                }
+            }
+
+            // Store title
+            if root.page == 6: title-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, title-content.preferred-height);
+                title-content := VerticalLayout {
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: title-scroll.visible-width - 28px;
+                    spacing: 14px;
+                    alignment: start;
+                    Rectangle {
+                        height: 300px;
+                        border-radius: 20px;
+                        clip: true;
+                        background: Theme.base-2;
+                        border-width: 1px;
+                        border-color: Theme.glass-border;
+                        SoftImage {
+                            width: parent.width;
+                            height: parent.height;
+                            sharp: root.store-hero;
+                            soft: root.store-hero-soft;
+                            loaded: root.has-store-hero;
+                        }
+                        Rectangle {
+                            background: @linear-gradient(0deg, Theme.base.transparentize(5%) 0%, Theme.base.transparentize(55%) 45%, transparent 75%);
+                        }
+                        HorizontalLayout {
+                            padding: 24px;
+                            spacing: 18px;
+                            if root.store-title.has-cover: VerticalLayout {
+                                alignment: end;
+                                Rectangle {
+                                    width: 100px;
+                                    height: 150px;
+                                    border-radius: 12px;
+                                    clip: true;
+                                    border-width: 1px;
+                                    border-color: Theme.glass-border;
+                                    Image {
+                                        source: root.store-title.cover;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        image-fit: cover;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                spacing: 4px;
+                                Text {
+                                    text: root.store-title.name;
+                                    color: Theme.text;
+                                    font-size: 32px;
+                                    font-weight: 900;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: root.store-title.publisher + (root.store-title.category != "" ? " · " + root.store-title.category : "") + (root.store-title.size != "" ? " · " + root.store-title.size : "");
+                                    color: Theme.muted;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        GhostButton {
+                                            text: "← Store";
+                                            clicked => { root.page = 5; }
+                                        }
+                                    }
+                                    if root.store-title.installed: ShinyButton {
+                                        text: "▶  Play";
+                                        big: true;
+                                        enabled: !root.busy && root.store-title.windows-only == "";
+                                        clicked => { root.store-play(); }
+                                    }
+                                    if !root.store-title.installed && root.store-title.dl-state != "": HorizontalLayout {
+                                        spacing: 10px;
+                                        ring-touch := TouchArea {
+                                            width: 48px;
+                                            mouse-cursor: pointer;
+                                            clicked => { root.store-download-toggle(); }
+                                            ProgressRing {
+                                                width: 48px;
+                                                progress: root.store-title.dl-progress;
+                                                paused: root.store-title.dl-state == "paused" || root.store-title.dl-state == "failed" || root.store-title.dl-state == "queued";
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: root.store-title.dl-state == "running" ? round(root.store-title.dl-progress * 100) + " %"
+                                                    : root.store-title.dl-state == "queued" ? "Waiting"
+                                                    : root.store-title.dl-state == "pausing" ? "Pausing…"
+                                                    : root.store-title.dl-state == "failed" ? "Failed" : "Paused";
+                                                color: Theme.text;
+                                                font-weight: 800;
+                                            }
+                                            Text {
+                                                text: "Downloads ›";
+                                                color: Theme.muted;
+                                                font-size: 12px;
+                                                TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.page = 7;
+                                                        root.open-downloads();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !root.store-title.installed && root.store-title.dl-state == "": ShinyButton {
+                                        text: root.store-title-queued ? "In downloads"
+                                            : root.store-title.installable ? "⤓  Install"
+                                            : root.store-title.no-package ? "No PC package" : "Not supported";
+                                        big: true;
+                                        enabled: root.store-title.installable && !root.store-title-queued;
+                                        clicked => { root.store-install(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.store-shots.length > 0: shots-scroll := ScrollView {
+                        height: 196px;
+                        vertical-scrollbar-policy: always-off;
+                        content-height: 186px;
+                        content-width: root.store-shots.length * 334px;
+                        for shot[index] in root.store-shots: Rectangle {
+                            x: index * 334px;
+                            y: 0;
+                            width: 320px;
+                            height: 180px;
+                            border-radius: 12px;
+                            clip: true;
+                            background: Theme.base-2;
+                            border-width: 1px;
+                            border-color: shot-touch.has-hover ? Theme.accent : Theme.glass-border;
+                            SoftImage {
+                                width: parent.width;
+                                height: parent.height;
+                                sharp: shot.image;
+                                soft: shot.blur;
+                                loaded: shot.loaded;
+                            }
+                            shot-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.shot-open = index; }
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                if root.store-title.in-game-pass: Badge { text: "Game Pass"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.owned: Badge { text: "Owned"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.installed: Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; }
+                                if root.store-title.windows-only != "": Badge { text: "Likely Windows only"; fill: Theme.danger; ink: Theme.on-danger; }
+                                if root.store-title.windows-only == "" && !root.store-title.installable && !root.store-title.no-package: Badge { text: "Not supported"; fill: Theme.warning; ink: Theme.on-warning; }
+                                if root.store-title.windows-only == "" && root.store-title.no-package: Badge { text: "No PC package"; fill: Theme.glass-strong; ink: Theme.text; }
+                            }
+                            Text {
+                                color: Theme.text;
+                                font-weight: 700;
+                                text: root.store-title.windows-only != ""
+                                    ? "xTux's own list (a guess, not verified for this title) says it uses the kernel anti-cheat " + root.store-title.windows-only + ", which Wine cannot load. Turn the list off in Settings."
+                                    : root.store-title.installable
+                                    ? "A GDK game (MSIXVC package) xTux can install. Whether it runs on Linux is not tested yet unless it is marked."
+                                    : root.store-title.no-package
+                                    ? "The Store lists no PC package for this title. Such games usually install through another launcher (Ubisoft Connect, EA app, Steam) after you claim them, or are only offered for consoles here; xTux cannot install them."
+                                    : "Its PC package is an older UWP app package (" + root.store-title.package-format + "), not a GDK game. xTux cannot install these (yet).";
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.store-title.description;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            Heading { text: "Your add-ons"; }
+                            Text {
+                                text: root.store-addons.length > 0 ? "Install and remove your owned PC add-ons here. Downloads can be paused or cancelled in Downloads." : "No downloadable PC add-ons were found in your account for this game.";
+                                color: Theme.muted;
+                                wrap: word-wrap;
+                            }
+                            for addon[index] in root.store-addons: HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text { text: addon.name; color: Theme.text; font-weight: 700; wrap: word-wrap; }
+                                    if addon.size != "": Text { text: addon.size; color: Theme.muted; font-size: 12px; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    if addon.state == "installed": Badge { text: "✓ Installed"; fill: Theme.accent; ink: Theme.on-accent; }
+                                    if addon.state == "installed": GhostButton {
+                                        text: "Remove…";
+                                        clicked => { root.store-addon-remove(index); }
+                                    }
+                                    if addon.state == "queued": GhostButton {
+                                        text: "In downloads";
+                                        clicked => {
+                                            root.page = 7;
+                                            root.open-downloads();
+                                        }
+                                    }
+                                    if addon.state == "install": GhostButton {
+                                        text: "⤓  Install";
+                                        clicked => { root.store-addon-install(index); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.page == 8: VerticalLayout {
+                spacing: 14px;
+                HorizontalLayout {
+                    PageTitle { text: "Updates"; }
+                    Rectangle { }
+                    ShinyButton {
+                        text: root.updates-loading ? "Checking…" : "Check for updates";
+                        enabled: !root.updates-loading;
+                        clicked => { root.check-updates(); }
+                    }
+                }
+                Text { text: root.updates-status; color: Theme.muted; wrap: word-wrap; }
+                ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        spacing: 10px;
+                        for item[index] in root.updates: Glass {
+                            HorizontalLayout {
+                                padding: 16px;
+                                spacing: 16px;
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text { text: item.name; color: Theme.text; font-weight: 700; wrap: word-wrap; }
+                                    Text { text: item.versions; color: Theme.muted; wrap: word-wrap; }
+                                    Text { text: item.detail; color: Theme.muted; wrap: word-wrap; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 0;
+                                    if item.available: GhostButton {
+                                        text: "⤓  Update";
+                                        clicked => { root.install-update(index); }
+                                    }
+                                    if item.queued: GhostButton {
+                                        text: "In downloads";
+                                        clicked => { root.page = 7; root.open-downloads(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Downloads
+            if root.page == 7: HorizontalLayout {
+                height: 48px;
+                spacing: 10px;
+                PageTitle { text: "Downloads"; }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "Clear finished";
+                        clicked => { root.download-action(0, "clear"); }
+                    }
+                }
+            }
+            if root.page == 7: Glass {
+                height: 170px;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 16px;
+                        Heading { text: "Activity"; vertical-alignment: center; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            VerticalLayout { alignment: center; Rectangle { width: 12px; height: 4px; border-radius: 2px; background: Theme.accent; } }
+                            Label { text: "Download"; vertical-alignment: center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            VerticalLayout { alignment: center; Rectangle { width: 12px; height: 4px; border-radius: 2px; background: Theme.text; } }
+                            Label { text: "Disk write"; vertical-alignment: center; }
+                        }
+                        Rectangle { }
+                        Label { text: root.graph-label; vertical-alignment: center; }
+                    }
+                    graph-area := Rectangle {
+                        border-radius: 10px;
+                        background: Theme.field;
+                        clip: true;
+                        for point[index] in root.graph: Rectangle {
+                            x: index * graph-area.width / max(1, root.graph.length);
+                            width: graph-area.width / max(1, root.graph.length) + 0.5px;
+                            // Download: filled bars.
+                            Rectangle {
+                                y: parent.height - self.height;
+                                height: point.network * (parent.height - 8px);
+                                background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.transparentize(75%) 100%);
+                            }
+                            // Disk write: a thin line on top of its value.
+                            Rectangle {
+                                y: parent.height - point.disk * (parent.height - 8px) - 1.5px;
+                                height: 1.5px;
+                                background: Theme.text.transparentize(25%);
+                                visible: point.disk > 0;
+                            }
+                        }
+                    }
+                }
+            }
+            if root.page == 7 && root.downloads.length == 0: Glass {
+                height: 90px;
+                Text {
+                    text: "Nothing to download. Install a game from the Store.";
+                    color: Theme.muted;
+                }
+            }
+            if root.page == 7 && root.downloads.length > 0: dl-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: root.downloads.length * 104px + 10px;
+                for item[index] in root.downloads: Rectangle {
+                    x: 0;
+                    y: index * 104px;
+                    width: dl-scroll.visible-width - 28px;
+                    height: 94px;
+                    border-radius: 14px;
+                    background: Theme.glass;
+                    border-width: 1px;
+                    border-color: item.state == "running" ? Theme.accent : item.state == "failed" ? Theme.danger : Theme.glass-border;
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-right: 14px;
+                        spacing: 14px;
+                        Rectangle {
+                            width: 49px;
+                            border-radius: 8px;
+                            clip: true;
+                            background: Theme.base-2;
+                            SoftImage {
+                                width: parent.width;
+                                height: parent.height;
+                                sharp: item.cover;
+                                soft: item.cover-blur;
+                                loaded: item.has-cover;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: item.name;
+                                    color: Theme.text;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
+                                Rectangle { }
+                                Text {
+                                    text: item.state == "running" ? "Downloading"
+                                        : item.state == "queued" ? "Waiting"
+                                        : item.state == "pausing" ? "Pausing…"
+                                        : item.state == "removing" ? "Removing…"
+                                        : item.state == "paused" ? "Paused"
+                                        : item.state == "failed" ? "Failed" : "Installed";
+                                    opacity: item.state == "pausing" || item.state == "removing" ? 0.55 + 0.45 * sin(animation-tick() * 0.3deg / 1ms) : 1;
+                                    color: item.state == "failed" ? Theme.text : Theme.muted;
+                                    font-weight: 700;
+                                }
+                            }
+                            // Progress bar
+                            Rectangle {
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.field;
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * max(0, min(1, item.progress));
+                                    border-radius: 4px;
+                                    background: item.state == "failed" ? Theme.danger : @linear-gradient(90deg, Theme.accent.darker(10%) 0%, Theme.accent.brighter(20%) 100%);
+                                    animate width { duration: 400ms; }
+                                }
+                            }
+                            Text {
+                                text: item.detail;
+                                color: Theme.muted;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                if item.playable && !item.running: ShinyButton { text: "▶  Play"; width: 120px; enabled: !root.busy; clicked => { root.download-action(item.id, "play"); } }
+                                if item.playable && item.running: RunningChip { }
+                                if item.state == "running" || item.state == "queued": GhostButton { text: "❚❚"; width: 44px; clicked => { root.download-action(item.id, "pause"); } }
+                                if item.state == "paused" || item.state == "failed": GhostButton { text: "▶"; width: 44px; clicked => { root.download-action(item.id, "resume"); } }
+                                if item.state != "done" && item.state != "pausing" && item.state != "removing": GhostButton { text: "↑"; width: 40px; clicked => { root.download-action(item.id, "up"); } }
+                                if item.state != "done" && item.state != "pausing" && item.state != "removing": GhostButton { text: "↓"; width: 40px; clicked => { root.download-action(item.id, "down"); } }
+                                if item.state != "pausing" && item.state != "removing": GhostButton { text: item.state == "done" ? "✓" : "✕"; width: 44px; clicked => { root.download-action(item.id, "remove"); } }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // About
+            if root.page == 4: PageTitle {
+                text: "About";
+                height: 48px;
+            }
+            if root.page == 4: about-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, about-content.preferred-height);
+                about-content := VerticalLayout {
+                    // Room for the scrollbar on the right.
+                    x: 0;
+                    width: about-scroll.visible-width - 28px;
+                    spacing: 14px;
+                    alignment: start;
+                    Glass {
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 18px;
+                            Image {
+                                source: root.app-icon;
+                                width: 84px;
+                                height: 84px;
+                            }
+                            VerticalLayout {
+                                spacing: 6px;
+                                alignment: center;
+                                Heading { text: "xTux Launcher " + root.version; font-size: 22px; }
+                                Text {
+                                    text: "Free software under the GNU General Public License 3.0: you may use, study, share and change it. It comes without any warranty.";
+                                    color: Theme.text;
+                                    wrap: word-wrap;
+                                }
+                                Label {
+                                    text: "Built with the Slint UI toolkit (used under GPL-3.0), Rust and tokio; all components are listed below.";
+                                    wrap: word-wrap;
+                                }
+                                Label {
+                                    text: "Part of Tux-Force, a soft fork of Xodus. Games and their artwork belong to their publishers; xTux only runs games your Microsoft account is entitled to.";
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    padding-top: 4px;
+                                    GhostButton { text: "Source code"; clicked => { root.open-url("https://github.com/Tux-Force/xTux"); } }
+                                    GhostButton { text: "Website"; clicked => { root.open-url("https://tux-force.github.io"); } }
+                                    GhostButton { text: "GPL-3.0 text"; clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); } }
+                                }
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            Heading { text: "Open source components"; }
+                            Label {
+                                text: "xTux is built from these Rust crates, grouped by license. Select a license for its full text.";
+                                wrap: word-wrap;
+                            }
+                            for row[index] in root.licenses: Rectangle {
+                                height: license-line.preferred-height;
+                                border-radius: 12px;
+                                background: root.license-open == index ? Theme.accent.transparentize(80%) : license-touch.has-hover ? Theme.glass-strong : transparent;
+                                border-width: 1px;
+                                border-color: root.license-open == index ? Theme.accent : Theme.glass-border;
+                                license-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.license-open = root.license-open == index ? -1 : index; }
+                                }
+                                license-line := VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 3px;
+                                    HorizontalLayout {
+                                        Text {
+                                            text: row.name;
+                                            color: Theme.text;
+                                            font-weight: 800;
+                                        }
+                                        Rectangle { }
+                                        Text {
+                                            text: row.count + (row.count == 1 ? " crate" : " crates");
+                                            color: Theme.muted;
+                                        }
+                                    }
+                                    Text {
+                                        text: row.crates;
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                            if root.license-open >= 0: LogView {
+                                height: 360px;
+                                text: root.licenses[root.license-open].text;
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 6px;
+                            Heading { text: "Used at run time, not part of this program"; }
+                            Label {
+                                text: "Tux-Force Wine (LGPL-2.1-or-later) with xgameruntime; DXVK (zlib) and vkd3d-proton (LGPL-2.1-or-later), which xtux-cli prefix init downloads from their GitHub releases; game artwork from the Microsoft Store catalog, kept only in your local cache.";
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Logs
+            if root.page == 3: HorizontalLayout {
+                height: 48px;
+                spacing: 10px;
+                PageTitle { text: "Logs"; }
+                Rectangle { }
+                VerticalLayout {
+                    alignment: center;
+                    GhostButton {
+                        text: "↻ Reload";
+                        clicked => { root.refresh-logs(); }
+                    }
+                }
+            }
+            if root.page == 3: Glass {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    Label { text: "xtux-service · " + root.service-log-path; overflow: elide; }
+                    LogView { text: root.service-log; }
+                }
+            }
+
+            // Status bar
+            Glass {
+                height: 40px;
+                border-radius: 14px;
+                drop-shadow-blur: 14px;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 9px;
+                            height: 9px;
+                            border-radius: 4.5px;
+                            background: root.busy ? Theme.accent : Theme.muted;
+                            drop-shadow-blur: root.busy ? 10px : 0px;
+                            drop-shadow-color: Theme.accent;
+                        }
+                    }
+                    Text {
+                        text: root.status;
+                        color: root.busy ? Theme.text : Theme.muted;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+
+    // Delete confirmation.
+    if root.confirm-delete: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(560px, parent.width - 60px);
+            height: dialog.preferred-height;
+            dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: "Delete " + (root.deleting-addon ? root.delete-addon-name : root.game-name) + "?";
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.deleting-addon ? "The add-on folder is deleted from disk. You can download it again later:" : "The whole game folder is deleted from the disk. This cannot be undone:";
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.deleting-addon ? root.delete-addon-path : root.game-path;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if !root.deleting-addon && root.game-windows: Rectangle {
+                    border-radius: 12px;
+                    background: Theme.danger.transparentize(80%);
+                    border-width: 1px;
+                    border-color: Theme.danger;
+                    height: warning.preferred-height;
+                    warning := VerticalLayout {
+                        padding: 14px;
+                        Text {
+                            text: "This game was installed by the Windows Xbox app. Windows will show it as broken until you repair or reinstall it there. Saves in the cloud stay, local saves of the game folder are lost.";
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    GhostButton {
+                        text: "Cancel";
+                        clicked => { root.confirm-delete = false; }
+                    }
+                    DangerButton {
+                        text: "Delete";
+                        enabled: !root.busy && (root.deleting-addon || !root.game-running);
+                        clicked => {
+                            root.confirm-delete = false;
+                            root.delete-game();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Crash message.
+    if root.crash-open: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(560px, parent.width - 60px);
+            height: crash-dialog.preferred-height;
+            crash-dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: root.crash-title;
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.crash-reason;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.crash-hint;
+                    color: Theme.muted;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    if root.crash-has-log: GhostButton {
+                        text: "Open log";
+                        clicked => { root.open-crash-log(); }
+                    }
+                    ShinyButton {
+                        text: "Close";
+                        clicked => { root.crash-open = false; }
+                    }
+                }
+            }
+        }
+    }
+
+    // Install dialog: where the game goes.
+    if root.install-open: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(560px, parent.width - 60px);
+            height: install-dialog.preferred-height;
+            install-dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: "Install " + root.store-title.name;
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "Download size " + root.store-title.size + ". Choose the library folder; the game gets its own folder in it.";
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                for choice[index] in root.install-libraries: Rectangle {
+                    height: choice-line.preferred-height;
+                    border-radius: 12px;
+                    background: root.install-choice == index ? Theme.accent.transparentize(78%) : choice-touch.has-hover ? Theme.glass-strong : Theme.glass;
+                    border-width: 1px;
+                    border-color: root.install-choice == index ? Theme.accent : Theme.glass-border;
+                    choice-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.install-choice = index; }
+                    }
+                    choice-line := HorizontalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        Text {
+                            text: choice.path;
+                            color: Theme.text;
+                            overflow: elide;
+                        }
+                        Rectangle { }
+                        Text {
+                            text: choice.free;
+                            color: Theme.muted;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    GhostButton {
+                        text: "Cancel";
+                        clicked => { root.install-open = false; }
+                    }
+                    ShinyButton {
+                        text: "Add to downloads";
+                        enabled: root.install-libraries.length > 0;
+                        clicked => {
+                            root.install-open = false;
+                            root.confirm-install();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Screenshot, large.
+    if root.shot-open >= 0 && root.shot-open < root.store-shots.length: Rectangle {
+        background: #000000D8;
+        TouchArea { clicked => { root.shot-open = -1; } }
+        // ← → browse, Esc closes.
+        shot-keys := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.LeftArrow {
+                    if root.shot-open > 0 { root.shot-open -= 1; }
+                    return accept;
+                }
+                if event.text == Key.RightArrow {
+                    if root.shot-open < root.store-shots.length - 1 { root.shot-open += 1; }
+                    return accept;
+                }
+                if event.text == Key.Escape {
+                    root.shot-open = -1;
+                    return accept;
+                }
+                reject
+            }
+        }
+        Image {
+            x: 60px;
+            y: 50px;
+            width: parent.width - 120px;
+            height: parent.height - 100px;
+            source: root.store-shots[root.shot-open].image;
+            image-fit: contain;
+        }
+        if root.shot-open > 0: GhostButton {
+            x: 12px;
+            y: (parent.height - self.height) / 2;
+            text: "‹";
+            width: 40px;
+            clicked => { root.shot-open -= 1; }
+        }
+        if root.shot-open < root.store-shots.length - 1: GhostButton {
+            x: parent.width - self.width - 12px;
+            y: (parent.height - self.height) / 2;
+            text: "›";
+            width: 40px;
+            clicked => { root.shot-open += 1; }
+        }
+        GhostButton {
+            x: parent.width - self.width - 12px;
+            y: 12px;
+            text: "✕";
+            width: 40px;
+            clicked => { root.shot-open = -1; }
+        }
+    }
+}

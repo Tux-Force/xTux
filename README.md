@@ -1,17 +1,17 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-dark-bg.png" />
-    <img src="https://raw.githubusercontent.com/Tux-Force/tux-force/main/brand/png/logo-horizontal-light-bg.png" alt="Tux-Force" width="420" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://tux-force.github.io/brand/logo-horizontal-dark-bg.png" />
+    <img src="https://tux-force.github.io/brand/logo-horizontal-light-bg.png" alt="Tux-Force" width="420" />
   </picture>
 </p>
 
 <h1 align="center">xTux</h1>
 <p align="center">Play the PC games you own or subscribe to on Linux — with real licenses, no cracks.</p>
-<p align="center"><a href="https://github.com/Tux-Force">Tux-Force</a> · soft fork of <a href="https://github.com/xodus-gaming/xodus">Xodus</a></p>
+<p align="center"><a href="https://tux-force.github.io">Website</a> · <a href="https://github.com/Tux-Force">Tux-Force</a> · soft fork of <a href="https://github.com/xodus-gaming/xodus">Xodus</a></p>
 
 > [!CAUTION]
 > This is an unofficial community project - use at your own risk. It is not affiliated with, endorsed by, or sponsored
-> by Microsoft or XBOX; all trademarks, product names, and company names or logos mentioned herein are the property
+> by Microsoft or Xbox; all trademarks, product names, and company names or logos mentioned herein are the property
 > of their respective owners.
 
 ## What is xTux?
@@ -27,47 +27,84 @@ contributions (see [CONTRIBUTING](https://github.com/Tux-Force/.github/blob/main
 
 ### What xTux adds on top of Xodus
 
-- **Shared installs:** `xtux-cli run` and `xtux-cli link` start games straight from an installation made by the
-  Windows Xbox app (dual boot, NTFS), no second download.
+- **One install format:** xTux reads and writes the layout of the Windows Xbox app (`Content/` plus the package
+  header named by its content id), so `xtux-cli run` starts games straight from a Windows installation (dual boot,
+  NTFS) without a second download. `xtux-cli migrate <folder>` moves an older Xodus install into that layout.
 - **Bridge for GDK services:** `run` starts a loopback service with a per-run secret that answers what the game's
   xgameruntime needs from Microsoft without handing account tokens to the game:
   - store license tokens (`XStoreQueryLicenseToken`),
   - title-bound, signed Xbox Live tokens (device, title and user token, as on Windows), with relying parties from the
     title's own endpoint table.
-- **Game start fixes:** software video decoders for intro videos, identity and license state for xgameruntime.
+- **Game start fixes:** software video decoders for intro videos, identity and license state for xgameruntime,
+  games whose entry executable is not encrypted, the Windows package identity for games depending on the Windows App
+  Runtime, and the GameInput redistributable a game ships (installed into the prefix at launch). Minecraft for
+  Windows runs this way.
+- **Controllers:** PlayStation controllers (DualShock 4, DualSense, DualSense Edge) reach games as Xbox gamepads by
+  default, the kind XInput and GameInput games understand; per game they can stay PlayStation controllers.
 - **Merged upstream pull requests** that are not in Xodus `main` yet (#216, #237, #242, #243, #217, #212, #197, #215).
 
 The matching runtime and Wine changes live in [Tux-Force/xgameruntime](https://github.com/Tux-Force/xgameruntime)
 and [Tux-Force/wine](https://github.com/Tux-Force/wine).
 
-## Current state
+## Using xTux
 
-| Game | State |
-|---|---|
-| Farming Simulator 25 | Plays: menus, saves, ModHub, Xbox Live (achievements, presence, real-time) and clean exit |
-| Microsoft Flight Simulator 2024 | Signs in and reaches its services, then fails on its own backend (under investigation) |
+Guides, the compatibility list and downloads are on the website, **https://tux-force.github.io**:
 
-The command line tool is **xTux-cli** (`xtux-cli`) and the daemon **xTux-service** (`xtux-service`); the core library
-keeps its upstream name `xodus`.
+- [Quick start](https://tux-force.github.io/guide/quick-start/) and [installation](https://tux-force.github.io/guide/installation/)
+- [Running games](https://tux-force.github.io/guide/running-games/): `xtux-cli list`, `run` by name, Windows installs, `migrate`
+- [Sign-in and password prompts](https://tux-force.github.io/guide/sign-in/), [troubleshooting](https://tux-force.github.io/guide/troubleshooting/)
+- [Compatibility](https://tux-force.github.io/compatibility/) and [architecture](https://tux-force.github.io/project/architecture/)
 
-## Quick start
+`xtux-cli --help` lists all commands. The command line tool is **xTux-cli** (`xtux-cli`), the daemon **xTux-service**
+(`xtux-service`) and the graphical front end the **xTux Launcher** (`xtux-launcher`); the core library keeps its
+upstream name `xodus`.
 
-```bash
-# sign in once
-xtux-cli login
-# prepare a prefix: DXVK, vkd3d-proton and the Microsoft root certificates games expect
-xtux-cli prefix init /path/to/tux-force-wine/wine --prefix ~/Games/xtux-prefix
-# run a game installed by the Windows Xbox app, or a folder downloaded with xtux-cli
-WINEPREFIX=~/Games/xtux-prefix xtux-cli run -m DE "/path/to/XboxGames/<Game>" /path/to/tux-force-wine/wine
-```
+## Launcher features
 
-`run` and `prefix init` go through the daemon `xtux-service`, which `xtux-cli` starts on demand and which exits
-after five idle minutes (`XTUX_IDLE_TIMEOUT` in seconds, `0` keeps it running). Its log, including the game bridge, is
-in `~/.local/state/xtux/service.log`. `XTUX_DIRECT=1` runs a command inside `xtux-cli` instead, without the daemon.
+The current source includes a searchable local library (grid or list), Play/Stop, per-game Wine/prefix/executable/
+arguments/environment settings, launch logs and file-based anti-cheat indicators. The Store combines PC Game Pass
+and owned-title catalogs with filters, artwork, title details and screenshot galleries.
 
-`prefix init` downloads DXVK and vkd3d-proton from their GitHub releases (or takes them from a local Proton build with
-`--from-proton`), keeps Wine's own DLLs in `xtux-builtin-backup/` and records the setup in `xtux-prefix.json`, from
-which `run` takes the DLL overrides.
+Supported packages can be installed through a persistent service-owned download queue with pause/resume,
+reordering and activity graphs. The CLI shares it via `xtux-cli downloads`. Catalog presence does not establish
+an entitlement; Microsoft checks the license when the game starts.
+
+The Updates page checks installed games and DLCs, including Windows Xbox app installs, and updates them in place;
+`xtux-cli verify` checks an install against its package (see [Game and DLC updates](docs/Updates.md)). When a game
+ends abnormally, the launcher names the cause and a hint, with a button to open the log.
+
+**Delete game…** removes the entire game folder after confirmation, including Windows Xbox app installs and any
+saves inside that folder.
+
+On the first start the launcher opens **Welcome to xTux**: "Set everything up" signs in, downloads the
+[Tux-Force Wine](https://github.com/Tux-Force/wine/releases) (checked against its SHA-256 file), prepares the prefix
+and finds the game folders. `xtux-cli` without a command shows the same state with a menu and runs the setup in
+the terminal. Releases also come as a Flatpak (`xtux-linux-x86_64.flatpak`), which brings WebKitGTK for the sign-in.
+See [Setup](docs/Setup.md).
+
+Global and per-game settings share `$XDG_CONFIG_HOME/xtux/settings.toml` (normally `~/.config/xtux/settings.toml`).
+Per-game overrides are keyed by game folder. `controller = "xbox"` (default) or `"native"` sets how PlayStation
+controllers reach games; games of one prefix share the mode, so a change applies once they are all closed. See the [launcher guide](https://tux-force.github.io/guide/launcher/)
+for pages, launch options, appearance settings and log locations.
+
+## Launcher screenshots
+
+The xTux Launcher brings your installed games and the Store catalog into one graphical interface.
+Account details and personal paths are redacted in these screenshots.
+
+### Library
+
+![xTux Launcher library with installed games, Play buttons and compatibility indicators](docs/screenshots/launcher-library.png)
+
+### Store
+
+![xTux Launcher Store with game covers and Game Pass, Owned and Installed filters](docs/screenshots/launcher-store.png)
+
+### Game details
+
+![xTux Launcher game detail view with artwork, Play button and per-game settings](docs/screenshots/launcher-detail.png)
+
+[Download branded social-media versions](docs/social-media/README.md) of all three screenshots.
 
 ## Building
 
@@ -75,19 +112,24 @@ The project structure is as follows.
 
 ```
 .
-├── msixvc - [rlib] common rlib crate for utilities for parsing MSIXVC and XSP files
-├── xodus - [rlib] common rlib crate that contains core xodus functionality, API calls abstractions and utilities
-├── xtux-cli - [bin] xTux-cli, the command line front end
-└── xtux-service - [bin] service process exposing xtux.sock for IPC communication, it takes care of xgameruntime.dll integration.
+├── msixvc / msixvc-common - MSIXVC and XSP package utilities
+├── xodus - authentication, tokens and Microsoft API abstractions
+├── xtux-games - game layouts, catalog, install queue, prefix setup, launch and bridge logic
+├── xtux-protocol - typed requests, responses and events for service protocol v2
+├── xtux-cli - command line client
+├── xtux-service - daemon owning accounts, downloads and game launches
+└── xtux-launcher - Slint graphical client
 ```
 
 > [!NOTE]
-> xtux-service aims to become a main point of integration. All xodus clients will connect to it to interact with games and XBOX services.
+> xtux-service is the integration point for game operations. CLI and launcher use its `XTX2` length-prefixed JSON
+> protocol; the older runtime XML messages are still supported on the same socket.
 
 ### Prerequisites
 
 - Rust version 1.98 or later
 - Right now CLI relies on wry and tao to show a login page. Consult https://docs.rs/wry/latest/wry/#platform-considerations
+  (the Flatpak, `packaging/flatpak`, gets WebKitGTK from the GNOME runtime)
 - xtux-service relies on `protoc` to compile `proto/` definitions make sure to install it for your platform
 
 ### Running
@@ -101,7 +143,7 @@ cargo build --release --workspace
 Running cli in debug
 
 ```
-cargo run -- --help
+cargo run --bin xtux-cli -- --help
 ```
 
 Running xtux-service in debug
@@ -110,10 +152,16 @@ Running xtux-service in debug
 cargo run --bin xtux-service
 ```
 
+Running the launcher in debug
+
+```bash
+cargo run --bin xtux-launcher
+```
+
 Debug and profile `xtux-cli` or `xtux-service` with [tokio-console](https://github.com/tokio-rs/console)
 
 ```
-RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console 
+RUSTFLAGS="--cfg tokio_unstable" cargo run --bin xtux-cli --features tokio_console
 ```
 
 > [!WARNING]
@@ -124,25 +172,27 @@ RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console
 > See https://en.wikipedia.org/wiki/AES_instruction_set for a list of compatible CPUs (every processor from
 > 2011 onwards should be supported).
 
-### CLI Usage
+## Releases
 
-```
-Usage: xtux-cli <COMMAND>
+Work lands in `develop` through pull requests (`feature/*`, `fix/*`, `chore/*`), merged only when CI is green.
+`main` is protected and holds released code. A release goes like this:
 
-Commands:
-  download    Download msixvc or xsp files for a given game
-  license     Dump CIKs for use with XvdTool
-  extract     Extract locally stored msixvc file
-  login       
-  streaming   Download and extract the game through streaming algorithm
-  clep        Generate or decrypt base64-encoded CLEP challenge data
-  sp-license  Decode SPLicenseBlock
-  help        Print this message or the help of the given subcommand(s)
+1. Set the version in `crates/xtux-cli/Cargo.toml` and add `docs/ReleaseNotes-v<version>.md` (in a PR to `develop`).
+2. Merge `develop` into `main` with a pull request.
+3. Tag the merge commit on `main` with `v<version>` and push the tag.
 
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-```
+The CI builds, tests and checks licenses for the tag, then publishes the GitHub release with the CI-built archives
+and checksums. It refuses tags on commits that are not on `main` and tags that do not match the version.
+Versions `0.x` and versions with a suffix (`-rc1`) are marked as pre-releases.
+
+## License
+
+xTux is free software under the GNU General Public License 3.0 ([LICENSE](LICENSE)); the crates taken over from
+Xodus are `GPL-3.0-only`, the new xTux crates `GPL-3.0-or-later`. The licenses of all dependencies are listed in
+[licenses/THIRD-PARTY-LICENSES.md](licenses/THIRD-PARTY-LICENSES.md) (generated with `scripts/third-party-licenses.sh`,
+shipped with every release and shown on the launcher's About page). The CI checks with `cargo deny` (`deny.toml`)
+that every dependency has a GPL-3.0 compatible license and comes from a known source. More on the website:
+[Licenses](https://tux-force.github.io/project/licenses/).
 
 ## Special Thanks
 

@@ -43,7 +43,14 @@ pub async fn route(
             crate::PROTO_MAGIC => super::proto::handle(&mut socket, &mut context).await,
             xtux_protocol::MAGIC => {
                 // A v2 client keeps the connection for its own framing.
-                super::v2::serve(socket, token, context.client.clone(), tokens, activity.clone()).await;
+                super::v2::serve(
+                    socket,
+                    token,
+                    context.client.clone(),
+                    tokens,
+                    activity.clone(),
+                )
+                .await;
                 return;
             }
             _ => {

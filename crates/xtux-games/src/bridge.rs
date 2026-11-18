@@ -21,16 +21,28 @@
 //!   With an MSA app id the token comes from a title-bound session (device, title and user
 //!   token, like on Windows) and signed endpoints get a signature; without one it is a
 //!   user-only token.
+//!
+//! `POST /packages`
+//!   Answers the installed add-ons (DLC) of the game, see packages.rs for the format.
+//!
+//! `POST /packages/wait`
+//!   body: the generation of the list the runtime knows. Answers the list once it changed, or the
+//!   current one after a while (long poll); the runtime then asks again.
+//!
+//! `POST /store/package-license`
+//!   body: the content id of an installed add-on of the game. Answers `1` when the user holds a
+//!   license for it (asked once per run from the licensing service), 403 otherwise.
 
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use base64::Engine;
 use xodus::api::xbox::signing;
 use xodus::api::xbox::title::{self, ResolvedEndpoint};
 use xodus::auth::{TitleSession, XstsToken};
@@ -40,13 +52,18 @@ use xodus::models::xgameruntime::xuser::UserIdentity;
 use xodus::tokens::TokenManager;
 
 use crate::license::get_store_tokens;
+use crate::packages;
 
 const MAX_REQUEST: usize = 1024 * 1024;
+/// Requests handled at the same time; more wait to be accepted.
+const MAX_CONNECTIONS: usize = 32;
 /// XSTS tokens are valid for many hours; refresh well before that.
 const XSTS_LIFETIME: Duration = Duration::from_secs(60 * 60);
 
 struct State {
     client: reqwest::Client,
+    /// Set when a license token request failed; read after the game exits (see `crash.rs`).
+    license_failed: Arc<AtomicBool>,
     tokens: TokenManager,
     secret: String,
     /// Endpoint lists per title id (0 for the default list).
@@ -57,35 +74,60 @@ struct State {
     sessions: Mutex<HashMap<String, TitleSession>>,
     /// Title-bound XSTS tokens per `client_id:title_id:relying_party`.
     title_xsts: Mutex<HashMap<String, XstsToken>>,
+    /// The add-ons of the game.
+    packages: Arc<packages::Watcher>,
+    /// Store market for licenses.
+    market: String,
+    /// Add-on license checks by content id.
+    package_licenses: Mutex<HashMap<String, bool>>,
 }
 
 pub struct Bridge {
     pub port: u16,
     pub secret: String,
+    /// A license token request of the game failed.
+    pub license_failed: Arc<AtomicBool>,
 }
 
-/// Starts the bridge on 127.0.0.1 with a random port. It runs until the process exits.
-pub async fn start(client: reqwest::Client, tokens: TokenManager) -> std::io::Result<Bridge> {
+/// Starts the bridge on 127.0.0.1 with a random port. It runs until the process exits. `scope` tells which add-ons
+/// belong to the game, `market` is the Store market for their licenses.
+pub async fn start(
+    client: reqwest::Client,
+    tokens: TokenManager,
+    scope: packages::Scope,
+    market: String,
+) -> std::io::Result<Bridge> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     let secret = random_secret()?;
 
+    let license_failed = Arc::new(AtomicBool::new(false));
     let state = Arc::new(State {
         client,
+        license_failed: license_failed.clone(),
         tokens,
         secret: secret.clone(),
         endpoints: Mutex::new(HashMap::new()),
         xsts: Mutex::new(HashMap::new()),
         sessions: Mutex::new(HashMap::new()),
         title_xsts: Mutex::new(HashMap::new()),
+        packages: packages::Watcher::new(scope),
+        market,
+        package_licenses: Mutex::new(HashMap::new()),
     });
+    // A game cannot tie up the process with countless open requests (long polls stay open for a while).
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     tokio::spawn(async move {
         loop {
+            let Ok(permit) = slots.clone().acquire_owned().await else {
+                break;
+            };
             let Ok((stream, _)) = listener.accept().await else {
                 continue;
             };
             let state = state.clone();
             tokio::spawn(async move {
+                let _permit = permit;
                 if let Err(err) = handle(stream, &state).await {
                     tracing::warn!("request failed: {err}");
                 }
@@ -93,7 +135,11 @@ pub async fn start(client: reqwest::Client, tokens: TokenManager) -> std::io::Re
         }
     });
 
-    Ok(Bridge { port, secret })
+    Ok(Bridge {
+        port,
+        secret,
+        license_failed,
+    })
 }
 
 fn random_secret() -> std::io::Result<String> {
@@ -200,14 +246,16 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
     }
 
     match (request.method.as_str(), request.path.as_str()) {
-        ("POST", "/store/license-token") => match license_token(client, tokens, &request.body).await
-        {
-            Ok(token) => respond(&mut stream, "200 OK", &token).await,
-            Err(err) => {
-                tracing::warn!("license token request failed: {err}");
-                respond(&mut stream, "502 Bad Gateway", &err).await
+        ("POST", "/store/license-token") => {
+            match license_token(client, tokens, &request.body).await {
+                Ok(token) => respond(&mut stream, "200 OK", &token).await,
+                Err(err) => {
+                    tracing::warn!("license token request failed: {err}");
+                    state.license_failed.store(true, Ordering::Relaxed);
+                    respond(&mut stream, "502 Bad Gateway", &err).await
+                }
             }
-        },
+        }
         ("POST", "/xbl/token") => match xbl_token(state.clone(), &request.body).await {
             Ok(Some((header, signature))) => {
                 respond(&mut stream, "200 OK", &format!("{header}\n{signature}")).await
@@ -218,6 +266,28 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
                 respond(&mut stream, "502 Bad Gateway", &err).await
             }
         },
+        ("POST", "/packages") => {
+            let scope = state.packages.scope().clone();
+            let list =
+                tokio::task::spawn_blocking(move || packages::encode(&packages::list(&scope)))
+                    .await
+                    .unwrap_or_default();
+            respond(&mut stream, "200 OK", &list).await
+        }
+        ("POST", "/packages/wait") => {
+            let list = state.packages.wait(request.body.trim()).await;
+            respond(&mut stream, "200 OK", &list).await
+        }
+        ("POST", "/store/package-license") => {
+            match package_license(state, request.body.trim()).await {
+                Ok(true) => respond(&mut stream, "200 OK", "1").await,
+                Ok(false) => respond(&mut stream, "403 Forbidden", "not entitled").await,
+                Err(err) => {
+                    tracing::warn!("add-on license check failed: {err}");
+                    respond(&mut stream, "502 Bad Gateway", &err).await
+                }
+            }
+        }
         _ => respond(&mut stream, "404 Not Found", "unknown endpoint").await,
     }
 }
@@ -250,7 +320,9 @@ async fn license_token(
         return Err("missing parent product id".to_string());
     }
 
-    let store = get_store_tokens(client, tokens).await.map_err(|e| e.to_string())?;
+    let store = get_store_tokens(client, tokens)
+        .await
+        .map_err(|e| e.to_string())?;
     xodus::licensing::content::get_license_token(
         client,
         store.device,
@@ -262,6 +334,48 @@ async fn license_token(
     )
     .await
     .map_err(|err| err.to_string())
+}
+
+/// Whether the user holds a license for the installed add-on `content_id` of the game. Only content ids of add-on
+/// folders of the game are asked for; that keeps lookups to installed content, it does not stop a game that writes
+/// such a folder itself (it can ask for license tokens of any product through `/store/license-token` anyway).
+async fn package_license(state: &State, content_id: &str) -> Result<bool, String> {
+    let content_id = content_id.to_uppercase();
+    if !crate::layout::is_content_id(&content_id) {
+        return Err("not a content id".to_string());
+    }
+    // Not held across the checks below: one slow license request does not hold up the others.
+    if let Some(valid) = state.package_licenses.lock().await.get(&content_id) {
+        return Ok(*valid);
+    }
+    let scope = state.packages.scope().clone();
+    let installed = tokio::task::spawn_blocking(move || packages::list(&scope))
+        .await
+        .map_err(|e| e.to_string())?;
+    if !installed.iter().any(|p| p.content_id == content_id) {
+        return Ok(false);
+    }
+    let valid = match crate::license::get_license(
+        &state.client,
+        &state.tokens,
+        content_id.clone(),
+        state.market.clone(),
+    )
+    .await
+    {
+        Ok(_) => true,
+        Err(crate::Error::NotEntitled(description)) => {
+            tracing::info!("no license for add-on {content_id}: {description}");
+            false
+        }
+        Err(err) => return Err(err.to_string()),
+    };
+    state
+        .package_licenses
+        .lock()
+        .await
+        .insert(content_id, valid);
+    Ok(valid)
 }
 
 async fn fetch_endpoints(
@@ -343,7 +457,9 @@ fn candidate_endpoints(url: &str, table: &TitleMgtResponse) -> Vec<ResolvedEndpo
         })
         .collect();
     }
-    title::resolve_relying_party(url, table).into_iter().collect()
+    title::resolve_relying_party(url, table)
+        .into_iter()
+        .collect()
 }
 
 /// A title table entry for the URL that names a relying party.
@@ -383,7 +499,11 @@ fn parse_xbl_request(body: &str) -> Result<XblRequest, String> {
             .map_err(|_| "request body is not valid base64".to_string())?
     };
     Ok(XblRequest {
-        method: if method.is_empty() { "GET".to_string() } else { method },
+        method: if method.is_empty() {
+            "GET".to_string()
+        } else {
+            method
+        },
         url,
         force_refresh,
         title_id,
@@ -423,9 +543,10 @@ async fn ensure_session(state: &State, client_id: &str, title_id: u32) -> Result
     let mut sessions = state.sessions.lock().await;
     if !sessions.get(&key).is_some_and(TitleSession::is_valid) {
         tracing::info!("establishing Xbox Live session for title {title_id}");
-        let session = TitleSession::establish(&state.client, &state.tokens, client_id, i64::from(title_id))
-            .await
-            .map_err(|err| format!("Xbox Live sign-in for title {title_id} failed: {err}"))?;
+        let session =
+            TitleSession::establish(&state.client, &state.tokens, client_id, i64::from(title_id))
+                .await
+                .map_err(|err| format!("Xbox Live sign-in for title {title_id} failed: {err}"))?;
         sessions.insert(key.clone(), session);
     }
     Ok(key)
@@ -524,7 +645,11 @@ fn authorization(token: &XstsToken) -> Result<String, String> {
     Ok(format!("XBL3.0 x={uhs};{}", token.token))
 }
 
-async fn user_only_header(state: &Arc<State>, rp: String, force_refresh: bool) -> Result<String, String> {
+async fn user_only_header(
+    state: &Arc<State>,
+    rp: String,
+    force_refresh: bool,
+) -> Result<String, String> {
     if !force_refresh {
         if let Some((header, at)) = state.xsts.lock().await.get(&rp) {
             if at.elapsed() < XSTS_LIFETIME {

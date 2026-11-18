@@ -32,14 +32,19 @@ pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, FrameError> {
     Ok(frame)
 }
 
-pub async fn write<W: AsyncWrite + Unpin, T: Serialize>(writer: &mut W, message: &T) -> Result<(), FrameError> {
+pub async fn write<W: AsyncWrite + Unpin, T: Serialize>(
+    writer: &mut W,
+    message: &T,
+) -> Result<(), FrameError> {
     writer.write_all(&encode(message)?).await?;
     writer.flush().await?;
     Ok(())
 }
 
 /// Reads the rest of a frame whose magic was already consumed (the daemon reads the magic to pick the protocol).
-pub async fn read_after_magic<R: AsyncRead + Unpin, T: DeserializeOwned>(reader: &mut R) -> Result<T, FrameError> {
+pub async fn read_after_magic<R: AsyncRead + Unpin, T: DeserializeOwned>(
+    reader: &mut R,
+) -> Result<T, FrameError> {
     let len = reader.read_u32_le().await?;
     if len > MAX_FRAME {
         return Err(FrameError::TooLarge(len));
@@ -50,7 +55,9 @@ pub async fn read_after_magic<R: AsyncRead + Unpin, T: DeserializeOwned>(reader:
 }
 
 /// Reads a whole frame. `Ok(None)` when the peer closed the connection between frames.
-pub async fn read<R: AsyncRead + Unpin, T: DeserializeOwned>(reader: &mut R) -> Result<Option<T>, FrameError> {
+pub async fn read<R: AsyncRead + Unpin, T: DeserializeOwned>(
+    reader: &mut R,
+) -> Result<Option<T>, FrameError> {
     let mut magic = [0u8; 4];
     match reader.read_exact(&mut magic).await {
         Ok(_) => {}

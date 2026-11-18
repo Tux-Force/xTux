@@ -23,13 +23,21 @@ pub struct Busy {
 impl Activity {
     pub fn new() -> Self {
         let activity = Self::default();
-        *activity.inner.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        *activity
+            .inner
+            .idle_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         activity
     }
 
     pub fn busy(&self) -> Busy {
         self.inner.busy.fetch_add(1, Ordering::SeqCst);
-        *self.inner.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .inner
+            .idle_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         Busy {
             inner: self.inner.clone(),
         }
@@ -48,7 +56,11 @@ impl Activity {
 impl Drop for Busy {
     fn drop(&mut self) {
         if self.inner.busy.fetch_sub(1, Ordering::SeqCst) == 1 {
-            *self.inner.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            *self
+                .inner
+                .idle_since
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         }
     }
 }

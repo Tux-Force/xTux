@@ -2,13 +2,33 @@
 //!
 //! Nothing here prints or prompts: functions return [`Error`] and report progress through [`Progress`].
 
+mod access;
+pub mod anticheat;
+pub mod art;
 mod cancel;
+pub mod catalog;
+pub mod crash;
 pub mod download;
 pub mod error;
+#[cfg(unix)]
+pub mod gameinput;
+pub mod gpu;
 pub mod install;
+pub mod layout;
+pub mod library;
 pub mod license;
+pub mod logs;
 pub mod package;
+pub mod packages;
 pub mod progress;
+pub mod queue;
+pub mod settings;
+#[cfg(unix)]
+pub mod setup;
+pub mod uninstall;
+pub mod updates;
+#[cfg(unix)]
+pub mod wine;
 
 #[cfg(unix)]
 pub mod bridge;

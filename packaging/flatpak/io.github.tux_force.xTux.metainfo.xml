@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.tux_force.xTux</id>
+  <name>xTux</name>
+  <summary>Play your Xbox PC games on Linux</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.tux_force">
+    <name>Tux-Force</name>
+  </developer>
+  <description>
+    <p>
+      xTux signs you in with your Microsoft account, installs the PC games you own or play with PC Game Pass and
+      starts them with the Tux-Force Wine build, with the licenses Microsoft grants your account. It is an
+      unofficial community project, not affiliated with Microsoft or Xbox.
+    </p>
+    <p>A guided setup downloads Wine, prepares the prefix and finds your game folders, including those of Windows drives.</p>
+  </description>
+  <launchable type="desktop-id">io.github.tux_force.xTux.desktop</launchable>
+  <url type="homepage">https://tux-force.github.io</url>
+  <url type="bugtracker">https://github.com/Tux-Force/xTux/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-11-18"/>
+  </releases>
+</component>

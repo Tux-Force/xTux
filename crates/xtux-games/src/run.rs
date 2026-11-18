@@ -7,16 +7,19 @@ use std::os::fd::{AsFd, IntoRawFd};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::ExitStatus;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::SystemTime;
 
 use msixvc::layout::PAGE_SIZE;
 use msixvc::xvd::{SegmentFile, XvdFile};
 #[cfg(target_os = "linux")]
 use rustix::fs::{MemfdFlags, memfd_create};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-#[cfg(not(target_os = "linux"))]
-use tempfile::{tempfile, tempfile_in};
 #[cfg(target_os = "macos")]
 use tempfile::tempdir;
+#[cfg(not(target_os = "linux"))]
+use tempfile::{tempfile, tempfile_in};
 use tokio::fs::{File, OpenOptions};
 use tokio::process::{Child, Command};
 use xodus::models::secrets::Token;
@@ -25,21 +28,25 @@ use xodus::tokens::TokenManager;
 use crate::license::get_license;
 use crate::{Error, Progress, Result};
 
-/// Name of the package file inside a game folder (streamed games and link folders).
-pub const PACKAGE_FILE: &str = ".xodus-streaming.msixvc";
+/// Package header of the Xodus layout, see [`crate::layout`].
+pub const PACKAGE_FILE: &str = crate::layout::XODUS_PACKAGE;
 
 pub struct LaunchOptions {
     /// Game folder: a streamed or downloaded game, or a link folder of a Windows install.
     pub source: PathBuf,
     /// Wine binary to start the game with.
     pub wine: String,
-    /// Executable to start (package relative), defaults to the first encrypted one.
+    /// Executable to start (package relative), defaults to the desktop manifest entry.
     pub exe: Option<String>,
     /// Store market for the license request, `neutral` when not set.
     pub market: Option<String>,
     /// Environment for the game on top of this process' environment, for example the client's `WINEPREFIX`
     /// when the daemon starts the game. These values also count as "set by the user" for the defaults below.
     pub env: Vec<(String, String)>,
+    /// Command line arguments for the game.
+    pub args: Vec<String>,
+    /// File for Wine's output (overwritten); `None` keeps this process' stdout and stderr.
+    pub log: Option<PathBuf>,
 }
 
 type Cleanup = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -47,8 +54,14 @@ type Cleanup = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// A started game. Dropping it does not stop the game; call [`RunningGame::wait`].
 pub struct RunningGame {
     pub pid: u32,
+    /// When the game was started; logs older than this are from an earlier run.
+    pub started: SystemTime,
+    /// Set by the game bridge when a license token request failed while the game ran.
+    pub license_failed: Arc<AtomicBool>,
     child: Child,
     cleanup: Cleanup,
+    _access: crate::access::Guard,
+    _addon_access: Vec<crate::access::Guard>,
 }
 
 impl RunningGame {
@@ -58,6 +71,18 @@ impl RunningGame {
         self.cleanup.await;
         Ok(status)
     }
+}
+
+/// Stops a launch's dedicated process group, including children that ignore Ctrl+C.
+/// The caller must keep this future alive even if the initial launcher exits first.
+pub async fn stop_process_group(pid: u32) {
+    use rustix::process::{Pid, Signal, kill_process_group};
+    let Some(group) = Pid::from_raw(pid as i32).filter(|p| p.as_raw_nonzero().get() > 1) else {
+        return;
+    };
+    let _ = kill_process_group(group, Signal::INT);
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let _ = kill_process_group(group, Signal::KILL);
 }
 
 #[cfg(target_os = "linux")]
@@ -102,7 +127,14 @@ async fn prepare(lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Stri
     let device = String::from_utf8_lossy(&out.stdout).trim().to_string();
 
     let vol = uuid::Uuid::new_v4().to_string();
-    checked(Command::new("/sbin/newfs_hfs").arg("-v").arg(vol).arg(&device), "newfs_hfs").await?;
+    checked(
+        Command::new("/sbin/newfs_hfs")
+            .arg("-v")
+            .arg(vol)
+            .arg(&device),
+        "newfs_hfs",
+    )
+    .await?;
 
     let mount_dir_obj = tempdir()?;
     let mount_dir = mount_dir_obj.path().to_string_lossy().to_string();
@@ -118,8 +150,17 @@ async fn prepare(lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Stri
     let mount_dir_cl = mount_dir.clone();
     let cleanup: Cleanup = Box::pin(async move {
         let _keep = mount_dir_obj;
-        let _ = Command::new("/sbin/umount").arg("-f").arg(&mount_dir_cl).status().await;
-        let _ = Command::new("/usr/bin/hdiutil").arg("detach").arg("-force").arg(&device).status().await;
+        let _ = Command::new("/sbin/umount")
+            .arg("-f")
+            .arg(&mount_dir_cl)
+            .status()
+            .await;
+        let _ = Command::new("/usr/bin/hdiutil")
+            .arg("detach")
+            .arg("-force")
+            .arg(&device)
+            .status()
+            .await;
     });
     Ok((cleanup, mount_dir))
 }
@@ -131,7 +172,8 @@ async fn prepare(_lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Str
 
 /// Environment that steers Wine and its libraries for GDK games, unless the user set it.
 fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> {
-    let is_set = |name: &str| extra.iter().any(|(k, _)| k == name) || std::env::var_os(name).is_some();
+    let is_set =
+        |name: &str| extra.iter().any(|(k, _)| k == name) || std::env::var_os(name).is_some();
     let prefix = extra
         .iter()
         .find(|(k, _)| k == "WINEPREFIX")
@@ -141,7 +183,10 @@ fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> 
 
     // Use the DXVK/vkd3d-proton DLLs that `prefix init` installed.
     if !is_set("WINEDLLOVERRIDES") {
-        if let Some(overrides) = prefix.as_deref().and_then(crate::prefix::recorded_overrides) {
+        if let Some(overrides) = prefix
+            .as_deref()
+            .and_then(crate::prefix::recorded_overrides)
+        {
             env.push(("WINEDLLOVERRIDES", overrides));
         }
     }
@@ -152,8 +197,18 @@ fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> 
         env.push((
             "GST_PLUGIN_FEATURE_RANK",
             [
-                "nvh264dec", "nvh265dec", "nvav1dec", "nvvp8dec", "nvvp9dec", "nvjpegdec", "nvmpegvideodec",
-                "nvmpeg2videodec", "nvmpeg4videodec", "vulkanh264dec", "vulkanh265dec", "vulkanav1dec",
+                "nvh264dec",
+                "nvh265dec",
+                "nvav1dec",
+                "nvvp8dec",
+                "nvvp9dec",
+                "nvjpegdec",
+                "nvmpegvideodec",
+                "nvmpeg2videodec",
+                "nvmpeg4videodec",
+                "vulkanh264dec",
+                "vulkanh265dec",
+                "vulkanav1dec",
             ]
             .map(|d| format!("{d}:NONE"))
             .join(","),
@@ -163,7 +218,10 @@ fn compatibility_env(extra: &[(String, String)]) -> Vec<(&'static str, String)> 
 }
 
 /// Identity of the signed in user, handed to the game's XUser implementation.
-async fn identity_env(client: &reqwest::Client, tokens: &TokenManager) -> Vec<(&'static str, String)> {
+async fn identity_env(
+    client: &reqwest::Client,
+    tokens: &TokenManager,
+) -> Vec<(&'static str, String)> {
     let mut env = Vec::new();
     let (Ok(Token::Legacy(dev_token)), Ok(Token::Legacy(legacy))) =
         (tokens.get_device_sts_token(), tokens.get_user_sts_token())
@@ -188,6 +246,39 @@ async fn identity_env(client: &reqwest::Client, tokens: &TokenManager) -> Vec<(&
     env
 }
 
+/// Which add-ons belong to the game in `source`: those naming its Store ID, or a product it belongs to (from the
+/// Store catalog; skipped when the catalog cannot be reached quickly).
+async fn addon_scope(client: &reqwest::Client, source: &Path) -> crate::packages::Scope {
+    let settings = crate::settings::Settings::load().unwrap_or_default();
+    let Some(store_id) = crate::library::inspect(source)
+        .and_then(|g| g.store_id)
+        .filter(|s| crate::art::is_store_id(s))
+    else {
+        return crate::packages::Scope::default();
+    };
+    let market = settings
+        .market
+        .filter(|m| m.len() == 2 && m.chars().all(|c| c.is_ascii_alphabetic()))
+        .unwrap_or_else(|| "US".to_string());
+    let mut store_ids = vec![store_id.to_uppercase()];
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::catalog::details(client, &store_ids, &market),
+    )
+    .await
+    {
+        Ok(Ok(titles)) => store_ids.extend(titles.into_iter().flat_map(|t| t.parents)),
+        Ok(Err(err)) => tracing::warn!("no catalog entry for {store_id}: {err}"),
+        Err(_) => tracing::warn!("the catalog did not answer for {store_id}"),
+    }
+    store_ids.sort();
+    store_ids.dedup();
+    crate::packages::Scope {
+        library_dirs: settings.library_dirs,
+        store_ids,
+    }
+}
+
 /// Reads the package, fetches the license, decrypts the executables and starts the game in Wine.
 pub async fn launch(
     client: &reqwest::Client,
@@ -195,10 +286,19 @@ pub async fn launch(
     options: LaunchOptions,
     progress: &dyn Progress,
 ) -> Result<RunningGame> {
-    let out: &Path = &options.source;
+    let access = crate::access::acquire(&options.source, false)?;
+    crate::updates::ensure_ready(&options.source)?;
+    // Both layouts are read in place (see layout.rs): game files under `root`, header in `package`.
+    let layout = crate::layout::detect(&options.source).ok_or_else(|| {
+        Error::msg(format!(
+            "{} is not a game folder (no package header found)",
+            options.source.display()
+        ))
+    })?;
+    let out: &Path = &layout.root;
     let out_absolute = std::fs::canonicalize(out)
         .map_err(|e| Error::msg(format!("failed to resolve {}: {e}", out.display())))?;
-    let final_path = out.join(PACKAGE_FILE);
+    let final_path = layout.package.clone();
 
     progress.message("Reading the package");
     let mut file = OpenOptions::new()
@@ -206,9 +306,12 @@ pub async fn launch(
         .open(&final_path)
         .await
         .map_err(|e| Error::msg(format!("failed to open {}: {e}", final_path.display())))?;
-    let xvd = XvdFile::parse(&mut file)
-        .await
-        .map_err(|e| Error::msg(format!("failed to parse the XVD header of {}: {e}", final_path.display())))?;
+    let xvd = XvdFile::parse(&mut file).await.map_err(|e| {
+        Error::msg(format!(
+            "failed to parse the XVD header of {}: {e}",
+            final_path.display()
+        ))
+    })?;
 
     let files = xvd
         .parse_user_package_files(&mut file)
@@ -242,7 +345,10 @@ pub async fn launch(
         client,
         tokens,
         xvd.content_id().to_string(),
-        options.market.clone().unwrap_or_else(|| "neutral".to_string()),
+        options
+            .market
+            .clone()
+            .unwrap_or_else(|| "neutral".to_string()),
     )
     .await?;
     if game_splicense.content_keys.len() != 1 {
@@ -295,27 +401,102 @@ pub async fn launch(
     let nt_prefix = out_absolute.to_string_lossy().replace('/', "\\");
     let nt_prefix = nt_prefix.trim_end_matches('\\');
     let mut nt_entry = None;
+    let entry = options.exe.clone().or_else(|| {
+        crate::library::read_config(out)
+            .and_then(|config| crate::library::desktop_executable(&config))
+    });
     for (path, fd) in fds {
         if !file_map.is_empty() {
             file_map.push('|');
         }
         let nt_suffix = path.trim_start_matches('\\');
         let nt_path = format!("\\??\\Z:{nt_prefix}\\{nt_suffix}");
-        match &options.exe {
-            Some(exe) if exe == path => nt_entry = Some(nt_path),
+        match &entry {
+            Some(exe)
+                if exe
+                    .replace('/', "\\")
+                    .eq_ignore_ascii_case(path.trim_start_matches('\\')) =>
+            {
+                nt_entry = Some(nt_path)
+            }
             None if nt_entry.is_none() => nt_entry = Some(nt_path),
             _ => {}
         }
         file_map.push_str(&format!("{fd}:\\??\\Z:{nt_prefix}\\{nt_suffix}"));
     }
-    let nt_entry = nt_entry.ok_or("could not find the game executable")?;
+    // Some packages (e.g. Minecraft for Windows) ship their entry executable unencrypted; Wine then reads it
+    // straight from the game folder instead of from a decrypted memory file.
+    let nt_entry = nt_entry
+        .or_else(|| {
+            let exe = entry.as_ref()?;
+            out.join(exe.replace('\\', "/")).is_file().then(|| {
+                let nt_suffix = exe.replace('/', "\\");
+                format!(
+                    "\\??\\Z:{nt_prefix}\\{}",
+                    nt_suffix.trim_start_matches('\\')
+                )
+            })
+        })
+        .ok_or("could not find the game executable")?;
+
+    let prefix = options
+        .env
+        .iter()
+        .find(|(k, _)| k == "WINEPREFIX")
+        .map(|(_, v)| PathBuf::from(v))
+        .or_else(|| crate::prefix::resolve_prefix(None))
+        .filter(|p| p.join("drive_c").is_dir());
+    if let Some(prefix) = &prefix {
+        let mode = crate::settings::Settings::load()
+            .unwrap_or_default()
+            .effective(&options.source)
+            .controller
+            .unwrap_or_default();
+        match crate::prefix::apply_controller_mode(&options.wine, prefix, mode).await {
+            Ok(crate::prefix::ControllerChange::Applied) => {}
+            Ok(crate::prefix::ControllerChange::AfterRestart) => progress.message(&format!(
+                "PlayStation controllers switch to {} once all games of this prefix are closed",
+                mode.as_str()
+            )),
+            // Not worth failing the start for.
+            Err(err) => tracing::warn!("could not set the controller mode: {err}"),
+        }
+        if crate::gameinput::shipped_msi(out).is_some() {
+            match crate::gameinput::ensure(&options.wine, prefix, out).await {
+                Ok(true) => progress.message("Installed the GameInput redistributable of the game"),
+                Ok(false) => {}
+                // The game reports the missing component itself.
+                Err(err) => tracing::warn!("could not install GameInput: {err}"),
+            }
+        }
+    }
 
     let mut env = identity_env(client, tokens).await;
     env.extend(compatibility_env(&options.env));
+    // Read by GetCurrentPackageFamilyName/FullName of the Tux-Force Wine build.
+    if let Some((family, full)) =
+        crate::library::read_config(out).and_then(|c| crate::library::package_identity(&c))
+    {
+        env.push(("XODUS_PACKAGE_FAMILY_NAME", family));
+        env.push(("XODUS_PACKAGE_FULL_NAME", full));
+    }
 
     // Answers GDK calls that need the Microsoft services, see bridge.rs.
-    match crate::bridge::start(client.clone(), tokens.clone()).await {
+    let scope = addon_scope(client, &options.source).await;
+    let mut addon_access = Vec::new();
+    for addon in crate::library::addons_of(&scope.library_dirs, &scope.store_ids) {
+        let guard = crate::access::acquire(&addon.path, false)?;
+        crate::updates::ensure_ready(&addon.path)?;
+        addon_access.push(guard);
+    }
+    let market = options
+        .market
+        .clone()
+        .unwrap_or_else(|| "neutral".to_string());
+    let mut license_failed = Arc::new(AtomicBool::new(false));
+    match crate::bridge::start(client.clone(), tokens.clone(), scope, market).await {
         Ok(bridge) => {
+            license_failed = bridge.license_failed;
             env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
             env.push(("XODUS_BRIDGE_SECRET", bridge.secret));
         }
@@ -323,8 +504,34 @@ pub async fn launch(
     }
 
     progress.message("Starting the game");
-    let child = Command::new(&options.wine)
+    let started = SystemTime::now();
+    let mut command = Command::new(&options.wine);
+    if let Some(log) = &options.log {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        // Private: with WINEDEBUG channels, Wine's output can contain the bridge secret or tokens.
+        if let Some(dir) = log.parent() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(log)
+            .map_err(|e| Error::msg(format!("could not create {}: {e}", log.display())))?;
+        command.stdout(file.try_clone()?).stderr(file);
+    }
+    // Keep game children separate from the daemon and other running games.
+    command.process_group(0);
+    let child = command
+        // Relative game assets must resolve inside the package, independent of the daemon cwd.
+        .current_dir(&out_absolute)
         .arg(nt_entry)
+        .args(&options.args)
         .envs(env)
         .envs(options.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .env("WINE_DLL_FILE_MAP", file_map)
@@ -335,5 +542,43 @@ pub async fn launch(
         .map_err(|e| Error::msg(format!("could not start {}: {e}", options.wine)))?;
     let pid = child.id().ok_or("the game exited immediately")?;
 
-    Ok(RunningGame { pid, child, cleanup })
+    Ok(RunningGame {
+        pid,
+        started,
+        license_failed,
+        child,
+        cleanup,
+        _access: access,
+        _addon_access: addon_access,
+    })
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[tokio::test]
+    async fn stop_forces_an_unresponsive_game_to_exit() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "trap '' INT; echo ready; while :; do sleep 1; done"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .await
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        stop_process_group(child.id().unwrap()).await;
+        let status = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.signal(), Some(9));
+    }
 }

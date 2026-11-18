@@ -11,6 +11,7 @@ use xodus::tokens::TokenManager;
 
 mod activity;
 mod connection;
+mod downloads;
 mod simple_context;
 
 const XML_MAGIC: u32 = 0x58445358;
@@ -18,8 +19,9 @@ const PROTO_MAGIC: u32 = 0x58445350;
 
 #[tokio::main]
 async fn main() {
-    let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info,xtux_service=info"));
+    let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG").unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new("warn,xtux_games=info,xtux_service=info")
+    });
     let registry = tracing_subscriber::registry().with(
         tracing_subscriber::fmt::layer()
             .with_writer(std::io::stderr)
@@ -71,6 +73,15 @@ async fn main() {
         _ = tokio::fs::remove_file(&socket_path).await;
     }
     let activity = activity::Activity::new();
+    // The download queue carries on where it stopped.
+    downloads::start(
+        reqwest::Client::builder()
+            .user_agent(format!("xtux-service/{}", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_default(),
+        tokens.clone(),
+        activity.clone(),
+    );
     let idle_timeout = std::env::var("XTUX_IDLE_TIMEOUT")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -115,7 +126,8 @@ async fn main() {
             let shared = shared.clone();
             let activity = activity.clone();
             tokio::spawn(async move {
-                connection::router::route(accept.0, token, device_token, tokens, shared, activity).await
+                connection::router::route(accept.0, token, device_token, tokens, shared, activity)
+                    .await
             });
         }
     }

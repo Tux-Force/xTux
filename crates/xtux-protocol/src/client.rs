@@ -39,14 +39,30 @@ pub struct Canceller {
 }
 
 impl Canceller {
+    /// Cancels the request in flight. Right after a request was started it may not be sent yet: then this waits up
+    /// to ten seconds for it, so an early Stop is not lost.
     pub async fn cancel_current(&self) -> Result<(), ClientError> {
-        let target = self.current.load(Ordering::SeqCst);
+        let mut target = self.current.load(Ordering::SeqCst);
+        for _ in 0..200 {
+            if target != 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            target = self.current.load(Ordering::SeqCst);
+        }
         if target == 0 {
             return Ok(());
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let mut writer = self.writer.lock().await;
-        frame::write(&mut *writer, &ClientMessage { id, request: Request::Cancel { target } }).await?;
+        frame::write(
+            &mut *writer,
+            &ClientMessage {
+                id,
+                request: Request::Cancel { target },
+            },
+        )
+        .await?;
         Ok(())
     }
 }
@@ -54,7 +70,9 @@ impl Canceller {
 impl Client {
     /// Connects to a running daemon.
     pub async fn connect() -> Result<Self, ClientError> {
-        let stream = UnixStream::connect(socket_path()).await.map_err(ClientError::Connect)?;
+        let stream = UnixStream::connect(socket_path())
+            .await
+            .map_err(ClientError::Connect)?;
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader,
@@ -106,14 +124,24 @@ impl Client {
         result
     }
 
-    async fn wait_for(&mut self, id: u64, on_event: &mut impl FnMut(Event)) -> Result<Response, ClientError> {
+    async fn wait_for(
+        &mut self,
+        id: u64,
+        on_event: &mut impl FnMut(Event),
+    ) -> Result<Response, ClientError> {
         loop {
             let Some(message) = frame::read::<_, ServerMessage>(&mut self.reader).await? else {
                 return Err(ClientError::Closed);
             };
             match message {
-                ServerMessage::Event { id: event_id, event } if event_id == id => on_event(event),
-                ServerMessage::Response { id: reply_id, result } if reply_id == id => {
+                ServerMessage::Event {
+                    id: event_id,
+                    event,
+                } if event_id == id => on_event(event),
+                ServerMessage::Response {
+                    id: reply_id,
+                    result,
+                } if reply_id == id => {
                     return result.map_err(ClientError::Remote);
                 }
                 other => tracing::debug!("ignoring message for another request: {other:?}"),

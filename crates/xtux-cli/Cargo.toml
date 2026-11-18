@@ -1,7 +1,8 @@
 [package]
 name = "xtux-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+license = "GPL-3.0-only"
 default-run = "xtux-cli"
 
 [dependencies]
@@ -20,11 +21,13 @@ tao = "0.37.0"
 wry = "0.56.1"
 async-trait = "0.1.92"
 clap = { version = "4.6.6", features = ["derive"] }
+clap_complete = { version = "4.5", features = ["unstable-dynamic"] }
 serde_json = "1.0.151"
 chrono = { workspace = true }
 inquire = "0.9.4"
 uuid = "1.25.0"
 indicatif = "0.18.6"
+console = "0.16"
 tempfile = "3.27.0"
 rustix = "1.1.4"
 ctrlc = "3.5.2"

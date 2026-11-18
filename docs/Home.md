@@ -1,6 +1,8 @@
-# Xodus Docs
+# xTux technical reference
 
-Knowledge dump and design documentation
+Current user guides and architecture are maintained on the [Tux-Force website](https://tux-force.github.io/).
+The documents below are inherited Xodus research notes and API/format references; historical design statements
+do not describe the current launcher feature set. See the [README](../README.md) for the implemented components.
 
 ## Table of contents
 

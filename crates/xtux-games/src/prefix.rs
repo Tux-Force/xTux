@@ -5,6 +5,7 @@
 //!   official GitHub releases or copied from a local Proton build, keeping Wine's own DLLs as a backup,
 //! - adds the Microsoft TLS root certificates that Windows ships but Linux trust stores lack (some games verify their
 //!   servers against them and report "antivirus interference" otherwise),
+//! - sets how PlayStation controllers reach games (see [`apply_controller_mode`]),
 //! - records what was done in `xtux-prefix.json`, which `run` reads to set the DLL overrides.
 
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use serde_json::json;
 use tokio::process::Command;
 
 use crate::Progress;
+use crate::settings::ControllerMode;
 
 pub const STATE_FILE: &str = "xtux-prefix.json";
 
@@ -29,6 +31,15 @@ const CERTIFICATES: &[(&str, &[u8])] = &[
         "Microsoft TLS ECC Root G2",
         include_bytes!("../assets/certs/microsoft-tls-ecc-root-g2.crt"),
     ),
+];
+
+/// PlayStation controllers that Wine opens through hidraw by default: DualShock 4 (both models), DualSense and
+/// DualSense Edge.
+const PLAYSTATION_CONTROLLERS: &[(u16, u16)] = &[
+    (0x054c, 0x05c4),
+    (0x054c, 0x09cc),
+    (0x054c, 0x0ce6),
+    (0x054c, 0x0df2),
 ];
 
 pub struct InitOptions {
@@ -57,12 +68,21 @@ pub fn recorded_overrides(prefix: &Path) -> Option<String> {
 }
 
 /// Creates or updates a prefix; returns the prefix path.
-pub async fn init(client: &reqwest::Client, options: InitOptions, progress: &dyn Progress) -> crate::Result<PathBuf> {
+pub async fn init(
+    client: &reqwest::Client,
+    options: InitOptions,
+    progress: &dyn Progress,
+) -> crate::Result<PathBuf> {
     Ok(run_init(client, options, progress).await?)
 }
 
-async fn run_init(client: &reqwest::Client, options: InitOptions, progress: &dyn Progress) -> Result<PathBuf, String> {
-    let prefix = resolve_prefix(options.prefix.as_deref()).ok_or("cannot determine the prefix, pass --prefix")?;
+async fn run_init(
+    client: &reqwest::Client,
+    options: InitOptions,
+    progress: &dyn Progress,
+) -> Result<PathBuf, String> {
+    let prefix = resolve_prefix(options.prefix.as_deref())
+        .ok_or("cannot determine the prefix, pass --prefix")?;
     progress.message(&format!("Prefix: {}", prefix.display()));
 
     if !prefix.join("drive_c").is_dir() {
@@ -72,10 +92,18 @@ async fn run_init(client: &reqwest::Client, options: InitOptions, progress: &dyn
     }
     let system32 = prefix.join("drive_c/windows/system32");
     if !system32.is_dir() {
-        return Err(format!("{} does not exist, is this a 64-bit prefix?", system32.display()));
+        return Err(format!(
+            "{} does not exist, is this a 64-bit prefix?",
+            system32.display()
+        ));
     }
 
-    let mut state = json!({ "certificates": [] });
+    // A certificate-only update must retain the installed graphics configuration.
+    let mut state = std::fs::read_to_string(prefix.join(STATE_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .filter(|state| state.is_object())
+        .unwrap_or_else(|| json!({}));
     let mut overridden: Vec<&str> = Vec::new();
 
     if !options.skip_graphics {
@@ -91,28 +119,59 @@ async fn run_init(client: &reqwest::Client, options: InitOptions, progress: &dyn
                 )
             }
             None => {
-                let (dxvk_version, dxvk) = fetch_release(client, "doitsujin/dxvk", ".tar.gz", work.path(), progress).await?;
-                let (vkd3d_version, vkd3d) =
-                    fetch_release(client, "HansKristian-Work/vkd3d-proton", ".tar.zst", work.path(), progress).await?;
-                (find_dir(&dxvk, "x64")?, find_dir(&vkd3d, "x64")?, dxvk_version, vkd3d_version)
+                let (dxvk_version, dxvk) =
+                    fetch_release(client, "doitsujin/dxvk", ".tar.gz", work.path(), progress)
+                        .await?;
+                let (vkd3d_version, vkd3d) = fetch_release(
+                    client,
+                    "HansKristian-Work/vkd3d-proton",
+                    ".tar.zst",
+                    work.path(),
+                    progress,
+                )
+                .await?;
+                (
+                    find_dir(&dxvk, "x64")?,
+                    find_dir(&vkd3d, "x64")?,
+                    dxvk_version,
+                    vkd3d_version,
+                )
             }
         };
 
         let backup = prefix.join("xtux-builtin-backup");
         install_dlls(&dxvk_dir, &system32, &backup, DXVK_DLLS)?;
         install_dlls(&vkd3d_dir, &system32, &backup, VKD3D_DLLS)?;
-        progress.message(&format!("Installed DXVK {dxvk_version} and vkd3d-proton {vkd3d_version}"));
+        progress.message(&format!(
+            "Installed DXVK {dxvk_version} and vkd3d-proton {vkd3d_version}"
+        ));
         overridden.extend(DXVK_DLLS.iter().chain(VKD3D_DLLS));
         state["dxvk"] = json!(dxvk_version);
         state["vkd3d_proton"] = json!(vkd3d_version);
     }
 
     import_certificates(&options.wine, &prefix).await?;
-    state["certificates"] = json!(CERTIFICATES.iter().map(|(name, _)| *name).collect::<Vec<_>>());
+    state["certificates"] = json!(
+        CERTIFICATES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+    );
     progress.message(&format!("Added {} root certificates", CERTIFICATES.len()));
 
+    let mode = crate::settings::Settings::load()
+        .unwrap_or_default()
+        .controller;
+    write_controller_mode(&options.wine, &prefix, mode).await?;
+    wait_wineserver(&options.wine, &prefix).await;
+    state["controller"] = json!(mode.as_str());
+    progress.message(&format!("PlayStation controllers: {}", mode.as_str()));
+
     if !overridden.is_empty() {
-        let names: Vec<&str> = overridden.iter().map(|d| d.trim_end_matches(".dll")).collect();
+        let names: Vec<&str> = overridden
+            .iter()
+            .map(|d| d.trim_end_matches(".dll"))
+            .collect();
         state["dll_overrides"] = json!(format!("{}=n,b", names.join(",")));
     }
     let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
@@ -120,29 +179,136 @@ async fn run_init(client: &reqwest::Client, options: InitOptions, progress: &dyn
     Ok(prefix)
 }
 
+/// Whether applying a controller mode needs a restart of the prefix.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ControllerChange {
+    /// Already set, or set while the prefix was not running.
+    Applied,
+    /// Written, but Wine reads it when the prefix starts: games already running keep the old mode.
+    AfterRestart,
+}
+
+/// Makes PlayStation controllers show up as Xbox gamepads (`xbox`: SDL maps them, Wine's `Hidraw` device option
+/// off) or as themselves (`native`: Wine's default, hidraw). Does nothing when the prefix already has `mode`.
+pub async fn apply_controller_mode(
+    wine_path: &str,
+    prefix: &Path,
+    mode: ControllerMode,
+) -> crate::Result<ControllerChange> {
+    let state_file = prefix.join(STATE_FILE);
+    let mut state = std::fs::read_to_string(&state_file)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .filter(|state| state.is_object())
+        .unwrap_or_else(|| json!({}));
+    if state["controller"].as_str() == Some(mode.as_str()) {
+        return Ok(ControllerChange::Applied);
+    }
+
+    let running = server_running(prefix);
+    write_controller_mode(wine_path, prefix, mode).await?;
+    if !running {
+        // The game then starts a fresh wineserver, whose winebus reads the new setting.
+        wait_wineserver(wine_path, prefix).await;
+    }
+    state["controller"] = json!(mode.as_str());
+    let text =
+        serde_json::to_string_pretty(&state).map_err(|e| crate::Error::msg(e.to_string()))?;
+    std::fs::write(&state_file, text)?;
+    Ok(if running {
+        ControllerChange::AfterRestart
+    } else {
+        ControllerChange::Applied
+    })
+}
+
+/// The `.reg` text for `mode`: `HKLM\System\CurrentControlSet\Services\WineBus\Devices\<vid>/<pid>`, `Hidraw`.
+fn controller_reg(mode: ControllerMode) -> String {
+    let mut reg = String::from("Windows Registry Editor Version 5.00\r\n\r\n");
+    for (vid, pid) in PLAYSTATION_CONTROLLERS {
+        reg.push_str(&format!(
+            "[HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus\\Devices\\{vid:04x}/{pid:04x}]\r\n{}\r\n\r\n",
+            match mode {
+                ControllerMode::Xbox => "\"Hidraw\"=dword:00000000",
+                ControllerMode::Native => "\"Hidraw\"=-",
+            }
+        ));
+    }
+    reg
+}
+
+async fn write_controller_mode(
+    wine_path: &str,
+    prefix: &Path,
+    mode: ControllerMode,
+) -> Result<(), String> {
+    let file = tempfile::Builder::new()
+        .suffix(".reg")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
+    std::fs::write(file.path(), controller_reg(mode)).map_err(|e| e.to_string())?;
+    let path = file.path().to_string_lossy().to_string();
+    wine(wine_path, prefix, &["reg", "import", &path]).await
+}
+
+/// Whether a wineserver serves `prefix`: it listens on `/tmp/.wine-<uid>/server-<dev>-<inode>/socket`.
+pub fn server_running(prefix: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = std::fs::metadata(prefix) else {
+        return false;
+    };
+    let uid = rustix::process::getuid().as_raw();
+    let socket = PathBuf::from(format!(
+        "/tmp/.wine-{uid}/server-{:x}-{:x}/socket",
+        meta.dev(),
+        meta.ino()
+    ));
+    std::os::unix::net::UnixStream::connect(socket).is_ok()
+}
+
+/// Runs `wine args…` in the prefix. Wine's own output (first-run notes, 32-bit loader messages of a 64-bit-only
+/// build) would break progress displays, so it is kept and shown only when the command fails.
 async fn wine(wine: &str, prefix: &Path, args: &[&str]) -> Result<(), String> {
-    let status = Command::new(wine)
+    let output = Command::new(wine)
         .args(args)
         .env("WINEPREFIX", prefix)
         .env("WINEDEBUG", "-all")
-        .status()
+        .stdin(std::process::Stdio::null())
+        .output()
         .await
         .map_err(|e| format!("could not start {wine}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`wine {}` failed with {status}", args.join(" ")))
+    if output.status.success() {
+        return Ok(());
     }
+    let text = String::from_utf8_lossy(&output.stderr);
+    let tail: Vec<&str> = text.lines().rev().take(5).collect();
+    let tail: Vec<&str> = tail.into_iter().rev().collect();
+    Err(format!(
+        "`wine {}` failed with {}{}",
+        args.join(" "),
+        output.status,
+        if tail.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", tail.join(" / "))
+        }
+    ))
 }
 
 /// Waits until the prefix's wineserver has written the registry to disk.
 async fn wait_wineserver(wine: &str, prefix: &Path) {
-    let server = Path::new(wine).parent().map(|d| d.join("server/wineserver"));
+    let server = Path::new(wine)
+        .parent()
+        .map(|d| d.join("server/wineserver"));
     let server = match server {
         Some(s) if s.exists() => s,
         _ => PathBuf::from("wineserver"),
     };
-    let _ = Command::new(server).arg("-w").env("WINEPREFIX", prefix).status().await;
+    let _ = Command::new(server)
+        .arg("-w")
+        .env("WINEPREFIX", prefix)
+        .status()
+        .await;
 }
 
 /// Downloads the latest release asset of `repo` ending in `suffix` and unpacks it into `work`.
@@ -154,7 +320,9 @@ async fn fetch_release(
     progress: &dyn Progress,
 ) -> Result<(String, PathBuf), String> {
     let release: serde_json::Value = client
-        .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
+        .get(format!(
+            "https://api.github.com/repos/{repo}/releases/latest"
+        ))
         .header("User-Agent", "xtux")
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -164,17 +332,24 @@ async fn fetch_release(
         .json()
         .await
         .map_err(|e| format!("{repo}: {e}"))?;
-    let version = release["tag_name"].as_str().unwrap_or("unknown").to_string();
+    let version = release["tag_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
     let asset = release["assets"]
         .as_array()
         .and_then(|assets| {
             assets.iter().find(|a| {
-                a["name"].as_str().is_some_and(|n| n.ends_with(suffix) && !n.contains("native"))
+                a["name"]
+                    .as_str()
+                    .is_some_and(|n| n.ends_with(suffix) && !n.contains("native"))
             })
         })
         .ok_or_else(|| format!("{repo} {version}: no {suffix} asset"))?;
     let name = asset["name"].as_str().unwrap_or("release");
-    let url = asset["browser_download_url"].as_str().ok_or("asset without download url")?;
+    let url = asset["browser_download_url"]
+        .as_str()
+        .ok_or("asset without download url")?;
 
     progress.message(&format!("Downloading {name}"));
     let bytes = client
@@ -211,7 +386,10 @@ async fn fetch_release(
 fn find_dir(root: &Path, name: &str) -> Result<PathBuf, String> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        for entry in std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
             let path = entry.path();
             if path.is_dir() {
                 if path.file_name().is_some_and(|n| n == name) {
@@ -273,11 +451,64 @@ async fn import_certificates(wine_path: &str, prefix: &Path) -> Result<(), Strin
 /// Certificate thumbprint as Windows names its registry key.
 fn sha1_hex(data: &[u8]) -> String {
     use sha1::{Digest, Sha1};
-    Sha1::digest(data).iter().map(|b| format!("{b:02X}")).collect()
+    Sha1::digest(data)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn certificate_update_preserves_graphics_settings() {
+        let prefix = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(prefix.path().join("drive_c/windows/system32")).unwrap();
+        let previous = serde_json::json!({
+            "dxvk": "existing-dxvk", "vkd3d_proton": "existing-vkd3d",
+            "dll_overrides": "dxgi,d3d11,d3d12,d3d12core=n,b"
+        });
+        std::fs::write(prefix.path().join(super::STATE_FILE), previous.to_string()).unwrap();
+        super::run_init(
+            &reqwest::Client::new(),
+            super::InitOptions {
+                // From PATH: /bin/true does not exist on macOS.
+                wine: "true".into(),
+                prefix: Some(prefix.path().to_str().unwrap().into()),
+                from_proton: None,
+                skip_graphics: true,
+            },
+            &crate::Silent,
+        )
+        .await
+        .unwrap();
+        let after: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(prefix.path().join(super::STATE_FILE)).unwrap(),
+        )
+        .unwrap();
+        for key in ["dxvk", "vkd3d_proton", "dll_overrides"] {
+            assert_eq!(after[key], previous[key]);
+        }
+        assert_eq!(after["certificates"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn controller_reg_covers_playstation_controllers() {
+        use super::{ControllerMode, PLAYSTATION_CONTROLLERS, controller_reg};
+        let xbox = controller_reg(ControllerMode::Xbox);
+        assert!(xbox.contains(
+            "[HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus\\Devices\\054c/0ce6]\r\n\"Hidraw\"=dword:00000000"
+        ));
+        assert_eq!(
+            xbox.matches("dword:00000000").count(),
+            PLAYSTATION_CONTROLLERS.len()
+        );
+        let native = controller_reg(ControllerMode::Native);
+        assert_eq!(
+            native.matches("\"Hidraw\"=-").count(),
+            PLAYSTATION_CONTROLLERS.len()
+        );
+    }
+
     #[test]
     fn thumbprints_match_windows() {
         assert_eq!(

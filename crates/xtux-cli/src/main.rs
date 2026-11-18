@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -8,12 +8,14 @@ use xodus::tokens::TokenManager;
 
 mod banner;
 mod commands;
+#[cfg(unix)]
+mod interactive;
 mod package;
 mod webview;
 
 #[derive(Subcommand)]
 enum SubCommand {
-    #[command(about = "Download msixvc or xsp files fo given game")]
+    #[command(about = "Download msixvc or xsp files for a given game")]
     Download {
         product: String,
         #[arg(short, long)]
@@ -50,7 +52,11 @@ enum SubCommand {
         #[arg(short, long, help = "Path to a keyfile with content decryption keys")]
         key_file: Option<String>,
     },
+    #[command(about = "Sign in with your Microsoft account")]
     Login,
+    #[cfg(unix)]
+    #[command(about = "Guided setup: sign-in, Tux-Force Wine, prefix, game library, controllers")]
+    Setup,
     Logout {
         #[arg(long, default_value_t = false, help = "Remove device license")]
         device: bool,
@@ -80,18 +86,52 @@ enum SubCommand {
         /// Folder for the links, defaults to ~/.local/share/xtux/links/<game>
         dest: Option<String>,
     },
-    #[cfg(unix)]
-    #[command(about = "Run a game with the Tux-Force Wine build")]
-    Run {
-        source: String,
-        wine: String,
-        #[arg(short, long)]
-        exe: Option<String>,
+    #[command(about = "Check the files of an installed game against its package, page by page")]
+    Verify {
+        /// Game folder
+        game_dir: String,
         #[arg(short, long)]
         market: Option<String>,
     },
     #[cfg(unix)]
-    #[command(about = "Prepare a Wine prefix for GDK games (DXVK, vkd3d-proton, root certificates)")]
+    #[command(about = "Run a game with the Tux-Force Wine build")]
+    Run {
+        /// Game name (see `xtux-cli list`) or game folder
+        #[arg(add = clap_complete::ArgValueCompleter::new(commands::list::complete_game))]
+        source: String,
+        /// Wine binary, defaults to the one in the settings
+        wine: Option<String>,
+        /// Executable to start, package relative; overrides the game settings
+        #[arg(short, long)]
+        exe: Option<String>,
+        #[arg(short, long)]
+        market: Option<String>,
+        /// Arguments for the game, after `--`; replace those of the game settings
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    #[cfg(unix)]
+    #[command(
+        about = "The download queue of xtux-service: list, add <Store ID> [library], pause|resume|remove|up|down <n>, clear"
+    )]
+    Downloads { action: Vec<String> },
+    #[cfg(unix)]
+    #[command(about = "List the installed games of the library folders")]
+    List {
+        /// Print only the game folders
+        #[arg(long, default_value_t = false)]
+        paths: bool,
+    },
+    #[cfg(unix)]
+    #[command(about = "Move an install from the old Xodus layout into the Windows Xbox app layout")]
+    Migrate {
+        /// Game folder with a .xodus-streaming.msixvc
+        game_dir: String,
+    },
+    #[cfg(unix)]
+    #[command(
+        about = "Prepare a Wine prefix for GDK games (DXVK, vkd3d-proton, root certificates)"
+    )]
     Prefix {
         #[command(subcommand)]
         action: PrefixAction,
@@ -102,9 +142,7 @@ enum SubCommand {
         action: ClepAction,
     },
     #[command(about = "Decode SPLicenseBlock")]
-    SpLicense {
-        block: String,
-    },
+    SpLicense { block: String },
 }
 
 #[cfg(unix)]
@@ -151,14 +189,39 @@ enum ClepAction {
 }
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(
+    version,
+    about = "xTux: play your Xbox PC games on Linux. Without a command it opens the interactive home screen.",
+    long_about = None
+)]
 struct CliArgs {
     #[command(subcommand)]
+    command: Option<SubCommand>,
+}
+
+/// The arguments once a command was given.
+struct Args {
     command: SubCommand,
+}
+
+/// Commands that only read local files and never need the keychain.
+fn local_only(command: &SubCommand) -> bool {
+    #[cfg(unix)]
+    if matches!(
+        command,
+        SubCommand::List { .. } | SubCommand::Migrate { .. } | SubCommand::Downloads { .. }
+    ) {
+        return true;
+    }
+    let _ = command;
+    false
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Answers shell completion requests (`source <(COMPLETE=zsh xtux-cli)`) and exits.
+    clap_complete::CompleteEnv::with_factory(CliArgs::command).complete();
+
     // Show library progress (game bridge, links) unless XODUS_LOG chooses something else.
     let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info"));
@@ -182,13 +245,25 @@ async fn main() -> ExitCode {
     }
     let client = reqwest::ClientBuilder::new()
         .user_agent(format!("xtux-cli/{}", env!("CARGO_PKG_VERSION")))
-        .connection_verbose(true)
         .build()
         .unwrap();
     let args = CliArgs::parse();
 
     xodus::secrets::init_secrets().expect("Unable to initialize credentials");
     let tokens = TokenManager::with_keychain_and_memory();
+
+    // Without a command: the home screen, which starts the setup when something is missing.
+    let Some(command) = args.command else {
+        xodus::tokens::device::ensure_device_credentials(&client, &tokens).await;
+        #[cfg(unix)]
+        return interactive::home(&client, &tokens).await;
+        #[cfg(not(unix))]
+        {
+            let _ = CliArgs::command().print_help();
+            return ExitCode::SUCCESS;
+        }
+    };
+    let args = Args { command };
 
     // Clep/SpLicense are pure local data transforms and Logout only removes
     // stored credentials - none of them need a device identity, so don't
@@ -199,16 +274,19 @@ async fn main() -> ExitCode {
     let needs_device_credentials = !matches!(
         args.command,
         SubCommand::Clep { .. } | SubCommand::SpLicense { .. } | SubCommand::Logout { .. }
-    );
+    ) && !local_only(&args.command);
     if needs_device_credentials {
         xodus::tokens::device::ensure_device_credentials(&client, &tokens).await;
     }
 
-    // The mascot greets long running commands.
+    // The mascot greets long running commands (the setup shows it itself).
     #[cfg(unix)]
     if matches!(
         args.command,
-        SubCommand::Login | SubCommand::Streaming { .. } | SubCommand::Prefix { .. } | SubCommand::Run { .. }
+        SubCommand::Login
+            | SubCommand::Streaming { .. }
+            | SubCommand::Prefix { .. }
+            | SubCommand::Run { .. }
     ) {
         banner::show();
     }
@@ -233,6 +311,8 @@ async fn main() -> ExitCode {
             .await
         }
         SubCommand::Login => commands::login::run(&client, &tokens).await,
+        #[cfg(unix)]
+        SubCommand::Setup => interactive::setup(&client, &tokens).await,
         SubCommand::Logout { device } => commands::logout::run(&tokens, device).await,
         SubCommand::Extract {
             path,
@@ -271,8 +351,31 @@ async fn main() -> ExitCode {
             )
             .await
         }
+        SubCommand::Verify { game_dir, market } => {
+            commands::verify::run(&client, &tokens, game_dir, market).await
+        }
         #[cfg(unix)]
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
+        #[cfg(unix)]
+        SubCommand::List { paths } => commands::list::run(paths),
+        #[cfg(unix)]
+        SubCommand::Downloads { action } => commands::downloads::run(action).await,
+        #[cfg(unix)]
+        SubCommand::Migrate { game_dir } => {
+            match xtux_games::layout::migrate_xodus(std::path::Path::new(&game_dir)).await {
+                Ok(package) => {
+                    println!(
+                        "Moved to the Windows layout; package header: {}",
+                        package.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("{err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         #[cfg(unix)]
         SubCommand::Prefix {
             action:
@@ -300,15 +403,16 @@ async fn main() -> ExitCode {
             wine,
             exe,
             market,
+            args,
         } => {
-            let source = match xtux_games::link::resolve_source(&source) {
-                Ok(source) => source,
+            // Windows Xbox app installs and xTux installs are read in place (xtux_games::layout).
+            match commands::run::prepare(source, wine, exe, market, args) {
+                Ok(options) => commands::run::run(&client, &tokens, options).await,
                 Err(err) => {
                     eprintln!("{err}");
-                    return ExitCode::FAILURE;
+                    ExitCode::FAILURE
                 }
-            };
-            commands::run::run(&client, &tokens, source, wine, exe, market).await
+            }
         }
         SubCommand::Clep { action } => match action {
             ClepAction::Generate {

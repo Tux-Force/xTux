@@ -1,5 +1,10 @@
 # Tux-Force (xTux) CI: build the workspace on Linux x86_64, run the tests
-# and publish xtux-cli and xtux-service as downloadable artifacts.
+# and publish the CLI, service and launcher archive as a downloadable artifact (GitHub attaches the source code to
+# every release itself).
+# A pushed v<version of xtux-cli> tag publishes a release after both checks succeed,
+# but only when the tagged commit is part of main (releases come from main, see README.md).
+# The licenses job checks the licenses and sources of all dependencies
+# (cargo-deny, deny.toml) and that licenses/THIRD-PARTY-LICENSES.md is current.
 #
 # The upstream "Rust check" workflow (rust.yml) is left untouched; it only
 # runs on pushes to main and on pull requests (clippy + tests).
@@ -8,7 +13,8 @@ name: Tux-Force build
 
 on:
   push:
-    branches: [tux-force]
+    branches: [develop, main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -23,11 +29,55 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  licenses:
+    name: Licenses and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Licenses must be GPL-3.0 compatible, git sources known (deny.toml).
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources bans
+
+      # Known vulnerabilities block; the few without a reachable fix are ignored with a reason in deny.toml.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about --version 0.9.3 --features cli
+
+      - name: Third-party license list is up to date
+        run: |
+          ./scripts/third-party-licenses.sh
+          git diff --exit-code -- licenses/THIRD-PARTY-LICENSES.md || {
+            echo "licenses/THIRD-PARTY-LICENSES.md is out of date: run scripts/third-party-licenses.sh and commit it."
+            exit 1
+          }
+
   build:
     name: Build and test (linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Validate release version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/xtux-cli/Cargo.toml | head -1)
+          test -n "$version"
+          if [ "$REF_TYPE" = tag ]; then
+            test "$REF_NAME" = "v$version" || {
+              echo "::error::Release tag must match xtux-cli version v$version"
+              exit 1
+            }
+            test -f "docs/ReleaseNotes-v$version.md"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # protobuf-compiler: prost-build in crates/xodus compiles proto/
       # libwebkit2gtk-4.1-dev: wry/tao login webview (pulls in gtk3 + libsoup3)
@@ -42,7 +92,10 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             libdbus-1-dev \
-            libssl-dev
+            libssl-dev \
+            libfontconfig1-dev \
+            libxkbcommon-dev \
+            libwayland-dev
 
       # The workspace requires a recent stable Rust (rust-version in Cargo.toml).
       - name: Update Rust toolchain
@@ -68,15 +121,128 @@ jobs:
       - name: Test
         run: cargo test --release --workspace --locked
 
-      - name: Package binaries
+      - name: Package and verify release archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          mkdir -p dist
-          cp target/release/xtux-cli target/release/xtux-service dist/
-          strip dist/xtux-cli dist/xtux-service
-          (cd dist && sha256sum xtux-cli xtux-service > SHA256SUMS)
+          mkdir -p dist release
+          cp target/release/xtux-cli target/release/xtux-service target/release/xtux-launcher dist/
+          cp LICENSE licenses/THIRD-PARTY-LICENSES.md dist/
+          cp docs/Updates.md dist/
+          if [ -f "docs/ReleaseNotes-v$VERSION.md" ]; then
+            cp "docs/ReleaseNotes-v$VERSION.md" dist/RELEASE-NOTES.md
+            cp dist/RELEASE-NOTES.md release/RELEASE-NOTES.md
+          fi
+          strip dist/xtux-cli dist/xtux-service dist/xtux-launcher
+          (cd dist && sha256sum xtux-cli xtux-service xtux-launcher > SHA256SUMS)
+          printf '{"version":"%s","commit":"%s","build":"GitHub Actions","run_id":"%s"}\n' \
+            "$VERSION" "$GITHUB_SHA" "$GITHUB_RUN_ID" > dist/BUILD-INFO.json
+          archive="xtux-$VERSION-linux-x86_64.tar.gz"
+          tar -C dist -czf "release/$archive" .
+          (cd release && sha256sum "$archive" > "$archive.sha256")
+          smoke=$(mktemp -d)
+          tar -C "$smoke" -xzf "release/$archive"
+          (cd "$smoke" && sha256sum -c SHA256SUMS)
+          "$smoke/xtux-cli" --version
+          "$smoke/xtux-launcher" --version
+          rm -rf "$smoke"
 
       - uses: actions/upload-artifact@v4
         with:
           name: xtux-linux-x86_64
-          path: dist/
+          path: release/
           if-no-files-found: error
+
+  # The Flatpak packs the binaries of the build job on the GNOME runtime (WebKitGTK for the sign-in).
+  flatpak:
+    name: Flatpak bundle
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtux-linux-x86_64
+          path: release
+
+      - name: Unpack the CI-built binaries
+        run: |
+          mkdir -p packaging/flatpak/dist
+          tar -C packaging/flatpak/dist -xzf release/xtux-*-linux-x86_64.tar.gz
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: xtux-linux-x86_64.flatpak
+          manifest-path: packaging/flatpak/io.github.tux_force.xTux.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+          upload-artifact: false
+
+      # The app starts, and the tools the prefix and Wine setup call exist in the runtime.
+      - name: Smoke test
+        run: |
+          flatpak install --user -y --noninteractive xtux-linux-x86_64.flatpak
+          flatpak run --command=xtux-cli io.github.tux_force.xTux --version
+          flatpak run --command=sh io.github.tux_force.xTux -c \
+            'for tool in tar xz zstd; do command -v "$tool" >/dev/null || { echo "missing in the runtime: $tool"; exit 1; }; done'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xtux-flatpak
+          path: xtux-linux-x86_64.flatpak
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [build, licenses, flatpak]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      # Only reviewed code is released: the tag must point at a commit that is in main.
+      - name: Tagged commit is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::Tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main; merge develop into main first and tag there."
+            exit 1
+          }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtux-linux-x86_64
+          path: release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xtux-flatpak
+          path: release
+
+      - name: Publish release and upload CI-built assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          (cd release && sha256sum xtux-linux-x86_64.flatpak > xtux-linux-x86_64.flatpak.sha256)
+          (cd release && sha256sum -c *.sha256)
+          assets=(release/*.tar.gz release/*.flatpak release/*.sha256)
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            flags=()
+            case "$RELEASE_TAG" in
+              v0.*|*-*) flags+=(--prerelease) ;;
+            esac
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --title "xTux ${RELEASE_TAG#v}" \
+              --notes-file release/RELEASE-NOTES.md "${flags[@]}"
+          fi

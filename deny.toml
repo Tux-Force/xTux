@@ -1,0 +1,80 @@
+# cargo-deny: licenses, security advisories and sources of all dependencies.
+# Run `cargo deny check`; the CI runs it on every pull request.
+
+[graph]
+all-features = false
+
+[advisories]
+# Known vulnerabilities (RustSec). Unmaintained crates are reported but do not fail the check.
+unmaintained = "none"
+# Every entry below has no fix reachable without changing a git dependency we do not control
+# (xal-rs, eappx-rs) or has no patched release at all. Re-check them when those move.
+ignore = [
+    # reqwest 0.11 stack, pulled in only by xal (git, xodus-gaming/xal-rs) and its oauth2 4.x.
+    # Its clients use reqwest's default backend, native-tls (OpenSSL and the system roots on Linux): with
+    # default-tls enabled reqwest 0.11 never selects rustls, so rustls 0.21, rustls-webpki 0.101
+    # and webpki-roots 0.25 are linked but never run. native-tls has no `native-tls-alpn`, so
+    # those connections are HTTP/1.1 and h2 0.3 is not used either. Fix: move xal to reqwest 0.12+.
+    # These IDs also cover rustls 0.23 / rustls-webpki 0.103, which are on fixed releases now
+    # (0.23.46 / 0.103.17); keep it that way when touching Cargo.lock.
+    { id = "RUSTSEC-2026-0346", reason = "rustls 0.21 via xal's reqwest 0.11, unused at run time (native-tls); rustls 0.23 is fixed" },
+    { id = "RUSTSEC-2026-0349", reason = "rustls 0.21 via xal's reqwest 0.11, unused at run time (native-tls); rustls 0.23 is fixed" },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.101 only behind the unused rustls 0.21 of xal's reqwest 0.11" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.101 only behind the unused rustls 0.21 of xal's reqwest 0.11" },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.101 only behind the unused rustls 0.21 of xal's reqwest 0.11" },
+    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.101 only behind the unused rustls 0.21 of xal's reqwest 0.11; 0.103 is fixed" },
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.25 only behind the unused rustls 0.21 of xal's reqwest 0.11" },
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 via xal's reqwest 0.11: native-tls without ALPN speaks HTTP/1.1 only; low severity client-side DoS from the Microsoft auth servers otherwise" },
+    # quick-xml 0.31 via xmlserde 0.7 via eappx (git, tuxuser/eappx-rs, latest commit). Only the
+    # `xtux-cli extract-eappx` command parses the manifest of a local file the user picked; the
+    # worst case is a slow or out-of-memory CLI run on a crafted file. Fix: eappx on xmlserde 0.14.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.31 via eappx git dep; local CLI-only parse of user-chosen files, CPU DoS at worst" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.31 via eappx git dep; local CLI-only parse of user-chosen files, memory DoS at worst" },
+    # crypto-bigint 0.5 via elliptic-curve 0.13 (p256/p384/p521 0.13), required by xal's request
+    # signer, xodus' own p256 proof keys, bergshamra 0.8 and kryptering 0.5 (newer bergshamra and
+    # kryptering would not help: xal's p256 0.13 keeps it). The fix exists only in crypto-bigint
+    # 0.7 (elliptic-curve 0.14). The keys are used locally to sign requests; an attacker would
+    # need fine-grained timing of this machine. crypto-bigint 0.7 itself is on the fixed 0.7.11.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via elliptic-curve 0.13 (xal, p256 0.13); no 0.5 fix, local signing only" },
+    # Marvin attack (RSA decryption timing): no rsa release is fixed. xodus and bergshamra use RSA
+    # only to sign and verify; license and SOAP payloads are decrypted with AES. There is no RSA
+    # decryption, so there is no timing oracle.
+    { id = "RUSTSEC-2023-0071", reason = "no fixed rsa release exists; RSA is only used to sign and verify, never to decrypt" },
+]
+
+[licenses]
+# xTux is GPL-3.0; only licenses that can be combined with it are allowed.
+allow = [
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "LGPL-2.1-or-later",
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = [
+    "https://github.com/tuxuser/eappx-rs",
+    "https://github.com/xodus-gaming/ntfs.git",
+    "https://github.com/xodus-gaming/xal-rs",
+]

@@ -23,8 +23,9 @@ use crate::{Error, Progress, Result};
 
 /// Package metadata cached while the install runs.
 const CACHE_FILE: &str = ".xodus-streaming-tmp.msixvc";
-/// Package metadata of the last finished install, used to skip unchanged files.
-const FINAL_FILE: &str = ".xodus-streaming.msixvc";
+/// Files finished by an install that did not complete yet, one name per line; an interrupted or paused install
+/// skips them when it runs again. Removed when the install completes.
+const FINISHED_FILE: &str = ".xtux-finished-files";
 
 /// Where the `.msixvc` package comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,10 +84,15 @@ pub async fn find_msixvc_url(
     content_id: String,
 ) -> Result<String> {
     let package = get_packages(client, tokens, content_id).await?;
+    if package.update_predownload {
+        return Err(Error::msg(
+            "This package is offered for predownload and is not ready to install",
+        ));
+    }
     let file = package
         .package_files
         .iter()
-        .find(|p| p.file_name.ends_with(".msixvc"))
+        .find(|p| p.file_name.ends_with(".msixvc") && p.delta_version_id.is_none())
         .ok_or("No .msixvc file found")?;
     file.download_urls()
         .into_iter()
@@ -108,6 +114,7 @@ pub async fn install(
     progress: &dyn Progress,
     cancel: &CancellationToken,
 ) -> Result<()> {
+    let _access = crate::access::acquire(&options.destination, true)?;
     progress.message("Initializing");
     let counter = Counter::new(progress);
     match source {
@@ -118,17 +125,21 @@ pub async fn install(
             let len = file
                 .metadata()
                 .await
-                .map_err(|e| Error::msg(format!("could not read metadata for {}: {e}", path.display())))?
+                .map_err(|e| {
+                    Error::msg(format!(
+                        "could not read metadata for {}: {e}",
+                        path.display()
+                    ))
+                })?
                 .len();
             counter.set_total(len);
             let from = Origin::File(&path);
             install_from(client, tokens, options, file, len, from, &counter, cancel).await
         }
-        Source::Url(url) => {
-            install_http(client, tokens, options, &url, &counter, cancel).await
-        }
+        Source::Url(url) => install_http(client, tokens, options, &url, &counter, cancel).await,
         Source::ContentId(content_id) => {
-            let url = cancel::until_cancelled(cancel, find_msixvc_url(client, tokens, content_id)).await?;
+            let url = cancel::until_cancelled(cancel, find_msixvc_url(client, tokens, content_id))
+                .await?;
             install_http(client, tokens, options, &url, &counter, cancel).await
         }
     }
@@ -159,7 +170,17 @@ async fn install_http(
     .await?;
     let len = http_file.len();
     counter.set_total(len);
-    install_from(client, tokens, options, http_file, len, Origin::Http(url), counter, cancel).await
+    install_from(
+        client,
+        tokens,
+        options,
+        http_file,
+        len,
+        Origin::Http(url),
+        counter,
+        cancel,
+    )
+    .await
 }
 
 /// Where the file contents are read from once the metadata is parsed.
@@ -174,6 +195,56 @@ struct Job {
     name: String,
     target: PathBuf,
     content: SegmentFile,
+    /// Where a finished file is noted for a later run.
+    journal: PathBuf,
+    /// A partly downloaded file may continue at its last whole page (first installs only, never updates).
+    resume: bool,
+}
+
+/// Names of the files an earlier, unfinished run completed.
+fn read_finished(journal: &Path, identity: &str) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(journal)
+        .map(|text| {
+            let mut lines = text.lines();
+            if lines.next() != Some(identity) {
+                return Default::default();
+            }
+            lines.map(str::to_string).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Notes a finished file; a single appended line, so concurrent jobs do not mix their writes.
+fn note_finished(journal: &Path, name: &str) {
+    use std::io::Write;
+    if name.contains('\n') {
+        return;
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(journal)
+    {
+        let _ = file.write_all(format!("{name}\n").as_bytes());
+    }
+}
+
+/// Remove only regular files that the previous package installed and the new one dropped.
+fn remove_obsolete(
+    root: &Path,
+    previous: &HashMap<String, SegmentFile>,
+    next: &HashMap<String, SegmentFile>,
+) -> Result<()> {
+    for name in previous.keys().filter(|name| !next.contains_key(*name)) {
+        let target = safe_join(root, name)?;
+        match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.is_file() => std::fs::remove_file(target)?,
+            Ok(_) => {} // User-created directories and symlinks are kept.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -195,17 +266,65 @@ where
     std::fs::create_dir_all(out)
         .map_err(|e| Error::msg(format!("could not create {}: {e}", out.display())))?;
 
-    let cache_path = out.join(CACHE_FILE);
-    let final_path = out.join(FINAL_FILE);
+    // Installs of the Windows Xbox app are updated in place like xTux's own. Only its package header is
+    // replaced; its other bookkeeping files stay as they are. When the Xbox app began an update and did not
+    // finish it, its header already describes the new package while the files on disk are a mix of old files,
+    // new files and empty placeholders, so every file is checked against the package instead.
+    let existing = crate::layout::detect(out);
+    let windows_app = existing.as_ref().is_some_and(|l| l.windows_app);
+    let check_files = existing
+        .as_ref()
+        .is_some_and(|l| crate::updates::windows_update_unresolved(out, l));
 
+    let cache_path = out.join(CACHE_FILE);
     let (remote_xvd, rfiles) = cancel::until_cancelled(
         cancel,
         read_remote_metadata(reader, len, &cache_path, options.try_skip_ntfs, progress),
     )
     .await?;
-    let lfiles = read_local_metadata(&final_path).await;
 
-    let market = options.market.clone().unwrap_or_else(|| "neutral".to_owned());
+    // New installs use the Windows layout (Content/ plus the content id named header, see
+    // layout.rs); existing installs keep theirs.
+    let remote_id = remote_xvd.content_id().hyphenated().to_string();
+    let (root, final_path) = match existing {
+        // The Xodus header has a fixed name; a Windows layout header is named by its content id.
+        Some(layout)
+            if layout.package.ends_with(crate::layout::XODUS_PACKAGE)
+                || layout
+                    .package
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&remote_id)) =>
+        {
+            (layout.root, layout.package)
+        }
+        Some(layout) => {
+            return Err(Error::msg(format!(
+                "{} holds another package ({}); pick an empty folder",
+                out.display(),
+                layout.package.display()
+            )));
+        }
+        None => (
+            out.join(crate::layout::CONTENT_DIR),
+            out.join(
+                remote_xvd
+                    .content_id()
+                    .hyphenated()
+                    .to_string()
+                    .to_uppercase(),
+            ),
+        ),
+    };
+    let lfiles = if check_files {
+        HashMap::new()
+    } else {
+        read_local_metadata(&final_path).await
+    };
+
+    let market = options
+        .market
+        .clone()
+        .unwrap_or_else(|| "neutral".to_owned());
     let (key, game_splicense) = cancel::until_cancelled(
         cancel,
         get_license(client, tokens, remote_xvd.content_id().to_string(), market),
@@ -226,19 +345,73 @@ where
         .unpack(&key)
         .map_err(|e| Error::msg(format!("failed to unpack the content key: {e}")))?;
 
-    // Files whose hashes differ from the last install, or that have no hashes at all.
-    let mut jobs = Vec::new();
+    // Files whose hashes differ from the last install, or that have no hashes at all; files an interrupted run
+    // of this install finished (with their full size) are kept.
+    let journal = out.join(FINISHED_FILE);
+    let updating = final_path.exists();
+    let identity = {
+        use sha1::{Digest, Sha1};
+        use std::io::Read;
+        let mut header = [0u8; 4096];
+        std::fs::File::open(&cache_path)?.read_exact(&mut header)?;
+        format!("package:{:x}", Sha1::digest(header))
+    };
+    let finished = read_finished(&journal, &identity);
+    if finished.is_empty() {
+        std::fs::write(&journal, format!("{identity}\n"))?;
+    }
+    let mut candidates = Vec::new();
     let mut total_size: u64 = 0;
+    let mut kept: u64 = 0;
     for (name, remote) in &rfiles {
-        let unchanged = lfiles
-            .get(name)
-            .is_some_and(|local| remote.data_hashs == local.data_hashs && !remote.data_hashs.is_empty());
+        let target = safe_join(&root, name)?;
+        let unchanged = lfiles.get(name).is_some_and(|local| {
+            remote.data_hashs == local.data_hashs && !remote.data_hashs.is_empty()
+        }) && std::fs::symlink_metadata(&target)
+            .is_ok_and(|m| m.is_file() && m.len() == remote.length);
         if unchanged {
             continue;
         }
-        let target = safe_join(out, name)?;
-        if target == cache_path || target == final_path {
-            return Err(Error::msg(format!("refusing to overwrite {name:?} from the package")));
+        if finished.contains(name)
+            && std::fs::symlink_metadata(&target)
+                .is_ok_and(|m| m.is_file() && m.len() == remote.length)
+        {
+            kept = kept.saturating_add(remote.length);
+            continue;
+        }
+        if target == cache_path
+            || target == final_path
+            || target == journal
+            || target == out.join(crate::updates::INCOMPLETE)
+        {
+            return Err(Error::msg(format!(
+                "refusing to overwrite {name:?} from the package"
+            )));
+        }
+        candidates.push((name, remote, target));
+    }
+    let verified = if check_files {
+        cancel::until_cancelled(
+            cancel,
+            verify_files(
+                &remote_xvd,
+                &candidates,
+                full_key,
+                options.parallel,
+                progress,
+                cancel,
+            ),
+        )
+        .await?
+    } else {
+        Default::default()
+    };
+    let mut jobs = Vec::new();
+    for (name, remote, target) in candidates {
+        if verified.contains(name.as_str()) {
+            kept = kept.saturating_add(remote.length);
+            note_finished(&journal, name);
+            continue;
         }
         total_size = total_size
             .checked_add(remote.length)
@@ -252,11 +425,17 @@ where
                 data_hashs: vec![],
                 keep_encrypted: remote.keep_encrypted,
             },
+            journal: journal.clone(),
+            // Files left by the Xbox app may be old versions or placeholders; they are never continued.
+            resume: lfiles.is_empty() && !check_files,
         });
     }
 
     let available_free_space = available_space(out).map_err(|e| {
-        Error::msg(format!("failed to determine available space for {}: {e}", out.display()))
+        Error::msg(format!(
+            "failed to determine available space for {}: {e}",
+            out.display()
+        ))
     })?;
     if available_free_space < total_size {
         return Err(Error::msg(format!(
@@ -268,8 +447,20 @@ where
         )));
     }
 
-    progress.message("Downloading");
+    // Kept files count as done, so a resumed install shows its real progress; the totals are settled before
+    // the "Downloading" step starts, which is when clients begin to trust the byte progress.
+    counter.advance(kept);
     counter.set_remaining(total_size);
+    // Updates replace individual files. Keep launches blocked after pause, cancellation or a crash until
+    // the complete new package metadata has been committed; the previous files are never deleted as a unit.
+    let incomplete = out.join(crate::updates::INCOMPLETE);
+    if updating
+        && (check_files || !jobs.is_empty() || lfiles.keys().any(|name| !rfiles.contains_key(name)))
+    {
+        std::fs::write(&incomplete, &identity)?;
+    }
+    progress.message("Downloading");
+    counter.report();
 
     let remote_xvd = &remote_xvd;
     stream::iter(jobs.into_iter().map(Ok::<Job, Error>))
@@ -285,11 +476,157 @@ where
 
     // Only a finished install replaces the metadata of the last one, so an interrupted run
     // downloads the files it did not finish again.
-    std::fs::remove_file(&final_path).ok();
+    remove_obsolete(&root, &lfiles, &rfiles)?;
     std::fs::rename(&cache_path, &final_path).map_err(|e| {
-        Error::msg(format!("could not move {} to {}: {e}", cache_path.display(), final_path.display()))
+        Error::msg(format!(
+            "could not move {} to {}: {e}",
+            cache_path.display(),
+            final_path.display()
+        ))
     })?;
+    if windows_app {
+        crate::updates::note_windows_update_finished(out, &final_path)?;
+    }
+    std::fs::remove_file(&journal).ok();
+    std::fs::remove_file(&incomplete).ok();
     Ok(())
+}
+
+/// Names of the `candidates` whose installed copy already has the content of the package, checked page by page
+/// against the package's hashes (see [`XvdFile::verify_installed_file`]). Only files with a fitting size are read.
+async fn verify_files(
+    xvd: &XvdFile,
+    candidates: &[(&String, &SegmentFile, PathBuf)],
+    full_key: [u8; 32],
+    parallel: usize,
+    progress: &dyn Progress,
+    cancel: &CancellationToken,
+) -> Result<std::collections::HashSet<String>> {
+    use futures_util::StreamExt;
+
+    let page = msixvc::layout::PAGE_SIZE as u64;
+    let plausible: Vec<_> = candidates
+        .iter()
+        .filter_map(|(name, remote, target)| {
+            let meta = std::fs::symlink_metadata(target).ok()?;
+            let padded = remote.length.div_ceil(page) * page;
+            (meta.is_file()
+                && remote.length > 0
+                && (meta.len() == remote.length || (remote.keep_encrypted && meta.len() == padded)))
+                .then_some((name.as_str(), *remote, target.as_path(), meta.len()))
+        })
+        .collect();
+    let total: u64 = plausible.iter().map(|(_, _, _, len)| len).sum();
+    let checked = AtomicU64::new(0);
+    let shown = AtomicU64::new(u64::MAX);
+    progress.message("Checking installed files");
+    let (checked, shown) = (&checked, &shown);
+    let checks: Vec<_> = plausible
+        .into_iter()
+        .map(|(name, remote, target, len)| async move {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let ok = match File::open(target).await {
+                Ok(file) => xvd
+                    .verify_installed_file(file, len, remote, full_key)
+                    .await
+                    .unwrap_or_else(|err| {
+                        tracing::warn!("cannot check {}: {err}", target.display());
+                        false
+                    }),
+                Err(_) => false,
+            };
+            let done = checked.fetch_add(len, Ordering::Relaxed) + len;
+            let percent = done.saturating_mul(100) / total.max(1);
+            if shown.swap(percent, Ordering::Relaxed) != percent {
+                progress.message(&format!("Checking installed files ({percent}%)"));
+            }
+            ok.then_some(name)
+        })
+        .collect();
+    let results: Vec<Option<&str>> = stream::iter(checks)
+        .buffer_unordered(parallel.max(1))
+        .collect()
+        .await;
+    cancel::check(cancel)?;
+    let verified: std::collections::HashSet<String> =
+        results.into_iter().flatten().map(str::to_owned).collect();
+    tracing::info!(
+        "{} of {} package files are already installed",
+        verified.len(),
+        candidates.len()
+    );
+    Ok(verified)
+}
+
+/// Result of [`verify`].
+#[derive(Debug, Default)]
+pub struct VerifyReport {
+    /// Files whose content matches the installed package.
+    pub intact: usize,
+    /// Package files that are missing or differ, by name.
+    pub damaged: Vec<String>,
+}
+
+/// Checks the files of the installed game in `dir` against its own package header, page by page.
+pub async fn verify(
+    client: &reqwest::Client,
+    tokens: &TokenManager,
+    dir: &Path,
+    market: Option<String>,
+    progress: &dyn Progress,
+) -> Result<VerifyReport> {
+    let layout = crate::layout::detect(dir)
+        .ok_or_else(|| Error::msg(format!("{} is not a game folder", dir.display())))?;
+    let mut file = File::open(&layout.package).await?;
+    let xvd = XvdFile::parse(&mut file)
+        .await
+        .map_err(|e| Error::msg(format!("cannot read the package header: {e}")))?;
+    drop(file);
+    let files = read_local_metadata(&layout.package).await;
+    if files.is_empty() {
+        return Err(Error::msg("the package header lists no files"));
+    }
+    progress.message("Getting the license");
+    let (key, license) = get_license(
+        client,
+        tokens,
+        xvd.content_id().to_string(),
+        market.unwrap_or_else(|| "neutral".to_owned()),
+    )
+    .await?;
+    let (_, content_key) = license
+        .content_keys
+        .into_iter()
+        .next()
+        .ok_or("the license has no content key")?;
+    let full_key = *content_key
+        .unpack(&key)
+        .map_err(|e| Error::msg(format!("failed to unpack the content key: {e}")))?;
+    let mut candidates = Vec::new();
+    for (name, remote) in &files {
+        candidates.push((name, remote, safe_join(&layout.root, name)?));
+    }
+    let verified = verify_files(
+        &xvd,
+        &candidates,
+        full_key,
+        4,
+        progress,
+        &CancellationToken::new(),
+    )
+    .await?;
+    let mut damaged: Vec<String> = files
+        .keys()
+        .filter(|name| !verified.contains(*name))
+        .cloned()
+        .collect();
+    damaged.sort();
+    Ok(VerifyReport {
+        intact: verified.len(),
+        damaged,
+    })
 }
 
 /// Parses the remote package and collects its files, from the segment metadata and, unless
@@ -350,7 +687,10 @@ async fn read_local_metadata(final_path: &Path) -> HashMap<String, SegmentFile> 
 
     // Errors of msixvc are not `Send`, turn them into strings before the next await.
     let mut lfiles = HashMap::new();
-    let files = xvd.parse_user_package_files(&mut file).await.map_err(|e| e.to_string());
+    let files = xvd
+        .parse_user_package_files(&mut file)
+        .await
+        .map_err(|e| e.to_string());
     match files {
         Ok(files) => {
             if let Some(segment_metadata) = files.get("SegmentMetadata.bin") {
@@ -366,7 +706,10 @@ async fn read_local_metadata(final_path: &Path) -> HashMap<String, SegmentFile> 
         }
         Err(err) => tracing::warn!("ignoring the local package files: {err}"),
     }
-    if let Ok(sfiles) = xvd.parse_ntfs_segment_metadata(&mut file, !lfiles.is_empty()).await {
+    if let Ok(sfiles) = xvd
+        .parse_ntfs_segment_metadata(&mut file, !lfiles.is_empty())
+        .await
+    {
         lfiles.extend(sfiles);
     }
     lfiles
@@ -380,26 +723,61 @@ async fn download_job(
     full_key: [u8; 32],
     counter: &Counter<'_>,
 ) -> Result<()> {
-    let write_err = |e: std::io::Error| Error::msg(format!("could not write {}: {e}", job.target.display()));
+    let write_err =
+        |e: std::io::Error| Error::msg(format!("could not write {}: {e}", job.target.display()));
     if let Some(folder) = job.target.parent() {
         std::fs::create_dir_all(folder).map_err(write_err)?;
     }
-    let mut fout = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&job.target)
-        .await
-        .map_err(write_err)?;
+    // Pages are encrypted one by one, so a partly downloaded file continues at its last whole page.
+    let page = msixvc::layout::PAGE_SIZE as u64;
+    let skip = if job.resume {
+        std::fs::symlink_metadata(&job.target)
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| m.len().min(job.content.length) / page * page)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let mut fout = if skip > 0 {
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&job.target)
+            .await
+            .map_err(write_err)?;
+        file.set_len(skip).await.map_err(write_err)?;
+        let mut file = file;
+        use tokio::io::AsyncSeekExt;
+        file.seek(std::io::SeekFrom::Start(skip))
+            .await
+            .map_err(write_err)?;
+        file
+    } else {
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&job.target)
+            .await
+            .map_err(write_err)?
+    };
+    let content = SegmentFile {
+        offset: job.content.offset + skip,
+        length: job.content.length - skip,
+        data_hashs: vec![],
+        keep_encrypted: job.content.keep_encrypted,
+    };
 
     let total = job.content.length;
     let progress = counter.progress;
-    progress.file(&job.name, 0, total);
+    // The kept part of the file counts as done.
+    counter.advance(skip);
+    progress.file(&job.name, skip, total);
     let mut last = 0;
     let on_progress = |pos: u64, _| {
         counter.advance(pos.saturating_sub(last));
         last = pos;
-        progress.file(&job.name, pos.min(total), total);
+        progress.file(&job.name, (skip + pos).min(total), total);
     };
 
     let result = match origin {
@@ -408,12 +786,12 @@ async fn download_job(
                 .await
                 .map_err(|e| Error::msg(format!("could not open {}: {e}", path.display())))?;
             remote_xvd
-                .extract_file(&mut input, &mut fout, &job.content, full_key, on_progress)
+                .extract_file(&mut input, &mut fout, &content, full_key, on_progress)
                 .await
         }
         Origin::Http(url) => {
             remote_xvd
-                .download_file_http(client, url, &mut fout, &job.content, full_key, on_progress)
+                .download_file_http(client, url, &mut fout, &content, full_key, on_progress)
                 .await
         }
     };
@@ -421,8 +799,12 @@ async fn download_job(
     fout.flush().await.map_err(write_err)?;
     progress.file(&job.name, total, total);
     progress.file_finished(&job.name);
+    note_finished(&job.journal, &job.name);
     Ok(())
 }
+
+/// The step from which [`Progress::bytes`] is the overall progress of the install; before it, metadata is read.
+pub const DOWNLOAD_STEP: &str = "Downloading";
 
 /// Overall byte progress, shared by the concurrent downloads.
 struct Counter<'p> {
@@ -483,7 +865,14 @@ mod tests {
         cancel: &CancellationToken,
     ) {
         fn is_send<T: Send>(_: T) {}
-        is_send(install(client, tokens, Source::Url(String::new()), options, progress, cancel));
+        is_send(install(
+            client,
+            tokens,
+            Source::Url(String::new()),
+            options,
+            progress,
+            cancel,
+        ));
         is_send(crate::download::download_package_file(
             client,
             file,
@@ -495,7 +884,10 @@ mod tests {
 
     #[test]
     fn parses_sources() {
-        assert_eq!(Source::parse("file:///tmp/a.msixvc"), Source::File(PathBuf::from("/tmp/a.msixvc")));
+        assert_eq!(
+            Source::parse("file:///tmp/a.msixvc"),
+            Source::File(PathBuf::from("/tmp/a.msixvc"))
+        );
         assert_eq!(
             Source::parse("https://assets1.xboxlive.com/x.msixvc"),
             Source::Url("https://assets1.xboxlive.com/x.msixvc".into())
@@ -505,5 +897,39 @@ mod tests {
             Source::ContentId("a6a4b3a2-0000-4000-8000-000000000000".into())
         );
     }
-}
 
+    #[test]
+    fn resumed_files_belong_to_the_exact_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let journal = tmp.path().join("journal");
+        std::fs::write(&journal, "package:first\nContent/same-size.dat\n").unwrap();
+        assert!(super::read_finished(&journal, "package:first").contains("Content/same-size.dat"));
+        assert!(super::read_finished(&journal, "package:second").is_empty());
+        std::fs::write(&journal, "Content/old-journal.dat\n").unwrap();
+        assert!(super::read_finished(&journal, "package:first").is_empty());
+    }
+
+    #[test]
+    fn update_removes_retired_package_files_but_keeps_user_files() {
+        use msixvc::xvd::SegmentFile;
+        use std::collections::HashMap;
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["retired.dll", "current.dll", "custom.ini"] {
+            std::fs::write(tmp.path().join(name), b"data").unwrap();
+        }
+        let file = || SegmentFile {
+            offset: 0,
+            length: 4,
+            data_hashs: vec![],
+            keep_encrypted: false,
+        };
+        let old = HashMap::from([
+            ("retired.dll".into(), file()),
+            ("current.dll".into(), file()),
+        ]);
+        let new = HashMap::from([("current.dll".into(), file())]);
+        super::remove_obsolete(tmp.path(), &old, &new).unwrap();
+        assert!(!tmp.path().join("retired.dll").exists());
+        assert!(tmp.path().join("current.dll").exists() && tmp.path().join("custom.ini").exists());
+    }
+}
