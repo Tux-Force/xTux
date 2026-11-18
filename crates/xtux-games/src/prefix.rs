@@ -457,7 +457,8 @@ mod tests {
         super::run_init(
             &reqwest::Client::new(),
             super::InitOptions {
-                wine: "/bin/true".into(),
+                // From PATH: /bin/true does not exist on macOS.
+                wine: "true".into(),
                 prefix: Some(prefix.path().to_str().unwrap().into()),
                 from_proton: None,
                 skip_graphics: true,
