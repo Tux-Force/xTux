@@ -15,8 +15,9 @@ reqwest = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility"] }
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "unstable-winit-030"] }
 rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
+evdev = "0.13"
 
 [build-dependencies]
 slint-build = "1.18"

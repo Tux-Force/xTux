@@ -18,6 +18,7 @@ use xtux_protocol::{
     Canceller, Client, ClientError, DownloadCommand, ErrorKind, Event, GameInfo, Request, Response,
 };
 
+mod pad;
 mod theme;
 
 slint::include_modules!();
@@ -3089,6 +3090,59 @@ fn main() {
     download_command(&ui, &state, &handle, DownloadCommand::List);
 
     schedule_snapshot(&ui, &state, &handle);
+
+    // Gamepads move through the library and the store. Only while the launcher is in front and no game runs: the
+    // game has the controller then, and a press must never start something in a window the user does not see.
+    pad::spawn({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        move |action, kind| {
+            let weak = weak.clone();
+            let state = state.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                use slint::winit_030::WinitWindowAccessor;
+                let focused = ui
+                    .window()
+                    .with_winit_window(|w| w.has_focus())
+                    .unwrap_or(true);
+                let playing = state.lock().is_ok_and(|s| !s.running.is_empty());
+                if !focused || playing {
+                    return;
+                }
+                // Focus moves and presses go through the window like keys, so buttons react as to the keyboard.
+                let key = match ui.invoke_pad_input(action.into(), kind.into()).as_str() {
+                    "tab" => slint::platform::Key::Tab,
+                    "backtab" => slint::platform::Key::Backtab,
+                    "enter" => slint::platform::Key::Return,
+                    _ => return,
+                };
+                let text: slint::SharedString = key.into();
+                let window = ui.window();
+                window.dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                    text: text.clone(),
+                });
+                window.dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+            });
+        }
+    });
+    // Moving the mouse hands back to it: the gamepad's marks and hints go away.
+    {
+        use slint::winit_030::{WinitWindowAccessor, winit};
+        let weak = ui.as_weak();
+        ui.window().on_winit_window_event(move |_, event| {
+            if matches!(event, winit::event::WindowEvent::CursorMoved { .. })
+                && let Some(ui) = weak.upgrade()
+            {
+                let pad = ui.global::<Pad>();
+                if pad.get_active() {
+                    pad.set_active(false);
+                    pad.set_buttons(false);
+                }
+            }
+            slint::winit_030::EventResult::Propagate
+        });
+    }
     ui.run().expect("the window failed");
 }
 
