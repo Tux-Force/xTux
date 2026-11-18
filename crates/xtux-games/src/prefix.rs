@@ -5,6 +5,7 @@
 //!   official GitHub releases or copied from a local Proton build, keeping Wine's own DLLs as a backup,
 //! - adds the Microsoft TLS root certificates that Windows ships but Linux trust stores lack (some games verify their
 //!   servers against them and report "antivirus interference" otherwise),
+//! - sets how PlayStation controllers reach games (see [`apply_controller_mode`]),
 //! - records what was done in `xtux-prefix.json`, which `run` reads to set the DLL overrides.
 
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use serde_json::json;
 use tokio::process::Command;
 
 use crate::Progress;
+use crate::settings::ControllerMode;
 
 pub const STATE_FILE: &str = "xtux-prefix.json";
 
@@ -29,6 +31,15 @@ const CERTIFICATES: &[(&str, &[u8])] = &[
         "Microsoft TLS ECC Root G2",
         include_bytes!("../assets/certs/microsoft-tls-ecc-root-g2.crt"),
     ),
+];
+
+/// PlayStation controllers that Wine opens through hidraw by default: DualShock 4 (both models), DualSense and
+/// DualSense Edge.
+const PLAYSTATION_CONTROLLERS: &[(u16, u16)] = &[
+    (0x054c, 0x05c4),
+    (0x054c, 0x09cc),
+    (0x054c, 0x0ce6),
+    (0x054c, 0x0df2),
 ];
 
 pub struct InitOptions {
@@ -148,6 +159,14 @@ async fn run_init(
     );
     progress.message(&format!("Added {} root certificates", CERTIFICATES.len()));
 
+    let mode = crate::settings::Settings::load()
+        .unwrap_or_default()
+        .controller;
+    write_controller_mode(&options.wine, &prefix, mode).await?;
+    wait_wineserver(&options.wine, &prefix).await;
+    state["controller"] = json!(mode.as_str());
+    progress.message(&format!("PlayStation controllers: {}", mode.as_str()));
+
     if !overridden.is_empty() {
         let names: Vec<&str> = overridden
             .iter()
@@ -158,6 +177,93 @@ async fn run_init(
     let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
     std::fs::write(prefix.join(STATE_FILE), text).map_err(|e| e.to_string())?;
     Ok(prefix)
+}
+
+/// Whether applying a controller mode needs a restart of the prefix.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ControllerChange {
+    /// Already set, or set while the prefix was not running.
+    Applied,
+    /// Written, but Wine reads it when the prefix starts: games already running keep the old mode.
+    AfterRestart,
+}
+
+/// Makes PlayStation controllers show up as Xbox gamepads (`xbox`: SDL maps them, Wine's `Hidraw` device option
+/// off) or as themselves (`native`: Wine's default, hidraw). Does nothing when the prefix already has `mode`.
+pub async fn apply_controller_mode(
+    wine_path: &str,
+    prefix: &Path,
+    mode: ControllerMode,
+) -> crate::Result<ControllerChange> {
+    let state_file = prefix.join(STATE_FILE);
+    let mut state = std::fs::read_to_string(&state_file)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .filter(|state| state.is_object())
+        .unwrap_or_else(|| json!({}));
+    if state["controller"].as_str() == Some(mode.as_str()) {
+        return Ok(ControllerChange::Applied);
+    }
+
+    let running = server_running(prefix);
+    write_controller_mode(wine_path, prefix, mode).await?;
+    if !running {
+        // The game then starts a fresh wineserver, whose winebus reads the new setting.
+        wait_wineserver(wine_path, prefix).await;
+    }
+    state["controller"] = json!(mode.as_str());
+    let text =
+        serde_json::to_string_pretty(&state).map_err(|e| crate::Error::msg(e.to_string()))?;
+    std::fs::write(&state_file, text)?;
+    Ok(if running {
+        ControllerChange::AfterRestart
+    } else {
+        ControllerChange::Applied
+    })
+}
+
+/// The `.reg` text for `mode`: `HKLM\System\CurrentControlSet\Services\WineBus\Devices\<vid>/<pid>`, `Hidraw`.
+fn controller_reg(mode: ControllerMode) -> String {
+    let mut reg = String::from("Windows Registry Editor Version 5.00\r\n\r\n");
+    for (vid, pid) in PLAYSTATION_CONTROLLERS {
+        reg.push_str(&format!(
+            "[HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus\\Devices\\{vid:04x}/{pid:04x}]\r\n{}\r\n\r\n",
+            match mode {
+                ControllerMode::Xbox => "\"Hidraw\"=dword:00000000",
+                ControllerMode::Native => "\"Hidraw\"=-",
+            }
+        ));
+    }
+    reg
+}
+
+async fn write_controller_mode(
+    wine_path: &str,
+    prefix: &Path,
+    mode: ControllerMode,
+) -> Result<(), String> {
+    let file = tempfile::Builder::new()
+        .suffix(".reg")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
+    std::fs::write(file.path(), controller_reg(mode)).map_err(|e| e.to_string())?;
+    let path = file.path().to_string_lossy().to_string();
+    wine(wine_path, prefix, &["reg", "import", &path]).await
+}
+
+/// Whether a wineserver serves `prefix`: it listens on `/tmp/.wine-<uid>/server-<dev>-<inode>/socket`.
+pub fn server_running(prefix: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = std::fs::metadata(prefix) else {
+        return false;
+    };
+    let uid = rustix::process::getuid().as_raw();
+    let socket = PathBuf::from(format!(
+        "/tmp/.wine-{uid}/server-{:x}-{:x}/socket",
+        meta.dev(),
+        meta.ino()
+    ));
+    std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
 
 async fn wine(wine: &str, prefix: &Path, args: &[&str]) -> Result<(), String> {
@@ -351,7 +457,8 @@ mod tests {
         super::run_init(
             &reqwest::Client::new(),
             super::InitOptions {
-                wine: "/bin/true".into(),
+                // From PATH: /bin/true does not exist on macOS.
+                wine: "true".into(),
                 prefix: Some(prefix.path().to_str().unwrap().into()),
                 from_proton: None,
                 skip_graphics: true,
@@ -368,6 +475,24 @@ mod tests {
             assert_eq!(after[key], previous[key]);
         }
         assert_eq!(after["certificates"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn controller_reg_covers_playstation_controllers() {
+        use super::{ControllerMode, PLAYSTATION_CONTROLLERS, controller_reg};
+        let xbox = controller_reg(ControllerMode::Xbox);
+        assert!(xbox.contains(
+            "[HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineBus\\Devices\\054c/0ce6]\r\n\"Hidraw\"=dword:00000000"
+        ));
+        assert_eq!(
+            xbox.matches("dword:00000000").count(),
+            PLAYSTATION_CONTROLLERS.len()
+        );
+        let native = controller_reg(ControllerMode::Native);
+        assert_eq!(
+            native.matches("\"Hidraw\"=-").count(),
+            PLAYSTATION_CONTROLLERS.len()
+        );
     }
 
     #[test]

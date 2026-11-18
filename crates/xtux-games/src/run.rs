@@ -424,10 +424,62 @@ pub async fn launch(
         }
         file_map.push_str(&format!("{fd}:\\??\\Z:{nt_prefix}\\{nt_suffix}"));
     }
-    let nt_entry = nt_entry.ok_or("could not find the game executable")?;
+    // Some packages (e.g. Minecraft for Windows) ship their entry executable unencrypted; Wine then reads it
+    // straight from the game folder instead of from a decrypted memory file.
+    let nt_entry = nt_entry
+        .or_else(|| {
+            let exe = entry.as_ref()?;
+            out.join(exe.replace('\\', "/")).is_file().then(|| {
+                let nt_suffix = exe.replace('/', "\\");
+                format!(
+                    "\\??\\Z:{nt_prefix}\\{}",
+                    nt_suffix.trim_start_matches('\\')
+                )
+            })
+        })
+        .ok_or("could not find the game executable")?;
+
+    let prefix = options
+        .env
+        .iter()
+        .find(|(k, _)| k == "WINEPREFIX")
+        .map(|(_, v)| PathBuf::from(v))
+        .or_else(|| crate::prefix::resolve_prefix(None))
+        .filter(|p| p.join("drive_c").is_dir());
+    if let Some(prefix) = &prefix {
+        let mode = crate::settings::Settings::load()
+            .unwrap_or_default()
+            .effective(&options.source)
+            .controller
+            .unwrap_or_default();
+        match crate::prefix::apply_controller_mode(&options.wine, prefix, mode).await {
+            Ok(crate::prefix::ControllerChange::Applied) => {}
+            Ok(crate::prefix::ControllerChange::AfterRestart) => progress.message(&format!(
+                "PlayStation controllers switch to {} once all games of this prefix are closed",
+                mode.as_str()
+            )),
+            // Not worth failing the start for.
+            Err(err) => tracing::warn!("could not set the controller mode: {err}"),
+        }
+        if crate::gameinput::shipped_msi(out).is_some() {
+            match crate::gameinput::ensure(&options.wine, prefix, out).await {
+                Ok(true) => progress.message("Installed the GameInput redistributable of the game"),
+                Ok(false) => {}
+                // The game reports the missing component itself.
+                Err(err) => tracing::warn!("could not install GameInput: {err}"),
+            }
+        }
+    }
 
     let mut env = identity_env(client, tokens).await;
     env.extend(compatibility_env(&options.env));
+    // Read by GetCurrentPackageFamilyName/FullName of the Tux-Force Wine build.
+    if let Some((family, full)) =
+        crate::library::read_config(out).and_then(|c| crate::library::package_identity(&c))
+    {
+        env.push(("XODUS_PACKAGE_FAMILY_NAME", family));
+        env.push(("XODUS_PACKAGE_FULL_NAME", full));
+    }
 
     // Answers GDK calls that need the Microsoft services, see bridge.rs.
     let scope = addon_scope(client, &options.source).await;

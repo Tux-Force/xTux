@@ -337,7 +337,9 @@ mod tests {
     #[test]
     fn cancelling_an_update_keeps_the_existing_installation() {
         let root = tempfile::tempdir().unwrap();
-        let game = root.path().join("Game");
+        // Queue paths are canonical; the temporary folder is a link on macOS (/var -> /private/var).
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let game = root_path.join("Game");
         std::fs::create_dir_all(game.join("Content")).unwrap();
         std::fs::write(game.join("Content/MicrosoftGame.config"),
             "<Game><StoreId>9AAAAAAAAAAA</StoreId><ShellVisuals DefaultDisplayName=\"Game\"/></Game>").unwrap();
@@ -348,7 +350,7 @@ mod tests {
         header[0x218..0x220].copy_from_slice(&4096u64.to_le_bytes());
         std::fs::write(game.join(id), header).unwrap();
         std::fs::write(game.join("Content/keep.dat"), b"saved installation").unwrap();
-        let libraries = vec![root.path().to_path_buf()];
+        let libraries = vec![root_path.clone()];
         let mut queue = Queue::default();
         let n = queue.update(&game, &libraries).unwrap();
         assert_eq!(queue.items[0].destination, game);

@@ -10,6 +10,8 @@ pub mod catalog;
 pub mod crash;
 pub mod download;
 pub mod error;
+#[cfg(unix)]
+pub mod gameinput;
 pub mod gpu;
 pub mod install;
 pub mod layout;
