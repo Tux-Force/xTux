@@ -60,6 +60,8 @@ pub struct RunningGame {
     pub license_failed: Arc<AtomicBool>,
     child: Child,
     cleanup: Cleanup,
+    /// Sends the saves to the Xbox cloud once the game exited.
+    saves: Option<SaveSync>,
     _access: crate::access::Guard,
     _addon_access: Vec<crate::access::Guard>,
 }
@@ -69,7 +71,93 @@ impl RunningGame {
     pub async fn wait(mut self) -> Result<ExitStatus> {
         let status = self.child.wait().await?;
         self.cleanup.await;
+        if let Some(saves) = self.saves.take() {
+            saves.push().await;
+        }
         Ok(status)
+    }
+}
+
+/// What it takes to sync a game's saves with the Xbox cloud.
+struct SaveSync {
+    client: reqwest::Client,
+    tokens: TokenManager,
+    source: PathBuf,
+    prefix: PathBuf,
+}
+
+/// How long a sync may hold up the start of a game or the end of a run.
+const SAVE_SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+impl SaveSync {
+    /// Brings in the saves that changed in the cloud. Problems are reported; the game starts anyway.
+    async fn pull(&self, progress: &dyn Progress) {
+        progress.message("Syncing saves with the Xbox cloud");
+        let result = tokio::time::timeout(SAVE_SYNC_TIMEOUT, async {
+            match crate::cloudsave::Saves::open(
+                &self.client,
+                &self.tokens,
+                &self.source,
+                &self.prefix,
+            )
+            .await?
+            {
+                Some(saves) => saves.pull().await.map(Some),
+                None => Ok(None),
+            }
+        })
+        .await;
+        match result {
+            Ok(Ok(Some(report))) => {
+                tracing::info!("cloud saves before the game: {report:?}");
+                if !report.is_empty() {
+                    progress.message(&format!("Cloud {}", report.summary()));
+                }
+            }
+            Ok(Ok(None)) => tracing::info!("the game has no Xbox Live identity, no cloud saves"),
+            Ok(Err(err)) => {
+                tracing::warn!("cloud saves: {err}");
+                progress.message(&format!("Cloud saves could not be synced ({err}); the game uses the saves on this computer"));
+            }
+            Err(_) => progress.message(
+                "Cloud saves did not answer in time; the game uses the saves on this computer",
+            ),
+        }
+    }
+
+    /// Sends the saves that changed while playing.
+    async fn push(&self) {
+        // The process xTux started can exit while the game goes on in the background (Wine detaches it); the
+        // saves are final only once nothing runs in the prefix any more, which is also when its wineserver ends.
+        while crate::prefix::server_running(&self.prefix) {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let result = tokio::time::timeout(SAVE_SYNC_TIMEOUT * 4, async {
+            match crate::cloudsave::Saves::open(
+                &self.client,
+                &self.tokens,
+                &self.source,
+                &self.prefix,
+            )
+            .await?
+            {
+                Some(saves) => saves.push().await.map(Some),
+                None => Ok(None),
+            }
+        })
+        .await;
+        match result {
+            Ok(Ok(Some(report))) => {
+                tracing::info!("cloud saves after the game: {}", report.summary())
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(err)) => tracing::warn!(
+                "cloud saves could not be sent, they stay on this computer until the next run: {err}"
+            ),
+            Err(_) => tracing::warn!(
+                "cloud saves did not answer in time, they are sent after the next run"
+            ),
+        }
     }
 }
 
@@ -571,6 +659,23 @@ pub async fn launch(
         .map(|(_, v)| PathBuf::from(v))
         .or_else(|| crate::prefix::resolve_prefix(None))
         .filter(|p| p.join("drive_c").is_dir());
+    let saves = prefix
+        .as_ref()
+        .filter(|_| {
+            crate::settings::Settings::load()
+                .unwrap_or_default()
+                .cloud_saves
+                != Some(false)
+        })
+        .map(|prefix| SaveSync {
+            client: client.clone(),
+            tokens: tokens.clone(),
+            source: options.source.clone(),
+            prefix: prefix.clone(),
+        });
+    if let Some(saves) = &saves {
+        saves.pull(progress).await;
+    }
     if let Some(prefix) = &prefix {
         let mode = crate::settings::Settings::load()
             .unwrap_or_default()
@@ -732,6 +837,7 @@ pub async fn launch(
         license_failed,
         child,
         cleanup,
+        saves,
         _access: access,
         _addon_access: addon_access,
     })

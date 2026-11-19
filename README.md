@@ -73,6 +73,13 @@ The Updates page checks installed games and DLCs, including Windows Xbox app ins
 `xtux-cli verify` checks an install against its package (see [Game and DLC updates](docs/Updates.md)). When a game
 ends abnormally, the launcher names the cause and a hint, with a button to open the log.
 
+**Cloud saves:** games that save through the GDK (`XGameSave`) keep their saves in step with the Xbox cloud, as on
+Windows: saves from a Windows PC or an Xbox are brought in before the game starts, and saves made here are sent
+once it has ended. When both sides changed, the newer one wins and the other one is backed up in
+`~/.local/state/xtux/save-backups/`; a sync never deletes saves. Saves that differ on both sides and were never
+synced are left alone until you pick a side with `xtux-cli saves resolve <game> cloud|local`. `xtux-cli saves
+list|pull|push <game>` works by hand, and **Settings → Cloud saves** (`cloud_saves = false`) turns syncing off.
+
 **Delete game…** removes the entire game folder after confirmation, including Windows Xbox app installs and any
 saves inside that folder.
 

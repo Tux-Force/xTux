@@ -237,6 +237,14 @@ fn publisher_id(publisher: &str) -> String {
         .collect()
 }
 
+/// Package family name of a game (`<Identity Name>_<publisher id>`), the folder its data gets under
+/// `LocalAppData/Packages`.
+pub(crate) fn package_family(xml: &str) -> Option<String> {
+    let name = attribute(xml, "Identity", "Name")?;
+    let publisher = attribute(xml, "Identity", "Publisher")?;
+    Some(format!("{name}_{}", publisher_id(&publisher)))
+}
+
 /// Package family and full name the game has on Windows, for games that need a package identity.
 ///
 /// Only games depending on the Windows App Runtime get one: they skip its bootstrapper when they run packaged,
@@ -246,13 +254,10 @@ pub(crate) fn package_identity(xml: &str) -> Option<(String, String)> {
         return None;
     }
     let name = attribute(xml, "Identity", "Name")?;
-    let publisher = attribute(xml, "Identity", "Publisher")?;
     let version = attribute(xml, "Identity", "Version")?;
-    let id = publisher_id(&publisher);
-    Some((
-        format!("{name}_{id}"),
-        format!("{name}_{version}_x64__{id}"),
-    ))
+    let family = package_family(xml)?;
+    let id = family.rsplit('_').next()?.to_string();
+    Some((family, format!("{name}_{version}_x64__{id}")))
 }
 
 /// The desktop entry point, rather than an arbitrary encrypted helper executable.
