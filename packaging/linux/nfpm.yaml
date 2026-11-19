@@ -141,7 +141,9 @@ overrides:
     depends:
       - glibc
       - gcc-libs
-      - openssl
+      # Arch's openssl is 4.x; the 3.x libraries come from openssl-3, which provides these sonames.
+      - libssl.so=3-64
+      - libcrypto.so=3-64
       - dbus
       - fontconfig
       - webkit2gtk-4.1
