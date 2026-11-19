@@ -1133,6 +1133,7 @@ export component AppWindow inherits Window {
     in-out property <bool> store-installable;
     in-out property <bool> store-hide-windows-only;
     in-out property <bool> anticheat-guess;
+    in-out property <bool> cloud-saves: true;
     // Scroll positions kept while a game or title page is open.
     in-out property <length> library-scroll;
     in-out property <length> store-scroll;
@@ -2219,6 +2220,18 @@ export component AppWindow inherits Window {
                             }
                             Label {
                                 text: "Downloads the public AreWeAntiCheatYet list from GitHub once a week; no game names are sent. The list knows Steam and Epic names, so games are matched by name and each report says how sure the match is. Installed games are always checked by their files.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
+                            Label { text: "Cloud saves"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Off"; active: !root.cloud-saves; clicked => { root.cloud-saves = false; root.ui-changed(); } }
+                                GhostButton { text: "Xbox cloud"; active: root.cloud-saves; clicked => { root.cloud-saves = true; root.ui-changed(); } }
+                            }
+                            Label {
+                                text: "Before a game starts, saves made on Windows or an Xbox are brought in; after it ends, saves made here are sent. When both sides changed, the newer one is kept and the other one is backed up. Saves are never deleted by a sync.";
                                 wrap: word-wrap;
                                 font-size: 12px;
                             }

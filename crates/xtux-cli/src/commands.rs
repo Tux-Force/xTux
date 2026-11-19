@@ -12,6 +12,8 @@ pub mod login;
 pub mod logout;
 #[cfg(unix)]
 pub mod run;
+#[cfg(unix)]
+pub mod saves;
 pub mod splicense;
 pub mod streaming;
 pub mod verify;

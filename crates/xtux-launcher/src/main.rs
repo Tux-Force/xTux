@@ -2301,6 +2301,7 @@ fn main() {
         ui.set_icon_choice(settings.ui.icon.clone().into());
         ui.set_icon_colour(settings.ui.icon_colour.clone().into());
         ui.set_anticheat_guess(settings.ui.anticheat_list);
+        ui.set_cloud_saves(settings.cloud_saves != Some(false));
         ui.set_controller_mode(settings.controller.as_str().into());
         // A new user starts on the setup page.
         if !refresh_setup(&ui).complete() {
@@ -2544,6 +2545,8 @@ fn main() {
             settings.ui.icon = ui.get_icon_choice().into();
             settings.ui.icon_colour = ui.get_icon_colour().into();
             settings.ui.anticheat_list = ui.get_anticheat_guess();
+            // Unset means on; only "off" is written.
+            settings.cloud_saves = (!ui.get_cloud_saves()).then_some(false);
             settings.controller =
                 ControllerMode::parse(&ui.get_controller_mode()).unwrap_or_default();
             apply_theme(&ui);
