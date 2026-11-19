@@ -59,6 +59,32 @@ Guides, the compatibility list and downloads are on the website, **https://tux-f
 (`xtux-service`) and the graphical front end the **xTux Launcher** (`xtux-launcher`); the core library keeps its
 upstream name `xodus`.
 
+## Installing
+
+Every [release](https://github.com/Tux-Force/xTux/releases) ships the same CI-built binaries in several forms
+(`x86_64`, each with a `.sha256` checksum). Pick the one for your distribution:
+
+| Distribution | File | Install |
+| --- | --- | --- |
+| Debian 13+, Ubuntu 24.04+ and derivatives | `xtux_<version>-1_amd64.deb` | `sudo apt install ./xtux_*_amd64.deb` |
+| Fedora 40+ | `xtux-<version>-1.x86_64.rpm` | `sudo dnf install ./xtux-*.x86_64.rpm` |
+| openSUSE Tumbleweed | `xtux-<version>-1.x86_64.rpm` | `sudo zypper install --allow-unsigned-rpm ./xtux-*.x86_64.rpm` |
+| Arch Linux, Manjaro, EndeavourOS | `xtux-<version>-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./xtux-*.pkg.tar.zst` |
+| Any distribution (sandboxed) | `xtux-linux-x86_64.flatpak` | `flatpak install --user ./xtux-linux-x86_64.flatpak` |
+| Any distribution (manual) | `xtux-<version>-linux-x86_64.tar.gz` | unpack anywhere and run `./xtux-launcher` |
+
+The packages put the binaries into `/usr/lib/xtux` with `xtux-launcher`, `xtux-cli` and `xtux-service` linked
+into `/usr/bin`, add the launcher to the application menu and pull in the libraries they need (WebKitGTK 4.1 for
+the Microsoft sign-in, OpenSSL 3, D-Bus, fontconfig, xkbcommon, Wayland/X11 and OpenGL). They need glibc 2.39 or
+newer. Keep `xtux-service` in the same folder as the other two when you use the archive: the clients start it
+from there.
+
+**Wine is not a dependency.** The guided setup of the launcher (or `xtux-cli setup`) downloads the Tux-Force Wine
+build into xTux's data folder; a distribution Wine is not used. Games need working Vulkan drivers for DXVK and
+VKD3D (Mesa's Vulkan drivers, `mesa-vulkan-drivers` on Debian, Ubuntu and Fedora, `vulkan-radeon` or
+`vulkan-intel` on Arch, or the NVIDIA driver), which the packages recommend but do not force. Signing in stores the
+account in the desktop keyring (GNOME Keyring, KWallet or another Secret Service provider).
+
 ## Launcher features
 
 The current source includes a searchable local library (grid or list), Play/Stop, per-game Wine/prefix/executable/
@@ -181,8 +207,9 @@ Work lands in `develop` through pull requests (`feature/*`, `fix/*`, `chore/*`),
 2. Merge `develop` into `main` with a pull request.
 3. Tag the merge commit on `main` with `v<version>` and push the tag.
 
-The CI builds, tests and checks licenses for the tag, then publishes the GitHub release with the CI-built archives
-and checksums. It refuses tags on commits that are not on `main` and tags that do not match the version.
+The CI builds, tests and checks licenses for the tag, then publishes the GitHub release with the CI-built archive,
+Flatpak bundle, `.deb`, `.rpm` and Arch packages (installed and started in Debian, Ubuntu, Fedora, openSUSE and Arch
+containers first) and their checksums. It refuses tags on commits that are not on `main` and tags that do not match the version.
 Versions `0.x` and versions with a suffix (`-rc1`) are marked as pre-releases.
 
 ## License
