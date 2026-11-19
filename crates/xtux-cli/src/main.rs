@@ -116,6 +116,19 @@ enum SubCommand {
     )]
     Downloads { action: Vec<String> },
     #[cfg(unix)]
+    #[command(
+        about = "Saves of a game in the Xbox cloud: list, pull (cloud to here), push (here to cloud), resolve cloud|local"
+    )]
+    Saves {
+        /// list, pull, push or resolve
+        action: String,
+        /// Game name (see `xtux-cli list`) or game folder
+        #[arg(add = clap_complete::ArgValueCompleter::new(commands::list::complete_game))]
+        source: String,
+        /// For resolve: which side to keep for saves that differ and were never synced (cloud or local)
+        side: Option<String>,
+    },
+    #[cfg(unix)]
     #[command(about = "List the installed games of the library folders")]
     List {
         /// Print only the game folders
@@ -358,6 +371,12 @@ async fn main() -> ExitCode {
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
         #[cfg(unix)]
         SubCommand::List { paths } => commands::list::run(paths),
+        #[cfg(unix)]
+        SubCommand::Saves {
+            action,
+            source,
+            side,
+        } => commands::saves::run(&client, &tokens, &action, &source, side.as_deref()).await,
         #[cfg(unix)]
         SubCommand::Downloads { action } => commands::downloads::run(action).await,
         #[cfg(unix)]
