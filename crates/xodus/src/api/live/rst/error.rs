@@ -31,6 +31,14 @@ pub enum RSTError {
     UnexpectedTokenResponse(soap::BodyContent),
     #[error("Unexpected Response - {0:?}")]
     TokenFault(Option<soap::PP>),
+    /// The account has to confirm the sign-in once in a browser at `auth_url` (a one time link) before Microsoft
+    /// hands out a token for `scope`.
+    #[error("Microsoft wants the sign-in confirmed once in a browser (status {status})")]
+    InteractionRequired {
+        scope: String,
+        status: String,
+        auth_url: String,
+    },
 }
 
 #[derive(thiserror::Error, Debug)]
