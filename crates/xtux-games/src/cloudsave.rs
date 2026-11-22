@@ -69,7 +69,27 @@ pub struct Game {
     pub name: String,
 }
 
+/// Why the title-bound sign-in failed, with the way out when Microsoft wants it confirmed in a browser first.
+pub fn sign_in_error(game: &str, err: &(dyn std::error::Error + 'static)) -> String {
+    if matches!(
+        err.downcast_ref::<xodus::api::live::rst::RSTError>(),
+        Some(xodus::api::live::rst::RSTError::InteractionRequired { .. })
+    ) {
+        format!(
+            "Xbox Live sign-in for {game}: Microsoft wants it confirmed once. Run `xtux-cli login --game \"{game}\"`."
+        )
+    } else {
+        format!("Xbox Live sign-in for {game} failed: {err}")
+    }
+}
+
 impl Game {
+    /// The Xbox Live identity of the game installed in `game_dir`.
+    pub fn for_folder(game_dir: &Path) -> Option<Game> {
+        let layout = crate::layout::detect(game_dir)?;
+        crate::library::read_config(&layout.root).and_then(|c| Game::from_config(&c))
+    }
+
     /// From the game's `MicrosoftGame.config`. Games without an MSA app id or title id cannot use the cloud.
     pub fn from_config(config: &str) -> Option<Game> {
         let msa_app_id = crate::library::element(config, "MSAAppId")?;
@@ -497,7 +517,7 @@ impl Cloud {
         let mut session =
             TitleSession::establish(client, tokens, &game.msa_app_id, i64::from(game.title_id))
                 .await
-                .map_err(|e| format!("Xbox Live sign-in for {} failed: {e}", game.name))?;
+                .map_err(|e| sign_in_error(&game.name, &*e))?;
         // Signed in through the game (sisu with its MSA app id), but the storage service refuses tokens that carry
         // the title claim: device and user token only.
         let token = session
@@ -1184,10 +1204,8 @@ impl Saves {
         if !prefix.join("drive_c/users").is_dir() {
             return Err(format!("{} is not a Wine prefix", prefix.display()));
         }
-        let layout = crate::layout::detect(game_dir).ok_or("not a game folder")?;
-        let Some(game) =
-            crate::library::read_config(&layout.root).and_then(|c| Game::from_config(&c))
-        else {
+        crate::layout::detect(game_dir).ok_or("not a game folder")?;
+        let Some(game) = Game::for_folder(game_dir) else {
             return Ok(None);
         };
         let cloud = Cloud::connect(client, tokens, &game).await?;

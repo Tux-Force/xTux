@@ -546,7 +546,9 @@ async fn ensure_session(state: &State, client_id: &str, title_id: u32) -> Result
         let session =
             TitleSession::establish(&state.client, &state.tokens, client_id, i64::from(title_id))
                 .await
-                .map_err(|err| format!("Xbox Live sign-in for title {title_id} failed: {err}"))?;
+                .map_err(|err| {
+                    crate::cloudsave::sign_in_error(&format!("title {title_id:08X}"), &*err)
+                })?;
         sessions.insert(key.clone(), session);
     }
     Ok(key)

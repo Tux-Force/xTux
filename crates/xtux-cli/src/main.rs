@@ -53,7 +53,14 @@ enum SubCommand {
         key_file: Option<String>,
     },
     #[command(about = "Sign in with your Microsoft account")]
-    Login,
+    Login {
+        #[arg(
+            long,
+            help = "Confirm the sign-in for one game (name, folder or title id) when Microsoft asks for it",
+            add = clap_complete::engine::ArgValueCompleter::new(commands::list::complete_game)
+        )]
+        game: Option<String>,
+    },
     #[cfg(unix)]
     #[command(about = "Guided setup: sign-in, Tux-Force Wine, prefix, game library, controllers")]
     Setup,
@@ -296,7 +303,7 @@ async fn main() -> ExitCode {
     #[cfg(unix)]
     if matches!(
         args.command,
-        SubCommand::Login
+        SubCommand::Login { .. }
             | SubCommand::Streaming { .. }
             | SubCommand::Prefix { .. }
             | SubCommand::Run { .. }
@@ -323,7 +330,10 @@ async fn main() -> ExitCode {
             )
             .await
         }
-        SubCommand::Login => commands::login::run(&client, &tokens).await,
+        SubCommand::Login { game: None } => commands::login::run(&client, &tokens).await,
+        SubCommand::Login { game: Some(game) } => {
+            commands::login::run_game(&client, &tokens, &game).await
+        }
         #[cfg(unix)]
         SubCommand::Setup => interactive::setup(&client, &tokens).await,
         SubCommand::Logout { device } => commands::logout::run(&tokens, device).await,
