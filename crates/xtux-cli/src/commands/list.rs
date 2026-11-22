@@ -9,7 +9,7 @@ use clap_complete::engine::{PathCompleter, ValueCompleter};
 use xtux_games::library::{self, Game, GameKind};
 use xtux_games::settings::Settings;
 
-fn games() -> Vec<Game> {
+pub(crate) fn games() -> Vec<Game> {
     let settings = Settings::load().unwrap_or_default();
     library::scan(&settings.library_dirs)
 }

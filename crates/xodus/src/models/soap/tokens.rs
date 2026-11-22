@@ -20,19 +20,27 @@ pub struct RequestSecurityToken {
     pub policy_reference: Option<PolicyReference>,
 }
 
+/// One token of a response. A scope the account may not use yet comes back without a token, with the reason in `pp`
+/// instead (for example a game the user has not confirmed the sign-in for).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestSecurityTokenResponse {
     #[serde(rename = "wst:TokenType", alias = "TokenType")]
-    pub token_type: String,
+    pub token_type: Option<String>,
     #[serde(rename = "wsp:AppliesTo", alias = "AppliesTo")]
     pub applies_to: AppliesTo,
     #[serde(rename = "wst:Lifetime", alias = "Lifetime")]
-    pub lifetime: Timestamp,
+    pub lifetime: Option<Timestamp>,
     #[serde(
         rename = "wst:RequestedSecurityToken",
         alias = "RequestedSecurityToken"
     )]
-    pub requested_security_token: RequestedSecurityToken,
+    pub requested_security_token: Option<RequestedSecurityToken>,
+    #[serde(
+        rename = "psf:pp",
+        alias = "pp",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pp: Option<super::PP>,
     #[serde(rename = "wst:RequestedProofToken", alias = "RequestedProofToken")]
     pub requested_proof_token: Option<RequestedProofToken>,
 }
