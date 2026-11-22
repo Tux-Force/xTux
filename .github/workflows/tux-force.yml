@@ -181,7 +181,10 @@ jobs:
         with:
           bundle: xtux-linux-x86_64.flatpak
           manifest-path: packaging/flatpak/io.github.tux_force.xTux.yml
-          cache-key: flatpak-builder-${{ github.sha }}
+          # No builder cache: the manifest only packs the CI-built binaries, so it saves little, and a cache restored
+          # from an earlier run on the branch failed with "Invalid cross-device link" once the GNOME runtime had an
+          # update (the runtime is then updated out of the restored cache, which lies on another mount).
+          cache: false
           upload-artifact: false
 
       # The app starts, and the tools the prefix and Wine setup call exist in the runtime.
