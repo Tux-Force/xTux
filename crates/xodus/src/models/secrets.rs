@@ -29,11 +29,15 @@ pub enum Token {
     Compact(String),
 }
 
+/// Only for responses that carry a token: `api::live` turns the ones without into an error first.
 impl From<soap::RequestSecurityTokenResponse> for Token {
     fn from(value: soap::RequestSecurityTokenResponse) -> Self {
-        match value.token_type.as_str() {
+        let requested = value
+            .requested_security_token
+            .expect("token response without a token");
+        match value.token_type.as_deref().unwrap_or_default() {
             "urn:passport:legacy" => {
-                let encrypted_data = value.requested_security_token.encrypted_data.unwrap();
+                let encrypted_data = requested.encrypted_data.unwrap();
                 let key_name = encrypted_data.key_info.key_name.clone();
                 let token = quick_xml::se::to_string(&encrypted_data).unwrap();
                 let binary_secret = value
@@ -48,23 +52,13 @@ impl From<soap::RequestSecurityTokenResponse> for Token {
                     token,
                     binary_secret,
                     tpm_key,
-                    lifetime: value.lifetime,
+                    lifetime: value.lifetime.expect("token response without a lifetime"),
                 })
             }
-            "urn:passport:compact" => Self::Compact(
-                value
-                    .requested_security_token
-                    .binary_security_token
-                    .unwrap()
-                    .value,
-            ),
+            "urn:passport:compact" => Self::Compact(requested.binary_security_token.unwrap().value),
             "urn:passport:delegationcompact" => Self::Compact(format!(
                 "d={}",
-                value
-                    .requested_security_token
-                    .binary_security_token
-                    .unwrap()
-                    .value
+                requested.binary_security_token.unwrap().value
             )),
             _ => unreachable!(),
         }

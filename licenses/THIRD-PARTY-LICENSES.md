@@ -5,7 +5,7 @@ components; each is listed with its license, followed by the full license texts.
 
 ## Overview
 
-- **MIT License** (MIT): 835 crates
+- **MIT License** (MIT): 846 crates
 - **Apache License 2.0** (Apache-2.0): 36 crates
 - **ISC License** (ISC): 29 crates
 - **Unicode License v3** (Unicode-3.0): 26 crates
@@ -2606,7 +2606,7 @@ insights.
 
 ### GNU General Public License v3.0 only (GPL-3.0-only)
 
-Used by: [msixvc 0.1.0](https://crates.io/crates/msixvc), [msixvc-common 0.1.0](https://crates.io/crates/msixvc-common), [xodus 0.1.0](https://crates.io/crates/xodus), [xtux-cli 0.2.0](https://crates.io/crates/xtux-cli), [xtux-service 0.1.0](https://crates.io/crates/xtux-service), [i-slint-backend-selector 1.18.1](https://github.com/slint-ui/slint), [i-slint-backend-winit 1.18.1](https://github.com/slint-ui/slint), [i-slint-common 1.18.1](https://github.com/slint-ui/slint), [i-slint-compiler 1.18.1](https://github.com/slint-ui/slint), [i-slint-core-macros 1.18.1](https://github.com/slint-ui/slint), [i-slint-core 1.18.1](https://github.com/slint-ui/slint), [i-slint-renderer-femtovg 1.18.1](https://github.com/slint-ui/slint), [i-slint-renderer-skia 1.18.1](https://github.com/slint-ui/slint), [i-slint-renderer-software 1.18.1](https://github.com/slint-ui/slint), [slint-build 1.18.1](https://github.com/slint-ui/slint), [slint-macros 1.18.1](https://github.com/slint-ui/slint), [slint 1.18.1](https://github.com/slint-ui/slint)
+Used by: [msixvc 0.1.0](https://crates.io/crates/msixvc), [msixvc-common 0.1.0](https://crates.io/crates/msixvc-common), [xodus 0.1.0](https://crates.io/crates/xodus), [xtux-cli 0.3.0](https://crates.io/crates/xtux-cli), [xtux-service 0.1.0](https://crates.io/crates/xtux-service), [i-slint-backend-selector 1.18.1](https://github.com/slint-ui/slint), [i-slint-backend-winit 1.18.1](https://github.com/slint-ui/slint), [i-slint-common 1.18.1](https://github.com/slint-ui/slint), [i-slint-compiler 1.18.1](https://github.com/slint-ui/slint), [i-slint-core-macros 1.18.1](https://github.com/slint-ui/slint), [i-slint-core 1.18.1](https://github.com/slint-ui/slint), [i-slint-renderer-femtovg 1.18.1](https://github.com/slint-ui/slint), [i-slint-renderer-skia 1.18.1](https://github.com/slint-ui/slint), [i-slint-renderer-software 1.18.1](https://github.com/slint-ui/slint), [slint-build 1.18.1](https://github.com/slint-ui/slint), [slint-macros 1.18.1](https://github.com/slint-ui/slint), [slint 1.18.1](https://github.com/slint-ui/slint)
 
 ```text
 GNU GENERAL PUBLIC LICENSE
@@ -4419,7 +4419,7 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [form_urlencoded 1.2.2](https://github.com/servo/rust-url)
+Used by: [form_urlencoded 1.2.3](https://github.com/servo/rust-url)
 
 ```text
 Copyright (c) 2013-2016 The rust-url developers
@@ -4452,7 +4452,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [data-url 0.3.2](https://github.com/servo/rust-url), [idna 1.1.0](https://github.com/servo/rust-url/), [percent-encoding 2.3.2](https://github.com/servo/rust-url/), [url 2.5.8](https://github.com/servo/rust-url)
+Used by: [data-url 0.3.2](https://github.com/servo/rust-url), [idna 1.1.0](https://github.com/servo/rust-url/), [percent-encoding 2.3.2](https://github.com/servo/rust-url/), [url 2.5.9](https://github.com/servo/rust-url)
 
 ```text
 Copyright (c) 2013-2025 The rust-url developers
@@ -8799,6 +8799,39 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
+Used by: [pollster 1.0.2](https://github.com/zesterer/pollster)
+
+```text
+Copyright (c) 2020-2021 Joshua Barretto
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
 Used by: [p384 0.13.1](https://github.com/RustCrypto/elliptic-curves/tree/master/p384)
 
 ```text
@@ -11000,6 +11033,35 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
+Used by: [tap 1.0.1](https://github.com/myrrlyn/tap)
+
+```text
+MIT License
+
+Copyright (c) 2017 Elliot Linder <darfink@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
 Used by: [precomputed-hash 0.1.1](https://github.com/emilio/precomputed-hash)
 
 ```text
@@ -11180,6 +11242,35 @@ Used by: [crc32fast 1.5.1](https://github.com/srijs/rust-crc32fast)
 MIT License
 
 Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
+Used by: [bitvec 1.1.1](https://github.com/bitvecto-rs/bitvec), [wyz 0.5.1](https://github.com/myrrlyn/wyz)
+
+```text
+MIT License
+
+Copyright (c) 2018 myrrlyn (Alexander Payne)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -11395,6 +11486,35 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
+Used by: [radium 0.7.0](https://github.com/bitvecto-rs/radium)
+
+```text
+MIT License
+
+Copyright (c) 2019 kneecaw (Nika Layzell)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
 Used by: [proc-macro-error-attr 1.0.4](https://gitlab.com/CreepySkeleton/proc-macro-error), [proc-macro-error 1.0.4](https://gitlab.com/CreepySkeleton/proc-macro-error)
 
 ```text
@@ -11459,6 +11579,35 @@ Used by: [owo-colors 3.5.0](https://github.com/jam1garner/owo-colors)
 MIT License
 
 Copyright (c) 2020 - present The owo-colors Developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
+Used by: [rfd 0.18.0](https://github.com/PolyMeilex/rfd)
+
+```text
+MIT License
+
+Copyright (c) 2020 Bilal Elmoussaoui
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -11621,6 +11770,35 @@ Used by: [simple-bytes 0.2.14](https://github.com/soerenmeier/simple-bytes)
 MIT License
 
 Copyright (c) 2020 Sören Meier
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License (MIT)
+
+Used by: [funty 2.0.0](https://github.com/myrrlyn/funty)
+
+```text
+MIT License
+
+Copyright (c) 2020 myrrlyn (Alexander Payne)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -11818,7 +11996,7 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [sctk-adwaita 0.10.1](https://github.com/PolyMeilex/sctk-adwaita)
+Used by: [rfd 0.18.0](https://github.com/PolyMeilex/rfd), [sctk-adwaita 0.10.1](https://github.com/PolyMeilex/sctk-adwaita)
 
 ```text
 MIT License
@@ -12228,7 +12406,7 @@ SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [accesskit 0.24.1](https://github.com/AccessKit/accesskit), [accesskit_atspi_common 0.19.1](https://github.com/AccessKit/accesskit), [accesskit_consumer 0.38.0](https://github.com/AccessKit/accesskit), [accesskit_ios 0.1.2](https://github.com/AccessKit/accesskit), [accesskit_macos 0.26.3](https://github.com/AccessKit/accesskit), [accesskit_unix 0.22.1](https://github.com/AccessKit/accesskit), [accesskit_windows 0.34.0](https://github.com/AccessKit/accesskit), [binrw 0.13.4](https://github.com/jam1garner/binrw), [binrw_derive 0.13.4](https://github.com/jam1garner/binrw), [block2 0.5.1](https://github.com/madsmtm/objc2), [block2 0.6.2](https://github.com/madsmtm/objc2), [cesu8 1.1.0](https://github.com/emk/cesu8-rs), [chrono 0.4.45](https://github.com/chronotope/chrono), [cms 0.2.3](https://github.com/RustCrypto/formats/tree/master/cms), [cvlib 0.1.2](https://github.com/TransientError/CorrelationVector-rust), [dispatch2 0.3.1](https://github.com/madsmtm/objc2), [dispatch 0.2.0](http://github.com/SSheldon/rust-dispatch), [dlopen2 0.8.2](https://github.com/OpenByteDev/dlopen2), [dlopen2_derive 0.4.3](https://github.com/OpenByteDev/dlopen2), [dpi 0.1.2](https://github.com/rust-windowing/winit), [inquire 0.9.4](https://github.com/mikaelmello/inquire), [jni-macros 0.22.4](https://github.com/jni-rs/jni-rs), [jni-sys-macros 0.4.1](https://github.com/jni-rs/jni-sys), [jni 0.22.4](https://github.com/jni-rs/jni-rs), [libm 0.2.16](https://github.com/rust-lang/compiler-builtins), [lyon_algorithms 1.0.22](https://github.com/nical/lyon), [lyon_extra 1.1.0](https://github.com/nical/lyon), [lyon_geom 1.0.20](https://github.com/nical/lyon), [lyon_path 1.0.19](https://github.com/nical/lyon), [ndk-context 0.1.1](https://github.com/rust-windowing/android-ndk-rs), [ndk-sys 0.6.0+11769913](https://github.com/rust-mobile/ndk), [ndk 0.9.0](https://github.com/rust-mobile/ndk), [objc-sys 0.3.5](https://github.com/madsmtm/objc2), [objc2-app-kit 0.2.2](https://github.com/madsmtm/objc2), [objc2-app-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-cloud-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-data 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-graphics 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-image 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-location 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-text 0.3.2](https://github.com/madsmtm/objc2), [objc2-encode 4.1.0](https://github.com/madsmtm/objc2), [objc2-exception-helper 0.1.1](https://github.com/madsmtm/objc2), [objc2-foundation 0.2.2](https://github.com/madsmtm/objc2), [objc2-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2-metal 0.3.2](https://github.com/madsmtm/objc2), [objc2-quartz-core 0.3.2](https://github.com/madsmtm/objc2), [objc2-ui-kit 0.2.2](https://github.com/madsmtm/objc2), [objc2-ui-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-user-notifications 0.3.2](https://github.com/madsmtm/objc2), [objc2-web-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2 0.5.3](https://github.com/madsmtm/objc2), [objc2 0.6.4](https://github.com/madsmtm/objc2), [profiling 1.0.18](https://github.com/aclysma/profiling), [rspolib 0.1.2](https://github.com/mondeja/rspolib), [rustls-platform-verifier-android 0.1.1](https://github.com/rustls/rustls-platform-verifier), [siphasher 1.0.3](https://github.com/jedisct1/rust-siphash), [skia-bindings 0.153.3](https://github.com/rust-skia/rust-skia), [skia-safe 0.153.3](https://github.com/rust-skia/rust-skia), [system-configuration-sys 0.5.0](https://github.com/mullvad/system-configuration-rs), [system-configuration 0.5.1](https://github.com/mullvad/system-configuration-rs), [taffy 0.10.1](https://github.com/DioxusLabs/taffy), [webview2-com-macros 0.8.1](https://github.com/wravery/webview2-rs), [webview2-com-sys 0.38.2](https://github.com/wravery/webview2-rs), [webview2-com 0.38.2](https://github.com/wravery/webview2-rs), [winapi-i686-pc-windows-gnu 0.4.0](https://github.com/retep998/winapi-rs), [winapi-x86_64-pc-windows-gnu 0.4.0](https://github.com/retep998/winapi-rs), [windows-collections 0.2.0](https://github.com/microsoft/windows-rs), [windows-collections 0.3.2](https://github.com/microsoft/windows-rs), [windows-core 0.61.2](https://github.com/microsoft/windows-rs), [windows-core 0.62.2](https://github.com/microsoft/windows-rs), [windows-future 0.2.1](https://github.com/microsoft/windows-rs), [windows-future 0.3.2](https://github.com/microsoft/windows-rs), [windows-implement 0.60.2](https://github.com/microsoft/windows-rs), [windows-interface 0.59.3](https://github.com/microsoft/windows-rs), [windows-link 0.1.3](https://github.com/microsoft/windows-rs), [windows-link 0.2.1](https://github.com/microsoft/windows-rs), [windows-numerics 0.2.0](https://github.com/microsoft/windows-rs), [windows-numerics 0.3.1](https://github.com/microsoft/windows-rs), [windows-registry 0.6.1](https://github.com/microsoft/windows-rs), [windows-result 0.3.4](https://github.com/microsoft/windows-rs), [windows-result 0.4.1](https://github.com/microsoft/windows-rs), [windows-strings 0.4.2](https://github.com/microsoft/windows-rs), [windows-strings 0.5.1](https://github.com/microsoft/windows-rs), [windows-sys 0.45.0](https://github.com/microsoft/windows-rs), [windows-sys 0.48.0](https://github.com/microsoft/windows-rs), [windows-sys 0.52.0](https://github.com/microsoft/windows-rs), [windows-sys 0.61.2](https://github.com/microsoft/windows-rs), [windows-targets 0.42.2](https://github.com/microsoft/windows-rs), [windows-targets 0.48.5](https://github.com/microsoft/windows-rs), [windows-targets 0.52.6](https://github.com/microsoft/windows-rs), [windows-threading 0.1.0](https://github.com/microsoft/windows-rs), [windows-threading 0.2.1](https://github.com/microsoft/windows-rs), [windows-version 0.1.7](https://github.com/microsoft/windows-rs), [windows 0.61.3](https://github.com/microsoft/windows-rs), [windows 0.62.2](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.42.2](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.48.5](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.42.2](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.48.5](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.52.6](https://github.com/microsoft/windows-rs), [xmlserde 0.7.2](https://github.com/ImJeremyHe/xmlserde), [xmlserde_derives 0.7.2](https://github.com/ImJeremyHe/xmlserde), [yasna 0.5.2](https://github.com/qnighy/yasna.rs)
+Used by: [accesskit 0.24.1](https://github.com/AccessKit/accesskit), [accesskit_atspi_common 0.19.1](https://github.com/AccessKit/accesskit), [accesskit_consumer 0.38.0](https://github.com/AccessKit/accesskit), [accesskit_ios 0.1.2](https://github.com/AccessKit/accesskit), [accesskit_macos 0.26.3](https://github.com/AccessKit/accesskit), [accesskit_unix 0.22.1](https://github.com/AccessKit/accesskit), [accesskit_windows 0.34.0](https://github.com/AccessKit/accesskit), [binrw 0.13.4](https://github.com/jam1garner/binrw), [binrw_derive 0.13.4](https://github.com/jam1garner/binrw), [block2 0.5.1](https://github.com/madsmtm/objc2), [block2 0.6.2](https://github.com/madsmtm/objc2), [cesu8 1.1.0](https://github.com/emk/cesu8-rs), [chrono 0.4.45](https://github.com/chronotope/chrono), [cms 0.2.3](https://github.com/RustCrypto/formats/tree/master/cms), [cvlib 0.1.2](https://github.com/TransientError/CorrelationVector-rust), [dispatch2 0.3.1](https://github.com/madsmtm/objc2), [dispatch 0.2.0](http://github.com/SSheldon/rust-dispatch), [dlopen2 0.8.2](https://github.com/OpenByteDev/dlopen2), [dlopen2_derive 0.4.3](https://github.com/OpenByteDev/dlopen2), [dpi 0.1.2](https://github.com/rust-windowing/winit), [inquire 0.9.4](https://github.com/mikaelmello/inquire), [jni-macros 0.22.4](https://github.com/jni-rs/jni-rs), [jni-sys-macros 0.4.1](https://github.com/jni-rs/jni-sys), [jni 0.22.4](https://github.com/jni-rs/jni-rs), [libm 0.2.16](https://github.com/rust-lang/compiler-builtins), [lyon_algorithms 1.0.22](https://github.com/nical/lyon), [lyon_extra 1.1.0](https://github.com/nical/lyon), [lyon_geom 1.0.20](https://github.com/nical/lyon), [lyon_path 1.0.19](https://github.com/nical/lyon), [ndk-context 0.1.1](https://github.com/rust-windowing/android-ndk-rs), [ndk-sys 0.6.0+11769913](https://github.com/rust-mobile/ndk), [ndk 0.9.0](https://github.com/rust-mobile/ndk), [objc-sys 0.3.5](https://github.com/madsmtm/objc2), [objc2-app-kit 0.2.2](https://github.com/madsmtm/objc2), [objc2-app-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-cloud-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-data 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-graphics 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-image 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-location 0.3.2](https://github.com/madsmtm/objc2), [objc2-core-text 0.3.2](https://github.com/madsmtm/objc2), [objc2-encode 4.1.0](https://github.com/madsmtm/objc2), [objc2-exception-helper 0.1.1](https://github.com/madsmtm/objc2), [objc2-foundation 0.2.2](https://github.com/madsmtm/objc2), [objc2-foundation 0.3.2](https://github.com/madsmtm/objc2), [objc2-metal 0.3.2](https://github.com/madsmtm/objc2), [objc2-quartz-core 0.3.2](https://github.com/madsmtm/objc2), [objc2-ui-kit 0.2.2](https://github.com/madsmtm/objc2), [objc2-ui-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2-uniform-type-identifiers 0.3.2](https://github.com/madsmtm/objc2), [objc2-user-notifications 0.3.2](https://github.com/madsmtm/objc2), [objc2-web-kit 0.3.2](https://github.com/madsmtm/objc2), [objc2 0.5.3](https://github.com/madsmtm/objc2), [objc2 0.6.4](https://github.com/madsmtm/objc2), [profiling 1.0.18](https://github.com/aclysma/profiling), [rspolib 0.1.2](https://github.com/mondeja/rspolib), [rustls-platform-verifier-android 0.1.1](https://github.com/rustls/rustls-platform-verifier), [siphasher 1.0.3](https://github.com/jedisct1/rust-siphash), [skia-bindings 0.153.3](https://github.com/rust-skia/rust-skia), [skia-safe 0.153.3](https://github.com/rust-skia/rust-skia), [system-configuration-sys 0.5.0](https://github.com/mullvad/system-configuration-rs), [system-configuration 0.5.1](https://github.com/mullvad/system-configuration-rs), [taffy 0.10.1](https://github.com/DioxusLabs/taffy), [webview2-com-macros 0.8.1](https://github.com/wravery/webview2-rs), [webview2-com-sys 0.38.2](https://github.com/wravery/webview2-rs), [webview2-com 0.38.2](https://github.com/wravery/webview2-rs), [winapi-i686-pc-windows-gnu 0.4.0](https://github.com/retep998/winapi-rs), [winapi-x86_64-pc-windows-gnu 0.4.0](https://github.com/retep998/winapi-rs), [windows-collections 0.2.0](https://github.com/microsoft/windows-rs), [windows-collections 0.3.2](https://github.com/microsoft/windows-rs), [windows-core 0.61.2](https://github.com/microsoft/windows-rs), [windows-core 0.62.2](https://github.com/microsoft/windows-rs), [windows-future 0.2.1](https://github.com/microsoft/windows-rs), [windows-future 0.3.2](https://github.com/microsoft/windows-rs), [windows-implement 0.60.2](https://github.com/microsoft/windows-rs), [windows-interface 0.59.3](https://github.com/microsoft/windows-rs), [windows-link 0.1.3](https://github.com/microsoft/windows-rs), [windows-link 0.2.1](https://github.com/microsoft/windows-rs), [windows-numerics 0.2.0](https://github.com/microsoft/windows-rs), [windows-numerics 0.3.1](https://github.com/microsoft/windows-rs), [windows-registry 0.6.1](https://github.com/microsoft/windows-rs), [windows-result 0.3.4](https://github.com/microsoft/windows-rs), [windows-result 0.4.1](https://github.com/microsoft/windows-rs), [windows-strings 0.4.2](https://github.com/microsoft/windows-rs), [windows-strings 0.5.1](https://github.com/microsoft/windows-rs), [windows-sys 0.45.0](https://github.com/microsoft/windows-rs), [windows-sys 0.48.0](https://github.com/microsoft/windows-rs), [windows-sys 0.52.0](https://github.com/microsoft/windows-rs), [windows-sys 0.61.2](https://github.com/microsoft/windows-rs), [windows-targets 0.42.2](https://github.com/microsoft/windows-rs), [windows-targets 0.48.5](https://github.com/microsoft/windows-rs), [windows-targets 0.52.6](https://github.com/microsoft/windows-rs), [windows-threading 0.1.0](https://github.com/microsoft/windows-rs), [windows-threading 0.2.1](https://github.com/microsoft/windows-rs), [windows-version 0.1.7](https://github.com/microsoft/windows-rs), [windows 0.61.3](https://github.com/microsoft/windows-rs), [windows 0.62.2](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.42.2](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.48.5](https://github.com/microsoft/windows-rs), [windows_aarch64_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_aarch64_msvc 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.42.2](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.48.5](https://github.com/microsoft/windows-rs), [windows_i686_gnu 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_i686_msvc 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_gnu 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_gnullvm 0.52.6](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.42.2](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.48.5](https://github.com/microsoft/windows-rs), [windows_x86_64_msvc 0.52.6](https://github.com/microsoft/windows-rs), [xmlserde 0.7.2](https://github.com/ImJeremyHe/xmlserde), [xmlserde_derives 0.7.2](https://github.com/ImJeremyHe/xmlserde), [yasna 0.5.2](https://github.com/qnighy/yasna.rs)
 
 ```text
 MIT License
@@ -12630,7 +12808,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [adler2 2.0.1](https://github.com/oyvindln/adler2), [anyhow 1.0.104](https://github.com/dtolnay/anyhow), [async-channel 2.5.0](https://github.com/smol-rs/async-channel), [async-executor 1.14.1](https://github.com/smol-rs/async-executor), [async-io 2.6.0](https://github.com/smol-rs/async-io), [async-lock 3.5.0](https://github.com/smol-rs/async-lock), [async-process 2.5.0](https://github.com/smol-rs/async-process), [async-signal 0.2.14](https://github.com/smol-rs/async-signal), [async-task 4.7.1](https://github.com/smol-rs/async-task), [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [atomic-waker 1.1.2](https://github.com/smol-rs/atomic-waker), [blocking 1.7.0](https://github.com/smol-rs/blocking), [concurrent-queue 2.5.0](https://github.com/smol-rs/concurrent-queue), [countme 3.0.1](https://github.com/matklad/countme), [ctrlc 3.5.2](https://github.com/Detegr/rust-ctrlc.git), [curve25519-dalek-derive 0.1.1](https://github.com/dalek-cryptography/curve25519-dalek), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [dtoa 1.0.11](https://github.com/dtolnay/dtoa), [dyn-clone 1.0.20](https://github.com/dtolnay/dyn-clone), [endi 1.1.1](https://github.com/zeenix/endi), [enumn 0.1.14](https://github.com/dtolnay/enumn), [event-listener-strategy 0.5.4](https://github.com/smol-rs/event-listener-strategy), [event-listener 5.4.2](https://github.com/smol-rs/event-listener), [fastrand 2.5.0](https://github.com/smol-rs/fastrand), [futures-lite 2.6.1](https://github.com/smol-rs/futures-lite), [group 0.13.0](https://github.com/zkcrypto/group), [group 0.14.0](https://github.com/zkcrypto/group), [hermit-abi 0.5.3](https://github.com/hermit-os/hermit-rs), [itoa 1.0.18](https://github.com/dtolnay/itoa), [linux-raw-sys 0.12.1](https://github.com/sunfishcode/linux-raw-sys), [linux-raw-sys 0.4.15](https://github.com/sunfishcode/linux-raw-sys), [minimal-lexical 0.2.1](https://github.com/Alexhuszagh/minimal-lexical), [num_enum 0.7.6](https://github.com/illicitonion/num_enum), [num_enum_derive 0.7.6](https://github.com/illicitonion/num_enum), [once_cell 1.21.4](https://github.com/matklad/once_cell), [ordered-stream 0.2.0](https://github.com/danieldg/ordered-stream), [parking 2.2.1](https://github.com/smol-rs/parking), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [piper 0.2.5](https://github.com/smol-rs/piper), [polling 3.11.0](https://github.com/smol-rs/polling), [portable-atomic-util 0.2.8](https://github.com/taiki-e/portable-atomic-util), [portable-atomic 1.15.0](https://github.com/taiki-e/portable-atomic), [prettyplease 0.2.37](https://github.com/dtolnay/prettyplease), [proc-macro-crate 1.3.1](https://github.com/bkchr/proc-macro-crate), [proc-macro-crate 2.0.2](https://github.com/bkchr/proc-macro-crate), [proc-macro-crate 3.5.0](https://github.com/bkchr/proc-macro-crate), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rowan 0.17.0](https://github.com/rust-analyzer/rowan), [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash), [rustix 0.38.44](https://github.com/bytecodealliance/rustix), [rustix 1.1.6](https://github.com/bytecodealliance/rustix), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [servo_arc 0.4.3](https://github.com/servo/stylo), [simd_cesu8 1.2.0](https://github.com/seancroach/simd_cesu8), [smol_str 0.2.2](https://github.com/rust-analyzer/smol_str), [smol_str 0.3.7](https://github.com/rust-lang/rust-analyzer/tree/master/lib/smol_str), [spin_on 0.1.1](https://crates.io/crates/spin_on), [syn 1.0.109](https://github.com/dtolnay/syn), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.4](https://github.com/dtolnay/syn), [system-deps 6.2.2](https://github.com/gdesmott/system-deps), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror-impl 2.0.20](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 2.0.20](https://github.com/dtolnay/thiserror), [typeid 1.0.3](https://github.com/dtolnay/typeid), [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident), [wasi 0.11.1+wasi-snapshot-preview1](https://github.com/bytecodealliance/wasi), [wasip2 1.0.4+wasi-0.2.12](https://github.com/bytecodealliance/wasi-rs), [wasm-streams 0.5.0](https://github.com/MattiasBuelens/wasm-streams/), [wit-bindgen 0.57.1](https://github.com/bytecodealliance/wit-bindgen), [x11-dl 2.21.0](https://github.com/AltF02/x11-rs.git), [x11 2.21.0](https://github.com/AltF02/x11-rs.git), [zbus-lockstep-macros 0.5.2](https://github.com/luukvanderduim/zbus-lockstep), [zbus-lockstep 0.5.2](https://github.com/luukvanderduim/zbus-lockstep), [zmij 1.0.23](https://github.com/dtolnay/zmij), [zvariant_utils 4.2.0](https://github.com/z-galaxy/zbus/)
+Used by: [adler2 2.0.1](https://github.com/oyvindln/adler2), [anyhow 1.0.104](https://github.com/dtolnay/anyhow), [async-channel 2.5.0](https://github.com/smol-rs/async-channel), [async-executor 1.14.1](https://github.com/smol-rs/async-executor), [async-io 2.6.0](https://github.com/smol-rs/async-io), [async-lock 3.5.0](https://github.com/smol-rs/async-lock), [async-process 2.5.0](https://github.com/smol-rs/async-process), [async-signal 0.2.14](https://github.com/smol-rs/async-signal), [async-task 4.7.1](https://github.com/smol-rs/async-task), [async-trait 0.1.92](https://github.com/dtolnay/async-trait), [atomic-waker 1.1.2](https://github.com/smol-rs/atomic-waker), [blocking 1.7.0](https://github.com/smol-rs/blocking), [concurrent-queue 2.5.0](https://github.com/smol-rs/concurrent-queue), [countme 3.0.1](https://github.com/matklad/countme), [ctrlc 3.5.2](https://github.com/Detegr/rust-ctrlc.git), [curve25519-dalek-derive 0.1.1](https://github.com/dalek-cryptography/curve25519-dalek), [displaydoc 0.2.7](https://github.com/yaahc/displaydoc), [dtoa 1.0.11](https://github.com/dtolnay/dtoa), [dyn-clone 1.0.20](https://github.com/dtolnay/dyn-clone), [endi 1.1.1](https://github.com/zeenix/endi), [enumn 0.1.14](https://github.com/dtolnay/enumn), [evdev 0.13.2](https://github.com/cmr/evdev), [event-listener-strategy 0.5.4](https://github.com/smol-rs/event-listener-strategy), [event-listener 5.4.2](https://github.com/smol-rs/event-listener), [fastrand 2.5.0](https://github.com/smol-rs/fastrand), [futures-lite 2.6.1](https://github.com/smol-rs/futures-lite), [group 0.13.0](https://github.com/zkcrypto/group), [group 0.14.0](https://github.com/zkcrypto/group), [hermit-abi 0.5.3](https://github.com/hermit-os/hermit-rs), [itoa 1.0.18](https://github.com/dtolnay/itoa), [linux-raw-sys 0.12.1](https://github.com/sunfishcode/linux-raw-sys), [linux-raw-sys 0.4.15](https://github.com/sunfishcode/linux-raw-sys), [minimal-lexical 0.2.1](https://github.com/Alexhuszagh/minimal-lexical), [num_enum 0.7.6](https://github.com/illicitonion/num_enum), [num_enum_derive 0.7.6](https://github.com/illicitonion/num_enum), [once_cell 1.21.4](https://github.com/matklad/once_cell), [ordered-stream 0.2.0](https://github.com/danieldg/ordered-stream), [parking 2.2.1](https://github.com/smol-rs/parking), [pin-project-internal 1.1.13](https://github.com/taiki-e/pin-project), [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite), [pin-project 1.1.13](https://github.com/taiki-e/pin-project), [piper 0.2.5](https://github.com/smol-rs/piper), [polling 3.11.0](https://github.com/smol-rs/polling), [portable-atomic-util 0.2.8](https://github.com/taiki-e/portable-atomic-util), [portable-atomic 1.15.0](https://github.com/taiki-e/portable-atomic), [prettyplease 0.2.37](https://github.com/dtolnay/prettyplease), [proc-macro-crate 1.3.1](https://github.com/bkchr/proc-macro-crate), [proc-macro-crate 2.0.2](https://github.com/bkchr/proc-macro-crate), [proc-macro-crate 3.5.0](https://github.com/bkchr/proc-macro-crate), [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2), [quote 1.0.47](https://github.com/dtolnay/quote), [rowan 0.17.0](https://github.com/rust-analyzer/rowan), [rustc-hash 1.1.0](https://github.com/rust-lang-nursery/rustc-hash), [rustix 0.38.44](https://github.com/bytecodealliance/rustix), [rustix 1.1.6](https://github.com/bytecodealliance/rustix), [rustversion 1.0.23](https://github.com/dtolnay/rustversion), [semver 1.0.28](https://github.com/dtolnay/semver), [serde 1.0.229](https://github.com/serde-rs/serde), [serde_core 1.0.229](https://github.com/serde-rs/serde), [serde_derive 1.0.229](https://github.com/serde-rs/serde), [serde_json 1.0.151](https://github.com/serde-rs/json), [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error), [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr), [servo_arc 0.4.3](https://github.com/servo/stylo), [simd_cesu8 1.2.0](https://github.com/seancroach/simd_cesu8), [smol_str 0.2.2](https://github.com/rust-analyzer/smol_str), [smol_str 0.3.7](https://github.com/rust-lang/rust-analyzer/tree/master/lib/smol_str), [spin_on 0.1.1](https://crates.io/crates/spin_on), [syn 1.0.109](https://github.com/dtolnay/syn), [syn 2.0.119](https://github.com/dtolnay/syn), [syn 3.0.4](https://github.com/dtolnay/syn), [system-deps 6.2.2](https://github.com/gdesmott/system-deps), [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror), [thiserror-impl 2.0.20](https://github.com/dtolnay/thiserror), [thiserror 1.0.69](https://github.com/dtolnay/thiserror), [thiserror 2.0.20](https://github.com/dtolnay/thiserror), [typeid 1.0.3](https://github.com/dtolnay/typeid), [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident), [wasi 0.11.1+wasi-snapshot-preview1](https://github.com/bytecodealliance/wasi), [wasip2 1.0.4+wasi-0.2.12](https://github.com/bytecodealliance/wasi-rs), [wasm-streams 0.5.0](https://github.com/MattiasBuelens/wasm-streams/), [wit-bindgen 0.57.1](https://github.com/bytecodealliance/wit-bindgen), [x11-dl 2.21.0](https://github.com/AltF02/x11-rs.git), [x11 2.21.0](https://github.com/AltF02/x11-rs.git), [zbus-lockstep-macros 0.5.2](https://github.com/luukvanderduim/zbus-lockstep), [zbus-lockstep 0.5.2](https://github.com/luukvanderduim/zbus-lockstep), [zmij 1.0.23](https://github.com/dtolnay/zmij), [zvariant_utils 4.2.0](https://github.com/z-galaxy/zbus/)
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -13197,7 +13375,7 @@ THE SOFTWARE.
 
 ### MIT License (MIT)
 
-Used by: [nix 0.31.3](https://github.com/nix-rust/nix)
+Used by: [nix 0.29.0](https://github.com/nix-rust/nix), [nix 0.31.3](https://github.com/nix-rust/nix)
 
 ```text
 The MIT License (MIT)

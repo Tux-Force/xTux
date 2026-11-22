@@ -60,6 +60,8 @@ pub struct RunningGame {
     pub license_failed: Arc<AtomicBool>,
     child: Child,
     cleanup: Cleanup,
+    /// Sends the saves to the Xbox cloud once the game exited.
+    saves: Option<SaveSync>,
     _access: crate::access::Guard,
     _addon_access: Vec<crate::access::Guard>,
 }
@@ -69,7 +71,93 @@ impl RunningGame {
     pub async fn wait(mut self) -> Result<ExitStatus> {
         let status = self.child.wait().await?;
         self.cleanup.await;
+        if let Some(saves) = self.saves.take() {
+            saves.push().await;
+        }
         Ok(status)
+    }
+}
+
+/// What it takes to sync a game's saves with the Xbox cloud.
+struct SaveSync {
+    client: reqwest::Client,
+    tokens: TokenManager,
+    source: PathBuf,
+    prefix: PathBuf,
+}
+
+/// How long a sync may hold up the start of a game or the end of a run.
+const SAVE_SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+impl SaveSync {
+    /// Brings in the saves that changed in the cloud. Problems are reported; the game starts anyway.
+    async fn pull(&self, progress: &dyn Progress) {
+        progress.message("Syncing saves with the Xbox cloud");
+        let result = tokio::time::timeout(SAVE_SYNC_TIMEOUT, async {
+            match crate::cloudsave::Saves::open(
+                &self.client,
+                &self.tokens,
+                &self.source,
+                &self.prefix,
+            )
+            .await?
+            {
+                Some(saves) => saves.pull().await.map(Some),
+                None => Ok(None),
+            }
+        })
+        .await;
+        match result {
+            Ok(Ok(Some(report))) => {
+                tracing::info!("cloud saves before the game: {report:?}");
+                if !report.is_empty() {
+                    progress.message(&format!("Cloud {}", report.summary()));
+                }
+            }
+            Ok(Ok(None)) => tracing::info!("the game has no Xbox Live identity, no cloud saves"),
+            Ok(Err(err)) => {
+                tracing::warn!("cloud saves: {err}");
+                progress.message(&format!("Cloud saves could not be synced ({err}); the game uses the saves on this computer"));
+            }
+            Err(_) => progress.message(
+                "Cloud saves did not answer in time; the game uses the saves on this computer",
+            ),
+        }
+    }
+
+    /// Sends the saves that changed while playing.
+    async fn push(&self) {
+        // The process xTux started can exit while the game goes on in the background (Wine detaches it); the
+        // saves are final only once nothing runs in the prefix any more, which is also when its wineserver ends.
+        while crate::prefix::server_running(&self.prefix) {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let result = tokio::time::timeout(SAVE_SYNC_TIMEOUT * 4, async {
+            match crate::cloudsave::Saves::open(
+                &self.client,
+                &self.tokens,
+                &self.source,
+                &self.prefix,
+            )
+            .await?
+            {
+                Some(saves) => saves.push().await.map(Some),
+                None => Ok(None),
+            }
+        })
+        .await;
+        match result {
+            Ok(Ok(Some(report))) => {
+                tracing::info!("cloud saves after the game: {}", report.summary())
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(err)) => tracing::warn!(
+                "cloud saves could not be sent, they stay on this computer until the next run: {err}"
+            ),
+            Err(_) => tracing::warn!(
+                "cloud saves did not answer in time, they are sent after the next run"
+            ),
+        }
     }
 }
 
@@ -168,6 +256,131 @@ async fn prepare(lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, Stri
 #[cfg(not(target_os = "macos"))]
 async fn prepare(_lfiles: &HashMap<String, SegmentFile>) -> Result<(Cleanup, String)> {
     Ok((Box::pin(async {}), String::new()))
+}
+
+/// Folder of the Steam tool `name` (for example `Proton BattlEye Runtime`) in one of the Steam libraries, when it
+/// has the subfolder `version`.
+fn steam_tool(name: &str, version: &str) -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let roots = [
+        home.join(".local/share/Steam"),
+        home.join(".steam/steam"),
+        home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+    ];
+    let mut libraries: Vec<PathBuf> = roots.to_vec();
+    for root in &roots {
+        let Ok(text) = std::fs::read_to_string(root.join("steamapps/libraryfolders.vdf")) else {
+            continue;
+        };
+        for line in text.lines() {
+            let mut fields = line.split('"').filter(|f| !f.trim().is_empty());
+            if fields.next() == Some("path")
+                && let Some(path) = fields.next()
+            {
+                libraries.push(PathBuf::from(path.replace("\\\\", "\\")));
+            }
+        }
+    }
+    libraries
+        .into_iter()
+        .map(|library| library.join("steamapps/common").join(name))
+        .find(|dir| dir.join(version).is_dir())
+}
+
+/// Folder of the Proton BattlEye Runtime: `PROTON_BATTLEYE_RUNTIME`, or the Steam tool of that name.
+fn battleye_runtime() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PROTON_BATTLEYE_RUNTIME") {
+        return Some(PathBuf::from(dir));
+    }
+    steam_tool("Proton BattlEye Runtime", "v1")
+}
+
+/// Folder of the Proton EasyAntiCheat Runtime: `PROTON_EAC_RUNTIME`, or the Steam tool of that name (Steam app
+/// 1826330). Wine takes its bridge from `v2/lib32` and `v2/lib64`.
+fn eac_runtime() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PROTON_EAC_RUNTIME") {
+        return Some(PathBuf::from(dir));
+    }
+    steam_tool("Proton EasyAntiCheat Runtime", "v2")
+}
+
+/// Easy Anti-Cheat in a game folder.
+#[derive(Debug, PartialEq, Eq)]
+struct EasyAntiCheat {
+    /// The game ships EAC's Linux client (`easyanticheat_x64.so` next to `easyanticheat_x64.dll`). Without it Wine
+    /// loads the Windows client, which needs a kernel driver: the developer has not enabled EAC for Linux in this
+    /// version of the game.
+    linux_client: bool,
+}
+
+/// Looks for EAC's client DLL in the game folder and up to three folders deep.
+fn easyanticheat(content: &Path) -> Option<EasyAntiCheat> {
+    const DLLS: &[&str] = &[
+        "easyanticheat_x64.dll",
+        "easyanticheat_x86.dll",
+        "easyanticheat.dll",
+    ];
+    let mut found = None;
+    let mut folders = vec![(content.to_path_buf(), 0)];
+    while let Some((folder, depth)) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        let names: Vec<(String, std::fs::FileType, PathBuf)> = entries
+            .flatten()
+            .filter_map(|e| {
+                Some((
+                    e.file_name().to_string_lossy().to_lowercase(),
+                    e.file_type().ok()?,
+                    e.path(),
+                ))
+            })
+            .collect();
+        for (name, kind, path) in &names {
+            if kind.is_dir() && depth < 3 {
+                folders.push((path.clone(), depth + 1));
+            } else if DLLS.contains(&name.as_str()) {
+                let so = name.replace(".dll", ".so");
+                let linux_client = names.iter().any(|(other, _, _)| *other == so);
+                // One folder with the Linux client is enough.
+                if linux_client || found.is_none() {
+                    found = Some(EasyAntiCheat { linux_client });
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The `Battleye/BELauncher.ini` of a game folder, whatever the case of its folder name.
+fn battleye_launcher_config(content: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(content)
+        .ok()?
+        .flatten()
+        .find(|entry| entry.file_name().eq_ignore_ascii_case("battleye"))
+        .map(|entry| entry.path().join("BELauncher.ini"))
+        .filter(|config| config.is_file())
+}
+
+/// Adds `value` to the DLL overrides xTux passes to Wine, unless the user chose their own.
+fn add_dll_override(
+    env: &mut Vec<(&'static str, String)>,
+    user_env: &[(String, String)],
+    value: &str,
+) {
+    if user_env.iter().any(|(k, _)| k == "WINEDLLOVERRIDES")
+        || std::env::var_os("WINEDLLOVERRIDES").is_some()
+    {
+        return;
+    }
+    match env.iter_mut().find(|(k, _)| *k == "WINEDLLOVERRIDES") {
+        Some((_, overrides)) if !overrides.is_empty() => {
+            overrides.push(';');
+            overrides.push_str(value);
+        }
+        Some((_, overrides)) => *overrides = value.to_string(),
+        None => env.push(("WINEDLLOVERRIDES", value.to_string())),
+    }
 }
 
 /// Environment that steers Wine and its libraries for GDK games, unless the user set it.
@@ -446,6 +659,23 @@ pub async fn launch(
         .map(|(_, v)| PathBuf::from(v))
         .or_else(|| crate::prefix::resolve_prefix(None))
         .filter(|p| p.join("drive_c").is_dir());
+    let saves = prefix
+        .as_ref()
+        .filter(|_| {
+            crate::settings::Settings::load()
+                .unwrap_or_default()
+                .cloud_saves
+                != Some(false)
+        })
+        .map(|prefix| SaveSync {
+            client: client.clone(),
+            tokens: tokens.clone(),
+            source: options.source.clone(),
+            prefix: prefix.clone(),
+        });
+    if let Some(saves) = &saves {
+        saves.pull(progress).await;
+    }
     if let Some(prefix) = &prefix {
         let mode = crate::settings::Settings::load()
             .unwrap_or_default()
@@ -473,6 +703,65 @@ pub async fn launch(
 
     let mut env = identity_env(client, tokens).await;
     env.extend(compatibility_env(&options.env));
+    // Without AMD's own amd_ags_x64.dll in the game folder, a game only probes for AGS. Wine's builtin then
+    // reports a GPU whose driver extensions it cannot provide, and DayZ re-initialises it until its stack overflows.
+    if !out.join("amd_ags_x64.dll").is_file() {
+        add_dll_override(&mut env, &options.env, "amd_ags_x64=d");
+    }
+    // The BattlEye launcher installs a Windows service with a kernel driver, which Wine cannot run, and the game
+    // then waits for it forever. Like Proton, start the game through Wine's belauncher.exe with the Proton BattlEye
+    // Runtime instead; its beclient DLLs replace the ones in the game folder.
+    let nt_entry = match (
+        options
+            .exe
+            .is_none()
+            .then(|| battleye_launcher_config(out))
+            .flatten(),
+        battleye_runtime(),
+    ) {
+        (Some(_), Some(runtime)) => {
+            env.push((
+                "PROTON_BATTLEYE_RUNTIME",
+                runtime.to_string_lossy().into_owned(),
+            ));
+            add_dll_override(&mut env, &options.env, "beclient,beclient_x64=b,n");
+            progress.message("Starting the game through BattlEye");
+            "C:\\windows\\system32\\belauncher.exe".to_string()
+        }
+        (Some(_), None) => {
+            progress.message(
+                "BattlEye needs the Proton BattlEye Runtime from Steam (Library, Tools); online play will not work",
+            );
+            nt_entry
+        }
+        _ => nt_entry,
+    };
+    // Easy Anti-Cheat runs on Linux through the Proton EasyAntiCheat Runtime: Wine loads its bridge instead of the
+    // game's easyanticheat DLL when the game ships EAC's Linux client next to it.
+    if let Some(eac) = easyanticheat(out) {
+        match (eac_runtime(), eac.linux_client) {
+            (Some(runtime), linux_client) => {
+                env.push((
+                    "PROTON_EAC_RUNTIME",
+                    runtime.to_string_lossy().into_owned(),
+                ));
+                progress.message(if linux_client {
+                    "Easy Anti-Cheat runs through the Proton EasyAntiCheat Runtime"
+                } else {
+                    "Easy Anti-Cheat: this version of the game has no Linux client of EAC (the developer has not \
+                     enabled it), so protected modes and online play will likely not work"
+                });
+            }
+            (None, true) => progress.message(
+                "Easy Anti-Cheat needs the Proton EasyAntiCheat Runtime from Steam (Library, Tools, or \
+                 steam://install/1826330); online play will not work",
+            ),
+            (None, false) => progress.message(
+                "Easy Anti-Cheat: this version of the game has no Linux client of EAC, so protected modes and \
+                 online play will likely not work",
+            ),
+        }
+    }
     // Read by GetCurrentPackageFamilyName/FullName of the Tux-Force Wine build.
     if let Some((family, full)) =
         crate::library::read_config(out).and_then(|c| crate::library::package_identity(&c))
@@ -548,6 +837,7 @@ pub async fn launch(
         license_failed,
         child,
         cleanup,
+        saves,
         _access: access,
         _addon_access: addon_access,
     })
@@ -580,5 +870,30 @@ mod process_tests {
             .unwrap()
             .unwrap();
         assert_eq!(status.signal(), Some(9));
+    }
+}
+
+#[cfg(test)]
+mod anticheat_tests {
+    use super::*;
+
+    #[test]
+    fn finds_easyanticheat_and_its_linux_client() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(easyanticheat(dir.path()), None);
+        let bin = dir.path().join("Game/Binaries/Win64");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("EasyAntiCheat_x64.dll"), b"").unwrap();
+        assert_eq!(
+            easyanticheat(dir.path()),
+            Some(EasyAntiCheat {
+                linux_client: false
+            })
+        );
+        std::fs::write(bin.join("easyanticheat_x64.so"), b"").unwrap();
+        assert_eq!(
+            easyanticheat(dir.path()),
+            Some(EasyAntiCheat { linux_client: true })
+        );
     }
 }

@@ -53,7 +53,14 @@ enum SubCommand {
         key_file: Option<String>,
     },
     #[command(about = "Sign in with your Microsoft account")]
-    Login,
+    Login {
+        #[arg(
+            long,
+            help = "Confirm the sign-in for one game (name, folder or title id) when Microsoft asks for it",
+            add = clap_complete::engine::ArgValueCompleter::new(commands::list::complete_game)
+        )]
+        game: Option<String>,
+    },
     #[cfg(unix)]
     #[command(about = "Guided setup: sign-in, Tux-Force Wine, prefix, game library, controllers")]
     Setup,
@@ -115,6 +122,19 @@ enum SubCommand {
         about = "The download queue of xtux-service: list, add <Store ID> [library], pause|resume|remove|up|down <n>, clear"
     )]
     Downloads { action: Vec<String> },
+    #[cfg(unix)]
+    #[command(
+        about = "Saves of a game in the Xbox cloud: list, pull (cloud to here), push (here to cloud), resolve cloud|local"
+    )]
+    Saves {
+        /// list, pull, push or resolve
+        action: String,
+        /// Game name (see `xtux-cli list`) or game folder
+        #[arg(add = clap_complete::ArgValueCompleter::new(commands::list::complete_game))]
+        source: String,
+        /// For resolve: which side to keep for saves that differ and were never synced (cloud or local)
+        side: Option<String>,
+    },
     #[cfg(unix)]
     #[command(about = "List the installed games of the library folders")]
     List {
@@ -283,7 +303,7 @@ async fn main() -> ExitCode {
     #[cfg(unix)]
     if matches!(
         args.command,
-        SubCommand::Login
+        SubCommand::Login { .. }
             | SubCommand::Streaming { .. }
             | SubCommand::Prefix { .. }
             | SubCommand::Run { .. }
@@ -310,7 +330,10 @@ async fn main() -> ExitCode {
             )
             .await
         }
-        SubCommand::Login => commands::login::run(&client, &tokens).await,
+        SubCommand::Login { game: None } => commands::login::run(&client, &tokens).await,
+        SubCommand::Login { game: Some(game) } => {
+            commands::login::run_game(&client, &tokens, &game).await
+        }
         #[cfg(unix)]
         SubCommand::Setup => interactive::setup(&client, &tokens).await,
         SubCommand::Logout { device } => commands::logout::run(&tokens, device).await,
@@ -358,6 +381,12 @@ async fn main() -> ExitCode {
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
         #[cfg(unix)]
         SubCommand::List { paths } => commands::list::run(paths),
+        #[cfg(unix)]
+        SubCommand::Saves {
+            action,
+            source,
+            side,
+        } => commands::saves::run(&client, &tokens, &action, &source, side.as_deref()).await,
         #[cfg(unix)]
         SubCommand::Downloads { action } => commands::downloads::run(action).await,
         #[cfg(unix)]

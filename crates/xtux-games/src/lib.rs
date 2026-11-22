@@ -5,8 +5,10 @@
 mod access;
 pub mod anticheat;
 pub mod art;
+pub mod awacy;
 mod cancel;
 pub mod catalog;
+pub mod cloudsave;
 pub mod crash;
 pub mod download;
 pub mod error;

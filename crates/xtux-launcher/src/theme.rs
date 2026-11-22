@@ -125,6 +125,9 @@ pub struct Palette {
     /// Fill of warnings (anti-cheat that may block) and the text on it.
     pub warning: Rgba,
     pub on_warning: Rgba,
+    /// Text of error and warning lines in the log views.
+    pub log_error: Rgba,
+    pub log_warning: Rgba,
     /// Opacity of the blurred game art behind everything.
     pub backdrop_opacity: f32,
     /// Opacity of the veil over the backdrop at the top of the window (the thinnest part).
@@ -181,6 +184,8 @@ pub fn palette(variant: Variant, accent: &str) -> Palette {
         on_danger: WHITE,
         warning: rgb(0xF59E0B),
         on_warning: DARK_INK,
+        log_error: if light { rgb(0xB91C1C) } else { rgb(0xF87171) },
+        log_warning: if light { rgb(0x92400E) } else { rgb(0xFBBF24) },
         backdrop_opacity: if light { 0.40 } else { 0.55 },
         veil_min: if light { 0.45 } else { 0.40 },
     };
@@ -240,6 +245,17 @@ impl Palette {
                 ));
             }
             checks.push(("text on fields", contrast(self.text, field), 4.5));
+            checks.push(("log errors on fields", contrast(self.log_error, field), 4.5));
+            checks.push((
+                "log warnings on fields",
+                contrast(self.log_warning, field),
+                4.5,
+            ));
+            checks.push((
+                "muted log lines on fields",
+                contrast(self.muted, field),
+                4.5,
+            ));
             checks.push(("text on active buttons", contrast(self.text, active), 4.5));
             // Glyphs (navigation icons) are graphics: 3:1 on the active navigation item.
             let nav = self.accent.with_alpha(0.2).over(strong);

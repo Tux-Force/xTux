@@ -44,7 +44,9 @@ impl ExchangeTokenResponseOutcome for soap::RequestSecurityTokenResponseCollecti
         let Some((Token::Compact(compact), expiry)) = self.security_tokens.first().map(|t| {
             (
                 t.clone().into(),
-                chrono::DateTime::parse_from_rfc3339(&t.lifetime.expires).ok(),
+                t.lifetime
+                    .as_ref()
+                    .and_then(|l| chrono::DateTime::parse_from_rfc3339(&l.expires).ok()),
             )
         }) else {
             return None;
@@ -86,15 +88,42 @@ fn refresh_tokens<F: Fn(String, Token) -> Result<(), TokenStoreError>>(
 fn to_outcome(
     envelope: soap::Envelope,
 ) -> Result<soap::RequestSecurityTokenResponseCollection, rst::RSTError> {
-    match envelope.body.body {
-        soap::BodyContent::Fault(_) => Err(rst::RSTError::TokenFault(envelope.header.pp)),
+    let collection = match envelope.body.body {
+        soap::BodyContent::Fault(_) => return Err(rst::RSTError::TokenFault(envelope.header.pp)),
         soap::BodyContent::RequestSecurityTokenResponse(f) => {
-            Ok(soap::RequestSecurityTokenResponseCollection {
+            soap::RequestSecurityTokenResponseCollection {
                 security_tokens: vec![*f],
-            })
+            }
         }
-        soap::BodyContent::RequestSecurityTokenResponseCollection(f) => Ok(f),
-        _ => Err(rst::RSTError::UnexpectedTokenResponse(envelope.body.body)),
+        soap::BodyContent::RequestSecurityTokenResponseCollection(f) => f,
+        _ => return Err(rst::RSTError::UnexpectedTokenResponse(envelope.body.body)),
+    };
+    check_tokens(collection)
+}
+
+/// Every requested scope must have come back with a token. A scope without one carries the reason instead: most
+/// often the account has to confirm the sign-in once in a browser (`inlineauthurl`), for example for a game's app id.
+fn check_tokens(
+    collection: soap::RequestSecurityTokenResponseCollection,
+) -> Result<soap::RequestSecurityTokenResponseCollection, rst::RSTError> {
+    let missing = collection.security_tokens.iter().find(|t| {
+        t.token_type.is_none() || t.requested_security_token.is_none() || t.lifetime.is_none()
+    });
+    let Some(missing) = missing else {
+        return Ok(collection);
+    };
+    let pp = missing.pp.clone();
+    let status = pp
+        .as_ref()
+        .and_then(|pp| pp.error_status.clone().or_else(|| pp.req_status.clone()))
+        .unwrap_or_default();
+    match pp.and_then(|pp| pp.inline_auth_url) {
+        Some(auth_url) => Err(rst::RSTError::InteractionRequired {
+            scope: missing.applies_to.endpoint_reference.address.clone(),
+            status,
+            auth_url,
+        }),
+        None => Err(rst::RSTError::TokenFault(missing.pp.clone())),
     }
 }
 
@@ -195,6 +224,57 @@ pub async fn exchange_user_token(
     let request = builder.build()?;
 
     to_outcome(request.request(client).await?)
+}
+
+#[cfg(test)]
+mod check_tokens_tests {
+    use super::check_tokens;
+    use crate::api::live::rst::RSTError;
+    use crate::models::soap;
+
+    /// Shape of a real answer for a game whose sign-in the account has not confirmed yet: the game's scope comes back
+    /// without a token, the `Passport.NET/tb` token with one. Values made up.
+    const CONSENT_NEEDED: &str = r#"<wst:RequestSecurityTokenResponseCollection xmlns:S="http://www.w3.org/2003/05/soap-envelope" xmlns:wst="http://schemas.xmlsoap.org/ws/2005/02/trust" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:wsp="http://schemas.xmlsoap.org/ws/2004/09/policy" xmlns:psf="http://schemas.microsoft.com/Passport/SoapServices/SOAPFault"><wst:RequestSecurityTokenResponse><wsp:AppliesTo xmlns:wsa="http://www.w3.org/2005/08/addressing"><wsa:EndpointReference><wsa:Address>scope=xboxlive.signin&amp;api-version=2.0&amp;clientid=0000000012345678</wsa:Address></wsa:EndpointReference></wsp:AppliesTo><psf:pp><psf:reqstatus>0x8004883c</psf:reqstatus><psf:errorstatus>0x80049d5e</psf:errorstatus><psf:inlineauthurl>https://login.live.com/ppsecure/InlineClientAuth.srf?stsft=example</psf:inlineauthurl><psf:inlineendauthurl>https://login.live.com/ppsecure/InlineDesktop.srf</psf:inlineendauthurl></psf:pp></wst:RequestSecurityTokenResponse><wst:RequestSecurityTokenResponse><wst:TokenType>urn:passport:compact</wst:TokenType><wsp:AppliesTo xmlns:wsa="http://www.w3.org/2005/08/addressing"><wsa:EndpointReference><wsa:Address>http://Passport.NET/tb</wsa:Address></wsa:EndpointReference></wsp:AppliesTo><wst:Lifetime><wsu:Created>2026-11-22T17:55:16Z</wsu:Created><wsu:Expires>2027-02-20T17:55:16Z</wsu:Expires></wst:Lifetime><wst:RequestedSecurityToken><wsse:BinarySecurityToken xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" Id="Compact1">t=example</wsse:BinarySecurityToken></wst:RequestedSecurityToken></wst:RequestSecurityTokenResponse></wst:RequestSecurityTokenResponseCollection>"#;
+
+    #[test]
+    fn scope_without_token_asks_for_confirmation() {
+        let collection: soap::RequestSecurityTokenResponseCollection =
+            quick_xml::de::from_str(CONSENT_NEEDED).unwrap();
+        match check_tokens(collection) {
+            Err(RSTError::InteractionRequired {
+                scope,
+                status,
+                auth_url,
+            }) => {
+                assert!(scope.contains("clientid=0000000012345678"));
+                assert_eq!(status, "0x80049d5e");
+                assert!(
+                    auth_url.starts_with("https://login.live.com/ppsecure/InlineClientAuth.srf")
+                );
+            }
+            other => panic!("expected InteractionRequired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_tokens_present_passes() {
+        let only_token = CONSENT_NEEDED.replacen(
+            &CONSENT_NEEDED[CONSENT_NEEDED
+                .find("<wst:RequestSecurityTokenResponse>")
+                .unwrap()
+                ..CONSENT_NEEDED
+                    .find("</wst:RequestSecurityTokenResponse>")
+                    .unwrap()
+                    + "</wst:RequestSecurityTokenResponse>".len()],
+            "",
+            1,
+        );
+        let collection: soap::RequestSecurityTokenResponseCollection =
+            quick_xml::de::from_str(&only_token).unwrap();
+        let collection = check_tokens(collection).unwrap();
+        assert_eq!(collection.security_tokens.len(), 1);
+        assert!(super::ExchangeTokenResponseOutcome::get_rps(&collection).is_some());
+    }
 }
 
 #[cfg(test)]

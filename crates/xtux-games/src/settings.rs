@@ -22,6 +22,9 @@ pub struct Settings {
     pub controller: ControllerMode,
     /// Look of the launcher.
     pub ui: UiSettings,
+    /// Keep game saves in step with the Xbox cloud before and after playing (see cloudsave.rs); on unless `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_saves: Option<bool>,
     /// Settings of single games, by game folder.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub games: BTreeMap<String, GameSettings>,
@@ -75,9 +78,9 @@ pub struct UiSettings {
     pub icon: String,
     /// Icon colours: `brand` or `accent`.
     pub icon_colour: String,
-    /// Mark store titles as likely Windows only from xTux's own, unverified list of titles with kernel
-    /// anti-cheat. Off by default; installed games are checked by their files regardless.
-    pub anticheat_guess: bool,
+    /// Look games up on AreWeAntiCheatYet: its public list is downloaded from GitHub once a week (no game names
+    /// are sent). Installed games are checked by their files regardless.
+    pub anticheat_list: bool,
 }
 
 impl Default for UiSettings {
@@ -91,7 +94,7 @@ impl Default for UiSettings {
             backdrop: "dynamic".into(),
             icon: "mascot".into(),
             icon_colour: "brand".into(),
-            anticheat_guess: false,
+            anticheat_list: true,
         }
     }
 }
@@ -298,6 +301,7 @@ mod tests {
             market: Some("DE".into()),
             controller: ControllerMode::Native,
             ui: UiSettings::default(),
+            cloud_saves: Some(false),
             games: BTreeMap::new(),
         };
         let text = toml::to_string_pretty(&settings).unwrap();

@@ -1,7 +1,7 @@
 // xTux Launcher: library (cover grid or list), game page, settings, logs.
 // Look: glass panels over a blurred game backdrop; themes and accent colours in the global Theme.
 
-import { LineEdit, TextEdit, Palette, ScrollView } from "std-widgets.slint";
+import { LineEdit, TextEdit, Palette, ScrollView, ListView } from "std-widgets.slint";
 
 export global Theme {
     // The choice; the colours below are set by the launcher (src/theme.rs, contrast checked).
@@ -22,6 +22,8 @@ export global Theme {
     in property <color> on-danger: #FFFFFF;
     in property <color> warning: #F59E0B;
     in property <color> on-warning: #06140F;
+    in property <color> log-error: #F87171;
+    in property <color> log-warning: #FBBF24;
     in property <color> base: #04100C;
     in property <color> base-2: #0F3B2E;
     in property <color> text: #F4F7FB;
@@ -105,6 +107,12 @@ export struct ShotRow {
     loaded: bool,
 }
 
+// One line of a log; level: 0 plain, 1 quiet (debug, trace, fixme), 2 info, 3 warning, 4 error.
+export struct LogLine {
+    text: string,
+    level: int,
+}
+
 export struct LibraryChoice {
     path: string,
     free: string,
@@ -135,6 +143,84 @@ export struct GameRow {
 }
 
 // An image that arrives softly: its blurred copy fades in first, then the sharp image over it.
+// Gamepad state (pad.rs): whether the controller was used last, which kind it is, and whether the focus moves
+// through the buttons (Tab order) instead of the tiles of a grid.
+export global Pad {
+    in-out property <bool> active;
+    // playstation | xbox
+    in-out property <string> kind: "xbox";
+    in-out property <bool> buttons;
+}
+
+// Makes a button reachable with the gamepad (and Tab): a ring while it has the focus, Return or Space presses it.
+component PadFocus inherits FocusScope {
+    in property <length> radius;
+    callback activate();
+    focus-on-click: false;
+    key-pressed(event) => {
+        if event.text == Key.Return || event.text == " " {
+            root.activate();
+            return accept;
+        }
+        return reject;
+    }
+    Rectangle {
+        x: -4px;
+        y: -4px;
+        width: parent.width + 8px;
+        height: parent.height + 8px;
+        border-radius: root.radius + 4px;
+        border-width: 2px;
+        border-color: root.has-focus ? Theme.accent : transparent;
+        drop-shadow-blur: root.has-focus ? 12px : 0px;
+        drop-shadow-color: Theme.accent.transparentize(50%);
+    }
+}
+
+// A controller button as printed on the pad: a, b, x, y, lb, rb, start.
+component PadGlyph inherits Rectangle {
+    in property <string> button;
+    property <bool> ps: Pad.kind == "playstation";
+    property <bool> face: root.button == "a" || root.button == "b" || root.button == "x" || root.button == "y";
+    property <color> tint: !root.face ? Theme.text
+        : root.ps ? (root.button == "a" ? #7CB2E8 : root.button == "b" ? #FF6B6B : root.button == "y" ? #40D9A8 : #F28CD3)
+        : (root.button == "a" ? #3CB043 : root.button == "b" ? #E53935 : root.button == "x" ? #1E88E5 : #FDD835);
+    property <string> label: root.button == "lb" ? (root.ps ? "L1" : "LB")
+        : root.button == "rb" ? (root.ps ? "R1" : "RB")
+        : root.button == "start" ? (root.ps ? "Options" : "☰ Menu")
+        : root.ps ? (root.button == "a" ? "✕" : root.button == "b" ? "○" : root.button == "y" ? "△" : "□")
+        : (root.button == "a" ? "A" : root.button == "b" ? "B" : root.button == "x" ? "X" : "Y");
+    height: 26px;
+    width: root.face ? 26px : max(34px, glyph-text.preferred-width + 16px);
+    border-radius: 13px;
+    background: root.face ? root.tint.transparentize(78%) : Theme.glass-strong;
+    border-width: 1.5px;
+    border-color: root.face ? root.tint : Theme.glass-border;
+    glyph-text := Text {
+        text: root.label;
+        color: root.tint;
+        font-size: root.face ? 15px : 12px;
+        font-weight: 800;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A controller button and what it does, for the hint bar.
+component PadHint inherits HorizontalLayout {
+    in property <string> button;
+    in property <string> text;
+    spacing: 7px;
+    PadGlyph { button: root.button; }
+    Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 13px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+}
+
 component SoftImage inherits Rectangle {
     in property <image> sharp;
     in property <image> soft;
@@ -248,6 +334,11 @@ component ShinyButton inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
+    PadFocus {
+        enabled: root.enabled;
+        radius: root.border-radius;
+        activate => { root.clicked(); }
+    }
 }
 
 component GhostButton inherits Rectangle {
@@ -275,6 +366,10 @@ component GhostButton inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+    PadFocus {
+        radius: root.border-radius;
+        activate => { root.clicked(); }
     }
 }
 
@@ -304,6 +399,11 @@ component DangerButton inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+    PadFocus {
+        enabled: root.enabled;
+        radius: root.border-radius;
+        activate => { root.clicked(); }
     }
 }
 
@@ -372,8 +472,9 @@ component Badge inherits Rectangle {
 
 component StoreTile inherits Rectangle {
     in property <StoreRow> title;
+    in property <bool> selected;
     callback open();
-    property <bool> hover: touch.has-hover;
+    property <bool> hover: touch.has-hover || (root.selected && Pad.active && !Pad.buttons);
     art := Rectangle {
         height: root.width * 1.5;
         y: 0;
@@ -599,11 +700,13 @@ component ArtFallback inherits Rectangle {
 component CoverTile inherits Rectangle {
     in property <GameRow> game;
     in property <bool> busy;
+    // Chosen with a gamepad: shown like a tile under the mouse.
+    in property <bool> selected;
     callback play();
     callback stop();
     callback open();
     callback hovered();
-    out property <bool> hover: touch.has-hover || play-touch.has-hover || gear-touch.has-hover;
+    out property <bool> hover: touch.has-hover || play-touch.has-hover || gear-touch.has-hover || (root.selected && Pad.active && !Pad.buttons);
     property <bool> bar-up: root.hover || root.game.running;
     changed hover => {
         if self.hover {
@@ -752,11 +855,12 @@ component CoverTile inherits Rectangle {
 component ListRow inherits Rectangle {
     in property <GameRow> game;
     in property <bool> busy;
+    in property <bool> selected;
     callback play();
     callback stop();
     callback open();
     callback hovered();
-    out property <bool> hover: touch.has-hover;
+    out property <bool> hover: touch.has-hover || (root.selected && Pad.active && !Pad.buttons);
     changed hover => {
         if self.hover {
             root.hovered();
@@ -863,6 +967,60 @@ component LogView inherits Rectangle {
     }
 }
 
+// A log with one colour per level; newest line first.
+component ColoredLog inherits Rectangle {
+    in property <[LogLine]> lines;
+    border-radius: 12px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: Theme.glass-border;
+    clip: true;
+    ListView {
+        width: parent.width;
+        height: parent.height;
+        for line in root.lines: HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 1px;
+            padding-bottom: 1px;
+            Text {
+                text: line.text;
+                wrap: word-wrap;
+                font-size: 12px;
+                font-family: "monospace";
+                font-weight: line.level >= 3 ? 700 : 400;
+                color: line.level == 4 ? Theme.log-error
+                    : line.level == 3 ? Theme.log-warning
+                    : line.level == 1 ? Theme.muted : Theme.text;
+            }
+        }
+    }
+}
+
+// A path: typed in, or chosen with the desktop's file dialog.
+component PathField inherits HorizontalLayout {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> removable;
+    callback browse();
+    callback edited(string);
+    callback remove();
+    spacing: 8px;
+    LineEdit {
+        text <=> root.text;
+        placeholder-text: root.placeholder;
+        edited(value) => { root.edited(value); }
+    }
+    GhostButton {
+        text: "Browse…";
+        clicked => { root.browse(); }
+    }
+    if root.removable: GhostButton {
+        text: "✕";
+        clicked => { root.remove(); }
+    }
+}
+
 component PageTitle inherits Text {
     color: Theme.text;
     font-size: 30px;
@@ -891,7 +1049,8 @@ export component AppWindow inherits Window {
     in-out property <bool> online-art: true;
     in-out property <string> wine;
     in-out property <string> prefix;
-    in-out property <string> library-dirs;
+    // One entry per library folder.
+    in-out property <[string]> library-folders;
     in-out property <int> page: 0;
     // Ambient backdrop: two layers that cross-fade.
     in property <image> backdrop-a;
@@ -910,6 +1069,10 @@ export component AppWindow inherits Window {
     in property <string> game-license-problem;
     in property <string> game-anticheat;
     in property <bool> game-anticheat-blocks;
+    // What AreWeAntiCheatYet says about the game, with how sure the name match is; empty when unknown or off.
+    in property <string> game-awacy;
+    in property <bool> game-awacy-blocks;
+    in property <string> game-awacy-url;
     in property <bool> game-windows;
     in-out property <bool> confirm-delete;
     // Crash dialog after a game ended abnormally.
@@ -955,9 +1118,10 @@ export component AppWindow inherits Window {
     // 0..1, or below 0 while the size is not known.
     in property <float> setup-progress: -1;
     in property <bool> setup-complete;
-    in property <string> game-log;
+    in property <[LogLine]> game-log;
+    in property <string> game-log-path;
     // Logs page (page 3)
-    in property <string> service-log;
+    in property <[LogLine]> service-log;
     in property <string> service-log-path;
     // Store (page 5) and a store title (page 6)
     in property <[StoreRow]> store;
@@ -969,9 +1133,15 @@ export component AppWindow inherits Window {
     in-out property <bool> store-installable;
     in-out property <bool> store-hide-windows-only;
     in-out property <bool> anticheat-guess;
+    in-out property <bool> cloud-saves: true;
     // Scroll positions kept while a game or title page is open.
     in-out property <length> library-scroll;
     in-out property <length> store-scroll;
+    // Gamepad: the tile chosen in the library and the store (-1: none yet), and the columns of the grids shown.
+    in-out property <int> pad-library: -1;
+    in-out property <int> pad-store: -1;
+    in-out property <int> library-cols: 1;
+    in-out property <int> store-cols: 1;
     in property <StoreRow> store-title;
     in property <image> store-hero;
     in property <bool> has-store-hero;
@@ -1024,6 +1194,11 @@ export component AppWindow inherits Window {
     callback store-addon-install(int);
     callback store-addon-remove(int);
     callback check-updates();
+    // Opens the file dialog for a path field; the target names the field ("wine", "library:2", "library:new", …).
+    callback browse-path(string, bool, string);
+    callback library-folder-edited(int, string);
+    callback library-folder-remove(int);
+    callback open-log-file(string);
     callback setup-open();
     callback setup-auto();
     callback setup-install-wine();
@@ -1040,6 +1215,111 @@ export component AppWindow inherits Window {
     public function apply-theme() {
         Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
     }
+    // Moves through a grid of `count` tiles in `cols` columns; the new index.
+    function pad-move(index: int, count: int, cols: int, action: string) -> int {
+        if index < 0 || index >= count {
+            return 0;
+        }
+        if action == "left" { return max(0, index - 1); }
+        if action == "right" { return min(count - 1, index + 1); }
+        if action == "up" { return index >= cols ? index - cols : index; }
+        if action == "down" { return index + cols < count ? index + cols : (floor(index / cols) < floor((count - 1) / cols) ? count - 1 : index); }
+        return index;
+    }
+    function pad-page(step: int) {
+        // Library, Store, Downloads, Updates, Settings.
+        if (root.page == 0 || root.page == 2) {
+            if step > 0 { root.page = 5; root.open-store(); } else { root.page = 1; }
+        } else if (root.page == 5 || root.page == 6) {
+            if step > 0 { root.page = 7; root.open-downloads(); } else { root.page = 0; }
+        } else if root.page == 7 {
+            if step > 0 { root.page = 8; } else { root.page = 5; root.open-store(); }
+        } else if root.page == 8 {
+            if step > 0 { root.page = 1; } else { root.page = 7; root.open-downloads(); }
+        } else if root.page == 1 {
+            if step > 0 { root.page = 0; } else { root.page = 8; }
+        } else {
+            root.page = 0;
+        }
+    }
+    // A grid of tiles is shown, which the directions move through unless the focus is on the buttons.
+    property <bool> pad-grid: (root.page == 0 && root.games.length > 0) || (root.page == 5 && root.store.length > 0);
+    changed page => {
+        Pad.buttons = false;
+        focus-sink.focus();
+    }
+    // ✕ (or Options) with no button focused: the main action of the page.
+    function pad-default() {
+        if root.page == 0 && root.pad-library >= 0 && root.pad-library < root.games.length {
+            root.open-game(root.pad-library);
+        } else if root.page == 5 && root.pad-store >= 0 && root.pad-store < root.store.length {
+            root.open-store-title(root.pad-store);
+        } else if root.page == 2 && !root.game-running && !root.busy && !root.game-anticheat-blocks {
+            root.play-game();
+        } else if root.page == 6 && root.store-title.installed && !root.busy && root.store-title.windows-only == "" {
+            root.store-play();
+        }
+    }
+    // A gamepad action from the launcher (pad.rs): up, down, left, right, a, b, x, y, lb, rb, start. Answers the key
+    // the launcher then sends to the window: "tab", "backtab", "enter", or "" when handled here.
+    public function pad-input(action: string, kind: string) -> string {
+        Pad.active = true;
+        Pad.kind = kind;
+        if action == "lb" || action == "rb" {
+            root.pad-page(action == "rb" ? 1 : -1);
+            return "";
+        }
+        let direction = action == "up" || action == "down" || action == "left" || action == "right";
+        if root.pad-grid && !Pad.buttons {
+            if direction {
+                if root.page == 0 {
+                    root.pad-library = root.pad-move(root.pad-library, root.games.length, root.view == "list" ? 1 : root.library-cols, action);
+                } else {
+                    root.pad-store = root.pad-move(root.pad-store, root.store.length, root.store-cols, action);
+                }
+                return "";
+            }
+            if action == "y" {
+                Pad.buttons = true;
+                return "tab";
+            }
+            if action == "a" {
+                root.pad-default();
+                return "";
+            }
+            if action == "start" && root.page == 0 && root.pad-library >= 0 && root.pad-library < root.games.length
+                && !root.busy && !root.games[root.pad-library].anticheat-blocks {
+                if root.games[root.pad-library].running { root.stop(root.pad-library); } else { root.play(root.pad-library); }
+            }
+            return "";
+        }
+        // Buttons: the directions move the focus in Tab order.
+        if direction {
+            Pad.buttons = true;
+            return action == "up" || action == "left" ? "backtab" : "tab";
+        }
+        if action == "a" {
+            return "enter";
+        }
+        if action == "start" {
+            root.pad-default();
+            return "";
+        }
+        if action == "b" {
+            if root.pad-grid {
+                // Back to the tiles.
+                Pad.buttons = false;
+                focus-sink.focus();
+            } else if root.page == 2 {
+                root.page = 0;
+            } else if root.page == 6 {
+                root.page = 5;
+            } else if root.page != 0 {
+                root.page = 0;
+            }
+        }
+        return "";
+    }
     function pick-theme(choice: string) {
         Theme.choice = choice;
         root.ui-changed();
@@ -1050,11 +1330,23 @@ export component AppWindow inherits Window {
 
     // A click on empty space takes the focus away from text fields.
     TouchArea {
-        clicked => { focus-sink.focus(); }
+        clicked => {
+            focus-sink.focus();
+            Pad.active = false;
+        }
     }
     focus-sink := FocusScope {
         width: 0;
         height: 0;
+        focus-on-tab-navigation: false;
+        // ✕ with no button focused: the page's main action.
+        key-pressed(event) => {
+            if event.text == Key.Return {
+                root.pad-default();
+                return accept;
+            }
+            return reject;
+        }
     }
 
     // Background: brand gradient, blurred game art, a veil for legibility.
@@ -1278,7 +1570,19 @@ export component AppWindow inherits Window {
                 property <int> cols: max(1, floor((self.visible-width - 40px + self.gap) / (self.tile + self.gap)));
                 property <length> row-height: self.tile * 1.5 + 54px;
                 content-height: ceil(root.games.length / self.cols) * (self.row-height + self.gap) + 24px;
+                init => { root.library-cols = self.cols; }
+                changed cols => { root.library-cols = self.cols; }
+                // Keeps the gamepad's tile in view.
+                property <int> chosen: root.pad-library;
+                changed chosen => {
+                    if self.chosen >= 0 {
+                        root.library-scroll = clamp(root.library-scroll,
+                            -(14px + floor(self.chosen / self.cols) * (self.row-height + self.gap)),
+                            -(14px + floor(self.chosen / self.cols) * (self.row-height + self.gap) + self.row-height + 24px - self.visible-height));
+                    }
+                }
                 for game[index] in root.games: CoverTile {
+                    selected: index == root.pad-library;
                     x: 12px + mod(index, lib-grid.cols) * (lib-grid.tile + lib-grid.gap);
                     y: 14px + floor(index / lib-grid.cols) * (lib-grid.row-height + lib-grid.gap);
                     width: lib-grid.tile;
@@ -1298,7 +1602,14 @@ export component AppWindow inherits Window {
                 content-y <=> root.library-scroll;
                 content-width: self.visible-width;
                 content-height: root.games.length * 86px + 10px;
+                property <int> chosen: root.pad-library;
+                changed chosen => {
+                    if self.chosen >= 0 {
+                        root.library-scroll = clamp(root.library-scroll, -(4px + self.chosen * 86px), -(4px + self.chosen * 86px + 86px - self.visible-height));
+                    }
+                }
                 for game[index] in root.games: ListRow {
+                    selected: index == root.pad-library;
                     x: 2px;
                     y: 4px + index * 86px;
                     width: lib-list.visible-width - 28px;
@@ -1453,7 +1764,7 @@ export component AppWindow inherits Window {
                             if root.setup-show-own-wine: HorizontalLayout {
                                 padding-left: 42px;
                                 spacing: 8px;
-                                LineEdit { text <=> root.setup-own-wine; placeholder-text: "/path/to/wine/bin/wine"; }
+                                PathField { text <=> root.setup-own-wine; placeholder: "/path/to/wine/bin/wine"; browse => { root.browse-path("setup-own-wine", false, root.setup-own-wine); } }
                                 GhostButton {
                                     text: "Use";
                                     clicked => { root.setup-use-wine(); }
@@ -1491,7 +1802,7 @@ export component AppWindow inherits Window {
                             }
                             HorizontalLayout {
                                 padding-left: 42px;
-                                LineEdit { text <=> root.setup-prefix; placeholder-text: "~/Games/xtux-prefix"; }
+                                PathField { text <=> root.setup-prefix; placeholder: "~/Games/xtux-prefix"; browse => { root.browse-path("setup-prefix", true, root.setup-prefix); } }
                             }
                         }
                     }
@@ -1681,6 +1992,27 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if root.game-awacy != "": Rectangle {
+                        border-radius: 14px;
+                        background: (root.game-awacy-blocks ? Theme.warning : Theme.glass).transparentize(78%);
+                        border-width: 1px;
+                        border-color: root.game-awacy-blocks ? Theme.warning : Theme.muted;
+                        height: awacy-box.preferred-height;
+                        awacy-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            Text {
+                                text: root.game-awacy;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                            if root.game-awacy-url != "": GhostButton {
+                                text: "Details";
+                                clicked => { root.open-url(root.game-awacy-url); }
+                            }
+                        }
+                    }
                     if root.game-license-problem != "": Rectangle {
                         border-radius: 14px;
                         background: Theme.danger.transparentize(78%);
@@ -1716,11 +2048,11 @@ export component AppWindow inherits Window {
                                 alignment: start;
                                 Heading { text: "Game settings"; }
                                 Label { text: "Wine binary"; }
-                                LineEdit { text <=> root.game-wine; placeholder-text: "Default: general setting"; }
+                                PathField { text <=> root.game-wine; placeholder: "Default: general setting"; browse => { root.browse-path("game-wine", false, root.game-wine); } }
                                 Label { text: "Wine prefix"; }
-                                LineEdit { text <=> root.game-prefix; placeholder-text: "Default: general setting"; }
+                                PathField { text <=> root.game-prefix; placeholder: "Default: general setting"; browse => { root.browse-path("game-prefix", true, root.game-prefix); } }
                                 Label { text: "Executable, package relative (for example x64\\Game.exe)"; }
-                                LineEdit { text <=> root.game-exe; placeholder-text: "Default: from MicrosoftGame.config"; }
+                                PathField { text <=> root.game-exe; placeholder: "Default: from MicrosoftGame.config"; browse => { root.browse-path("game-exe", false, root.game-path); } }
                                 Label { text: "PlayStation controllers"; }
                                 HorizontalLayout {
                                     alignment: start;
@@ -1766,15 +2098,20 @@ export component AppWindow inherits Window {
                                 padding: 18px;
                                 spacing: 8px;
                                 HorizontalLayout {
+                                    spacing: 8px;
                                     Heading { text: "Last start"; vertical-alignment: center; }
                                     Rectangle { }
+                                    GhostButton {
+                                        text: "Open file";
+                                        clicked => { root.open-log-file(root.game-log-path); }
+                                    }
                                     GhostButton {
                                         text: "↻ Reload";
                                         clicked => { root.refresh-logs(); }
                                     }
                                 }
                                 Label { text: root.game-path; overflow: elide; font-size: 11px; }
-                                LogView { min-height: 220px; text: root.game-log; }
+                                ColoredLog { min-height: 220px; lines: root.game-log; }
                             }
                         }
                     }
@@ -1874,15 +2211,27 @@ export component AppWindow inherits Window {
                                     GhostButton { text: "Accent colour"; active: root.icon-colour == "accent"; clicked => { root.icon-colour = "accent"; root.ui-changed(); } }
                                 }
                             }
-                            Label { text: "Store: guess kernel anti-cheat"; }
+                            Label { text: "Anti-cheat reports"; }
                             HorizontalLayout {
                                 alignment: start;
                                 spacing: 8px;
                                 GhostButton { text: "Off"; active: !root.anticheat-guess; clicked => { root.anticheat-guess = false; root.ui-changed(); root.store-refresh(); } }
-                                GhostButton { text: "From xTux's own list"; active: root.anticheat-guess; clicked => { root.anticheat-guess = true; root.ui-changed(); root.store-refresh(); } }
+                                GhostButton { text: "AreWeAntiCheatYet"; active: root.anticheat-guess; clicked => { root.anticheat-guess = true; root.ui-changed(); root.store-refresh(); } }
                             }
                             Label {
-                                text: "The list matches title names (for example Call of Duty, EA SPORTS FC) and is not verified per title. Installed games are always checked by their files.";
+                                text: "Downloads the public AreWeAntiCheatYet list from GitHub once a week; no game names are sent. The list knows Steam and Epic names, so games are matched by name and each report says how sure the match is. Installed games are always checked by their files.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
+                            Label { text: "Cloud saves"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Off"; active: !root.cloud-saves; clicked => { root.cloud-saves = false; root.ui-changed(); } }
+                                GhostButton { text: "Xbox cloud"; active: root.cloud-saves; clicked => { root.cloud-saves = true; root.ui-changed(); } }
+                            }
+                            Label {
+                                text: "Before a game starts, saves made on Windows or an Xbox are brought in; after it ends, saves made here are sent. When both sides changed, the newer one is kept and the other one is backed up. Saves are never deleted by a sync.";
                                 wrap: word-wrap;
                                 font-size: 12px;
                             }
@@ -1906,11 +2255,25 @@ export component AppWindow inherits Window {
                             spacing: 6px;
                             Heading { text: "Games"; }
                             Label { text: "Wine binary"; }
-                            LineEdit { text <=> root.wine; placeholder-text: "/path/to/tux-force-wine/bin/wine"; }
+                            PathField { text <=> root.wine; placeholder: "Empty: the Tux-Force Wine of the setup"; browse => { root.browse-path("wine", false, root.wine); } }
                             Label { text: "Wine prefix (empty: WINEPREFIX or ~/Games/xtux-prefix)"; }
-                            LineEdit { text <=> root.prefix; placeholder-text: "~/Games/xtux-prefix"; }
-                            Label { text: "Library folders, one per line"; }
-                            TextEdit { text <=> root.library-dirs; height: 110px; }
+                            PathField { text <=> root.prefix; placeholder: "~/Games/xtux-prefix"; browse => { root.browse-path("prefix", true, root.prefix); } }
+                            Label { text: "Library folders"; }
+                            for folder[index] in root.library-folders: PathField {
+                                text: folder;
+                                placeholder: "Folder with one folder per game";
+                                removable: true;
+                                edited(value) => { root.library-folder-edited(index, value); }
+                                browse => { root.browse-path("library:" + index, true, folder); }
+                                remove => { root.library-folder-remove(index); }
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                GhostButton {
+                                    text: "+ Add folder";
+                                    clicked => { root.browse-path("library:new", true, ""); }
+                                }
+                            }
                             Label { text: "PlayStation controllers"; }
                             HorizontalLayout {
                                 alignment: start;
@@ -1991,7 +2354,18 @@ export component AppWindow inherits Window {
                 property <length> row-height: self.tile * 1.5 + 54px;
                 property <length> grid-height: ceil(root.store.length / self.cols) * (self.row-height + self.gap);
                 content-height: self.grid-height + 90px;
+                init => { root.store-cols = self.cols; }
+                changed cols => { root.store-cols = self.cols; }
+                property <int> chosen: root.pad-store;
+                changed chosen => {
+                    if self.chosen >= 0 {
+                        root.store-scroll = clamp(root.store-scroll,
+                            -(14px + floor(self.chosen / self.cols) * (self.row-height + self.gap)),
+                            -(14px + floor(self.chosen / self.cols) * (self.row-height + self.gap) + self.row-height + 24px - self.visible-height));
+                    }
+                }
                 for title[index] in root.store: StoreTile {
+                    selected: index == root.pad-store;
                     x: 12px + mod(index, store-grid.cols) * (store-grid.tile + store-grid.gap);
                     y: 14px + floor(index / store-grid.cols) * (store-grid.row-height + store-grid.gap);
                     width: store-grid.tile;
@@ -2575,8 +2949,16 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     padding: 16px;
                     spacing: 8px;
-                    Label { text: "xtux-service · " + root.service-log-path; overflow: elide; }
-                    LogView { text: root.service-log; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Label { text: "xtux-service · " + root.service-log-path; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                        GhostButton {
+                            horizontal-stretch: 0;
+                            text: "Open file";
+                            clicked => { root.open-log-file(root.service-log-path); }
+                        }
+                    }
+                    ColoredLog { lines: root.service-log; }
                 }
             }
 
@@ -2841,6 +3223,39 @@ export component AppWindow inherits Window {
             text: "✕";
             width: 40px;
             clicked => { root.shot-open = -1; }
+        }
+    }
+
+    // Controller hints while the gamepad is in use.
+    if Pad.active && root.page != 9: Rectangle {
+        x: parent.width - self.width - 24px;
+        y: parent.height - self.height - 18px;
+        width: hints.preferred-width;
+        height: 42px;
+        border-radius: 21px;
+        background: Theme.glass-strong;
+        border-width: 1px;
+        border-color: Theme.glass-border;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: Theme.shadow;
+        hints := HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 16px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 18px;
+            if root.pad-grid && !Pad.buttons: PadHint { button: "a"; text: "Open"; }
+            if root.pad-grid && !Pad.buttons && root.page == 0: PadHint { button: "start"; text: "Play"; }
+            if root.pad-grid && !Pad.buttons: PadHint { button: "y"; text: "Buttons"; }
+            if !root.pad-grid || Pad.buttons: PadHint { button: "a"; text: "Select"; }
+            if !root.pad-grid && (root.page == 2 || root.page == 6): PadHint { button: "start"; text: "Play"; }
+            if root.pad-grid && Pad.buttons: PadHint { button: "b"; text: "Tiles"; }
+            if !root.pad-grid && root.page != 0: PadHint { button: "b"; text: "Back"; }
+            HorizontalLayout {
+                spacing: 4px;
+                PadGlyph { button: "lb"; }
+                PadHint { button: "rb"; text: "Pages"; }
+            }
         }
     }
 }
