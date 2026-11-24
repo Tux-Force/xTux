@@ -6,6 +6,7 @@ description = "xTux Launcher: library, sign-in and game start for Tux-Force, a c
 license = "GPL-3.0-or-later"
 
 [dependencies]
+chrono = { workspace = true }
 xtux-protocol = { path = "../xtux-protocol" }
 xtux-games = { path = "../xtux-games" }
 tokio = { workspace = true }
