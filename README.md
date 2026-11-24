@@ -106,6 +106,11 @@ once it has ended. When both sides changed, the newer one wins and the other one
 synced are left alone until you pick a side with `xtux-cli saves resolve <game> cloud|local`. `xtux-cli saves
 list|pull|push <game>` works by hand, and **Settings → Cloud saves** (`cloud_saves = false`) turns syncing off.
 
+**Achievements:** games unlock Xbox achievements themselves; xTux shows them on the game page and with
+`xtux-cli achievements <game>`, and as a desktop notification when one is unlocked while a game runs
+(**Settings → Achievement notifications**, `achievement_notifications = false` turns it off). Games that unlock through
+`XGameEventWrite` and the in-game achievement page (`XGameUiShowAchievementsAsync`) are not supported yet.
+
 **Delete game…** removes the entire game folder after confirmation, including Windows Xbox app installs and any
 saves inside that folder.
 

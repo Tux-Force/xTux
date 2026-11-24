@@ -136,6 +136,13 @@ enum SubCommand {
         side: Option<String>,
     },
     #[cfg(unix)]
+    #[command(about = "Show the Xbox achievements of a game and what is unlocked")]
+    Achievements {
+        /// Game name (see `xtux-cli list`) or game folder
+        #[arg(add = clap_complete::ArgValueCompleter::new(commands::list::complete_game))]
+        source: String,
+    },
+    #[cfg(unix)]
     #[command(about = "List the installed games of the library folders")]
     List {
         /// Print only the game folders
@@ -243,8 +250,10 @@ async fn main() -> ExitCode {
     clap_complete::CompleteEnv::with_factory(CliArgs::command).complete();
 
     // Show library progress (game bridge, links) unless XODUS_LOG chooses something else.
+    // Finer levels of the WebSocket library log requests with their Authorization header.
     let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info"))
+        .add_directive("tungstenite=info".parse().expect("a valid directive"));
     let registry =
         tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_filter(filter));
 
@@ -381,6 +390,10 @@ async fn main() -> ExitCode {
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
         #[cfg(unix)]
         SubCommand::List { paths } => commands::list::run(paths),
+        #[cfg(unix)]
+        SubCommand::Achievements { source } => {
+            commands::achievements::run(&client, &tokens, &source).await
+        }
         #[cfg(unix)]
         SubCommand::Saves {
             action,

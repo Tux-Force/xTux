@@ -376,6 +376,36 @@ impl Job {
                 items.sort_by_key(|i| i.name.to_lowercase());
                 Ok(Response::Updates { items })
             }
+            Request::Achievements { path } => {
+                let failed = |err: String| error_body(xtux_games::Error::msg(err));
+                let Some(game) = xtux_games::cloudsave::Game::for_folder(&path) else {
+                    return Ok(Response::Achievements { items: Vec::new() });
+                };
+                let list = xtux_games::achievements::Achievements::connect(
+                    &self.client,
+                    &self.tokens,
+                    &game,
+                )
+                .await
+                .map_err(failed)?
+                .list()
+                .await
+                .map_err(failed)?;
+                Ok(Response::Achievements {
+                    items: list
+                        .achievements
+                        .into_iter()
+                        .map(|a| xtux_protocol::AchievementInfo {
+                            name: a.name,
+                            description: a.description,
+                            unlocked: a.unlocked,
+                            unlocked_at: a.unlocked_at,
+                            gamerscore: a.gamerscore,
+                            percent: a.percent,
+                        })
+                        .collect(),
+                })
+            }
             Request::Uninstall { path } => {
                 if InUse::contains(&path) {
                     return Err(error_body(xtux_games::Error::msg(format!(

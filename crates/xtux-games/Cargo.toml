@@ -29,6 +29,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 cfb = "0.16.0"
 cab = "0.6.0"
 uuid = { workspace = true, features = ["v4"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
 
 [dev-dependencies]
 axum = "0.8.9"

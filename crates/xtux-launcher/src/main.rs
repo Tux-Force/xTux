@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -848,6 +849,7 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
     // The blurred backdrop is the hero's soft first look.
     ui.set_game_hero_soft(to_image(&entry.backdrop).0);
     show_logs(ui, Some(&game.path));
+    load_achievements(ui, state, handle, game.path.clone());
     show_backdrop(ui, state, index, BackdropCause::Game);
     ui.set_page(2);
 
@@ -868,6 +870,78 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
             }
         });
     });
+}
+
+/// Loads the achievements of the game page's game (UI thread); the answer is dropped when another game is open by
+/// then.
+fn load_achievements(
+    ui: &AppWindow,
+    state: &Shared,
+    handle: &tokio::runtime::Handle,
+    path: PathBuf,
+) {
+    ui.set_game_achievements(ModelRc::default());
+    ui.set_game_achievements_summary("Loading…".into());
+    static LATEST: AtomicU64 = AtomicU64::new(0);
+    let request = LATEST.fetch_add(1, Ordering::Relaxed) + 1;
+    let weak = ui.as_weak();
+    let state = state.clone();
+    handle.spawn(async move {
+        let answer = ask(Request::Achievements { path: path.clone() }, |_| {}).await;
+        with_ui(&weak, move |ui| {
+            let current = state
+                .lock()
+                .ok()
+                .and_then(|s| Some(s.all.get(s.current?)?.info.path.clone()));
+            // An earlier answer must not replace a newer one either.
+            if current.as_ref() != Some(&path) || LATEST.load(Ordering::Relaxed) != request {
+                return;
+            }
+            match answer {
+                Ok(Response::Achievements { items }) => {
+                    ui.set_game_achievements_summary(achievement_summary(&items).into());
+                    let rows: Vec<AchievementRow> = items.iter().map(achievement_row).collect();
+                    ui.set_game_achievements(ModelRc::new(VecModel::from(rows)));
+                }
+                Ok(other) => {
+                    ui.set_game_achievements_summary(format!("Unexpected answer: {other:?}").into())
+                }
+                Err(ClientError::Remote(body)) => {
+                    ui.set_game_achievements_summary(body.message.into())
+                }
+                Err(err) => ui.set_game_achievements_summary(err.to_string().into()),
+            }
+        });
+    });
+}
+
+fn achievement_summary(items: &[xtux_protocol::AchievementInfo]) -> String {
+    if items.is_empty() {
+        return "This game has no Xbox achievements.".into();
+    }
+    let unlocked = || items.iter().filter(|a| a.unlocked);
+    format!(
+        "{} of {} unlocked, {} of {} G",
+        unlocked().count(),
+        items.len(),
+        unlocked().map(|a| a.gamerscore).sum::<u32>(),
+        items.iter().map(|a| a.gamerscore).sum::<u32>()
+    )
+}
+
+fn achievement_row(item: &xtux_protocol::AchievementInfo) -> AchievementRow {
+    let mut detail = format!("{} G", item.gamerscore);
+    if let Some(percent) = item.percent {
+        detail = format!("{percent} %   {detail}");
+    } else if let Some(day) = item.unlocked_at.as_deref().and_then(|t| t.get(..10)) {
+        detail = format!("{day}   {detail}");
+    }
+    AchievementRow {
+        name: item.name.clone().into(),
+        description: item.description.clone().into(),
+        detail: detail.into(),
+        unlocked: item.unlocked,
+    }
 }
 
 /// The launch request for a game: its own settings, then the general ones.
@@ -1015,9 +1089,18 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
             s.running.remove(&game.path);
         }
         let path = game.path.clone();
+        let handle = tokio::runtime::Handle::current();
         with_ui(&weak, move |ui| {
             show_running(&ui, &state);
             show_logs(&ui, Some(&path));
+            // Only for the open game page: what the game unlocked shows up there.
+            let open = state
+                .lock()
+                .ok()
+                .and_then(|s| Some(s.all.get(s.current?)?.info.path == path));
+            if open == Some(true) {
+                load_achievements(&ui, &state, &handle, path);
+            }
         });
     });
 }
@@ -2302,6 +2385,7 @@ fn main() {
         ui.set_icon_colour(settings.ui.icon_colour.clone().into());
         ui.set_anticheat_guess(settings.ui.anticheat_list);
         ui.set_cloud_saves(settings.cloud_saves != Some(false));
+        ui.set_achievement_notifications(settings.achievement_notifications != Some(false));
         ui.set_controller_mode(settings.controller.as_str().into());
         // A new user starts on the setup page.
         if !refresh_setup(&ui).complete() {
@@ -2547,6 +2631,8 @@ fn main() {
             settings.ui.anticheat_list = ui.get_anticheat_guess();
             // Unset means on; only "off" is written.
             settings.cloud_saves = (!ui.get_cloud_saves()).then_some(false);
+            settings.achievement_notifications =
+                (!ui.get_achievement_notifications()).then_some(false);
             settings.controller =
                 ControllerMode::parse(&ui.get_controller_mode()).unwrap_or_default();
             apply_theme(&ui);
@@ -2666,6 +2752,22 @@ fn main() {
                     .and_then(|i| s.all.get(i).map(|e| e.info.path.clone()))
             });
             show_logs(&ui, game.as_deref());
+        }
+    });
+
+    ui.on_refresh_achievements({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let game = state.lock().ok().and_then(|s| {
+                s.current
+                    .and_then(|i| s.all.get(i).map(|e| e.info.path.clone()))
+            });
+            if let Some(path) = game {
+                load_achievements(&ui, &state, &handle, path);
+            }
         }
     });
 
@@ -3151,6 +3253,30 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn achievements_are_summed_up() {
+        let item = |unlocked, percent| xtux_protocol::AchievementInfo {
+            name: "A".into(),
+            description: String::new(),
+            unlocked,
+            unlocked_at: unlocked.then(|| "2026-01-02T03:04:05Z".into()),
+            gamerscore: 10,
+            percent,
+        };
+        assert_eq!(
+            super::achievement_summary(&[item(true, None), item(false, Some(5))]),
+            "1 of 2 unlocked, 10 of 20 G"
+        );
+        assert_eq!(
+            super::achievement_row(&item(true, None)).detail,
+            "2026-01-02   10 G"
+        );
+        assert_eq!(
+            super::achievement_row(&item(false, Some(5))).detail,
+            "5 %   10 G"
+        );
+    }
+
     #[test]
     fn log_lines_get_their_level() {
         use super::log_level;

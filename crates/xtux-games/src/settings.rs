@@ -25,6 +25,9 @@ pub struct Settings {
     /// Keep game saves in step with the Xbox cloud before and after playing (see cloudsave.rs); on unless `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud_saves: Option<bool>,
+    /// Desktop notification when a game unlocks an achievement (see achievements.rs); on unless `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub achievement_notifications: Option<bool>,
     /// Settings of single games, by game folder.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub games: BTreeMap<String, GameSettings>,
@@ -302,6 +305,7 @@ mod tests {
             controller: ControllerMode::Native,
             ui: UiSettings::default(),
             cloud_saves: Some(false),
+            achievement_notifications: None,
             games: BTreeMap::new(),
         };
         let text = toml::to_string_pretty(&settings).unwrap();

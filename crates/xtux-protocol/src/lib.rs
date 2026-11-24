@@ -99,6 +99,10 @@ pub enum Request {
     CheckUpdates,
     /// The download queue: list it or change it; answered with the queue.
     Downloads(DownloadCommand),
+    /// Xbox achievements of the game installed in this folder, with the user's progress.
+    Achievements {
+        path: PathBuf,
+    },
     /// Deletes a game folder of the library with everything in it.
     Uninstall {
         path: PathBuf,
@@ -153,6 +157,20 @@ pub struct AntiCheatReport {
     pub blocks: bool,
     /// One line for users, for example `Denied (BattlEye), certain match "DayZ" 100%`.
     pub summary: String,
+}
+
+/// An Xbox achievement with the user's progress.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AchievementInfo {
+    /// For a locked secret one: a placeholder, and no description.
+    pub name: String,
+    pub description: String,
+    pub unlocked: bool,
+    /// RFC 3339.
+    pub unlocked_at: Option<String>,
+    pub gamerscore: u32,
+    /// Progress of a locked achievement, when it has started.
+    pub percent: Option<u8>,
 }
 
 /// A change of the download queue.
@@ -323,6 +341,10 @@ pub enum Response {
     },
     Uninstalled {
         path: PathBuf,
+    },
+    Achievements {
+        /// Unlocked ones first, newest first; empty when the game has none.
+        items: Vec<AchievementInfo>,
     },
     Catalog {
         titles: Vec<CatalogTitle>,
