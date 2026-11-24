@@ -115,14 +115,17 @@ async fn fetch_from(
         .ok_or_else(|| "no such player".to_string())
 }
 
+fn picture_host(host: &str) -> bool {
+    ["xboxlive.com", "xbox.com", "microsoft.com"]
+        .iter()
+        .any(|d| host.strip_suffix(d).is_some_and(|h| h.ends_with('.')))
+}
+
 /// Address of the picture in a size; only Microsoft's own hosts are asked.
 fn picture_url(raw: &str, pixels: u32) -> Option<reqwest::Url> {
     let mut url = reqwest::Url::parse(raw).ok()?;
     let host = url.host_str()?;
-    let known = ["xboxlive.com", "xbox.com", "microsoft.com"]
-        .iter()
-        .any(|d| host.strip_suffix(d).is_some_and(|h| h.ends_with('.')));
-    if !known {
+    if !picture_host(host) {
         return None;
     }
     if url.scheme() != "https" {
@@ -144,12 +147,27 @@ fn picture_url(raw: &str, pixels: u32) -> Option<reqwest::Url> {
 }
 
 /// The gamer picture as PNG.
-pub async fn picture(client: &Client, profile: &Profile, pixels: u32) -> Result<Vec<u8>, String> {
+pub async fn picture(profile: &Profile, pixels: u32) -> Result<Vec<u8>, String> {
     let url = profile
         .picture
         .as_deref()
         .and_then(|raw| picture_url(raw, pixels))
         .ok_or("the profile has no picture")?;
+    // Redirects stay on those hosts as well.
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let url = attempt.url();
+            if attempt.previous().len() < 5
+                && url.scheme() == "https"
+                && url.host_str().is_some_and(picture_host)
+            {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .map_err(|e| e.to_string())?;
     let mut response = client
         .get(url)
         .timeout(TIMEOUT)

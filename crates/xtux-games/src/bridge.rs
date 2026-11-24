@@ -71,6 +71,8 @@ const MAX_REQUEST: usize = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 /// XSTS tokens are valid for many hours; refresh well before that.
 const XSTS_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// A sign-in for the system UI; xgameruntime itself gives up after 30 seconds.
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(25);
 
 struct State {
     client: reqwest::Client,
@@ -308,11 +310,7 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
             }
         }
         ("POST", path @ ("/xbox/achievements" | "/xbox/profile" | "/xbox/gamer-picture")) => {
-            let answer = match path {
-                "/xbox/achievements" => show_achievements(state, request.body.trim()).await,
-                "/xbox/profile" => show_profile(state, request.body.trim()).await,
-                _ => gamer_picture(state, &request.body).await,
-            };
+            let answer = system_ui(state, path, &request.body).await;
             match answer {
                 Ok(text) => respond(&mut stream, "200 OK", &text).await,
                 Err(err) => {
@@ -411,6 +409,25 @@ async fn package_license(state: &State, content_id: &str) -> Result<bool, String
     Ok(valid)
 }
 
+/// What the game's system UI shows.
+async fn system_ui(state: &State, path: &str, body: &str) -> Result<String, String> {
+    let ask = || async {
+        match path {
+            "/xbox/achievements" => show_achievements(state, body.trim()).await,
+            "/xbox/profile" => show_profile(state, body.trim()).await,
+            _ => gamer_picture(state, body).await,
+        }
+    };
+    match ask().await {
+        // The sign-in is no longer accepted: once more with a new one.
+        Err(err) if err.contains(&reqwest::StatusCode::UNAUTHORIZED.to_string()) => {
+            *state.sign_in.lock().await = None;
+            ask().await
+        }
+        answer => answer,
+    }
+}
+
 /// Authorization header and XUID for the system UI.
 async fn sign_in(state: &State) -> Result<(String, String), String> {
     let game = state.game.as_ref().ok_or("not an Xbox title")?;
@@ -420,8 +437,13 @@ async fn sign_in(state: &State) -> Result<(String, String), String> {
     {
         return Ok((authorization.clone(), xuid.clone()));
     }
-    let (authorization, xuid) =
-        crate::cloudsave::xbox_authorization(&state.client, &state.tokens, game).await?;
+    // Others wait for this one.
+    let (authorization, xuid) = tokio::time::timeout(
+        SIGN_IN_TIMEOUT,
+        crate::cloudsave::xbox_authorization(&state.client, &state.tokens, game),
+    )
+    .await
+    .map_err(|_| "the sign-in did not answer in time")??;
     *sign_in = Some((authorization.clone(), xuid.clone(), Instant::now()));
     Ok((authorization, xuid))
 }
@@ -459,7 +481,7 @@ async fn gamer_picture(state: &State, body: &str) -> Result<String, String> {
         .filter(|p| matches!(p, 64 | 208 | 424 | 1080))
         .ok_or("invalid picture size")?;
     let profile = profile(state, xuid).await?;
-    let picture = profile::picture(&state.client, &profile, pixels).await?;
+    let picture = profile::picture(&profile, pixels).await?;
     Ok(base64::engine::general_purpose::STANDARD.encode(picture))
 }
 

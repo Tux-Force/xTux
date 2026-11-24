@@ -19,6 +19,7 @@ use crate::cloudsave::{Game, Result, xbox_authorization};
 const HOST: &str = "https://achievements.xboxlive.com";
 const RTA: &str = "wss://rta.xboxlive.com/connect";
 const RTA_PROTOCOL: &str = "rta.xboxlive.com.V2";
+const READ_FAILED: &str = "reading the achievements failed";
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// A list longer than this is cut; no game has that many.
 const MAX_PAGES: usize = 40;
@@ -274,7 +275,7 @@ impl Achievements {
             if !status.is_success() {
                 let body = response.text().await.unwrap_or_default();
                 return Err(format!(
-                    "reading the achievements failed: {status} {}",
+                    "{READ_FAILED}: {status} {}",
                     body.chars().take(300).collect::<String>()
                 ));
             }
@@ -376,10 +377,21 @@ fn accept_language(locale: &str) -> String {
 struct Known(HashSet<String>);
 
 impl Known {
-    fn new(list: &List) -> Known {
-        let mut known = Known::default();
-        known.take_new(list);
-        known
+    /// What was unlocked before `start`. Without a time it counts as known, rather than being reported by mistake.
+    fn before(list: &List, start: chrono::DateTime<chrono::Utc>) -> Known {
+        Known(
+            list.achievements
+                .iter()
+                .filter(|a| a.unlocked)
+                .filter(|a| {
+                    a.unlocked_at
+                        .as_deref()
+                        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                        .is_none_or(|t| t < start)
+                })
+                .map(|a| a.id.clone())
+                .collect(),
+        )
     }
 
     fn take_new(&mut self, list: &List) -> Vec<Achievement> {
@@ -393,37 +405,42 @@ impl Known {
 
 /// Reports achievements unlocked from now on to `on_unlock`, until `stop`; then looks once more, for what was
 /// unlocked right before the game closed. Problems are logged only, a game never depends on this.
-pub async fn watch(
+pub async fn watch<F: Future<Output = ()>>(
     client: Client,
     tokens: TokenManager,
     game: Game,
     stop: tokio_util::sync::CancellationToken,
-    on_unlock: impl Fn(Achievement) + Send + Sync,
+    on_unlock: impl Fn(Achievement) -> F,
 ) {
+    let started = chrono::Utc::now();
     let mut reader = Reader {
         client: &client,
         tokens: &tokens,
         game: &game,
         session: None,
     };
-    let first = tokio::select! {
-        list = reader.list() => list,
-        _ = stop.cancelled() => return,
-    };
-    let (mut known, scid) = match first {
-        Ok(list) if list.achievements.is_empty() => {
-            tracing::info!("{} has no achievements", game.name);
-            return;
+    let first = loop {
+        let list = tokio::select! {
+            list = reader.list() => list,
+            _ = stop.cancelled() => return,
+        };
+        match list {
+            Ok(list) if list.achievements.is_empty() => {
+                tracing::info!("{} has no achievements", game.name);
+                return;
+            }
+            Ok(list) => break list,
+            Err(err) => tracing::warn!("achievements: {err}"),
         }
-        Ok(list) => (
-            Known::new(&list),
-            list.scid.unwrap_or_else(|| game.default_scid()),
-        ),
-        Err(err) => {
-            tracing::warn!("achievements: {err}");
-            return;
+        tokio::select! {
+            _ = tokio::time::sleep(POLL_WITHOUT_RTA) => {}
+            _ = stop.cancelled() => return,
         }
     };
+    // The game may have unlocked something while this list was still on its way.
+    let mut known = Known::before(&first, started);
+    let scid = first.scid.clone().unwrap_or_else(|| game.default_scid());
+    report(Ok(first), &mut known, &on_unlock).await;
     tracing::info!(
         "watching the achievements of {}, {} unlocked",
         game.name,
@@ -432,7 +449,7 @@ pub async fn watch(
 
     while !stop.is_cancelled() {
         let rta = tokio::select! {
-            rta = Rta::connect(&client, &tokens, &game, &scid) => rta,
+            rta = Rta::connect(&mut reader, &scid) => rta,
             _ = stop.cancelled() => break,
         };
         match rta {
@@ -450,19 +467,19 @@ pub async fn watch(
                         _ = tokio::time::sleep(POLL_WITH_RTA) => {}
                         _ = stop.cancelled() => break,
                     }
-                    report(reader.list().await, &mut known, &on_unlock);
+                    report(reader.list().await, &mut known, &on_unlock).await;
                 }
             }
             Err(err) => tracing::info!("no achievement notices, asking now and then: {err}"),
         }
         tokio::select! {
             _ = tokio::time::sleep(POLL_WITHOUT_RTA) => {
-                report(reader.list().await, &mut known, &on_unlock)
+                report(reader.list().await, &mut known, &on_unlock).await
             }
             _ = stop.cancelled() => {}
         }
     }
-    report(reader.list().await, &mut known, &on_unlock);
+    report(reader.list().await, &mut known, &on_unlock).await;
 }
 
 /// Reads the list with one sign-in for as long as it is accepted.
@@ -474,27 +491,47 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    async fn list(&mut self) -> Result<List> {
-        if let Some(session) = &self.session
-            && let Ok(list) = session.list().await
-        {
-            return Ok(list);
+    /// Signed in, with the session there is if possible.
+    async fn session(&mut self) -> Result<&Achievements> {
+        if self.session.is_none() {
+            self.session = Some(Achievements::connect(self.client, self.tokens, self.game).await?);
         }
-        // Expired or failed: once more with a new sign-in.
-        self.session = None;
-        let session = Achievements::connect(self.client, self.tokens, self.game).await?;
-        let list = session.list().await?;
-        self.session = Some(session);
-        Ok(list)
+        self.session
+            .as_ref()
+            .ok_or_else(|| "not signed in".to_string())
+    }
+
+    async fn list(&mut self) -> Result<List> {
+        let reused = self.session.is_some();
+        match self.session().await?.list().await {
+            // The sign-in expired: once more with a new one. Other failures do not go away with it.
+            Err(err) if err.starts_with(&denied()) => {
+                self.session = None;
+                if !reused {
+                    return Err(err);
+                }
+                self.session().await?.list().await
+            }
+            answer => answer,
+        }
     }
 }
 
-fn report(list: Result<List>, known: &mut Known, on_unlock: &impl Fn(Achievement)) {
+/// How the error of a refused sign-in begins.
+fn denied() -> String {
+    format!("{READ_FAILED}: {}", reqwest::StatusCode::UNAUTHORIZED)
+}
+
+async fn report<F: Future<Output = ()>>(
+    list: Result<List>,
+    known: &mut Known,
+    on_unlock: &impl Fn(Achievement) -> F,
+) {
     match list {
         Ok(list) => {
             for achievement in known.take_new(&list) {
                 tracing::info!("achievement unlocked: {}", achievement.name);
-                on_unlock(achievement);
+                on_unlock(achievement).await;
             }
         }
         Err(err) => tracing::warn!("achievements: {err}"),
@@ -553,29 +590,20 @@ fn parse_rta(text: &str) -> RtaMessage {
 }
 
 impl Rta {
-    async fn connect(
-        client: &Client,
-        tokens: &TokenManager,
-        game: &Game,
-        scid: &str,
-    ) -> Result<Rta> {
-        tokio::time::timeout(TIMEOUT, Self::subscribe(client, tokens, game, scid))
+    async fn connect(reader: &mut Reader<'_>, scid: &str) -> Result<Rta> {
+        tokio::time::timeout(TIMEOUT, Self::subscribe(reader, scid))
             .await
             .map_err(|_| "no answer in time".to_string())?
     }
 
-    async fn subscribe(
-        client: &Client,
-        tokens: &TokenManager,
-        game: &Game,
-        scid: &str,
-    ) -> Result<Rta> {
+    async fn subscribe(reader: &mut Reader<'_>, scid: &str) -> Result<Rta> {
         use futures_util::SinkExt;
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         use tokio_tungstenite::tungstenite::http::HeaderValue;
         use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-        let (authorization, xuid) = xbox_authorization(client, tokens, game).await?;
+        let session = reader.session().await?;
+        let (authorization, xuid) = (session.authorization.clone(), session.xuid.clone());
         let mut request = RTA.into_client_request().map_err(|e| e.to_string())?;
         let mut header =
             HeaderValue::from_str(&authorization).map_err(|_| "unusable token".to_string())?;
@@ -645,7 +673,7 @@ pub async fn notify(game: &str, achievement: &Achievement) {
         "desktop-entry",
         zbus::zvariant::Value::from("io.github.tux_force.xTux"),
     )]);
-    let result = async {
+    let call = async {
         zbus::Connection::session()
             .await?
             .call_method(
@@ -665,10 +693,13 @@ pub async fn notify(game: &str, achievement: &Achievement) {
                 ),
             )
             .await
-    }
-    .await;
-    if let Err(err) = result {
-        tracing::warn!("the achievement could not be shown on the desktop: {err}");
+    };
+    match tokio::time::timeout(Duration::from_secs(5), call).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => {
+            tracing::warn!("the achievement could not be shown on the desktop: {err}")
+        }
+        Err(_) => tracing::warn!("the desktop did not answer about the achievement"),
     }
 }
 
@@ -769,6 +800,29 @@ mod tests {
     }
 
     #[test]
+    fn unlocks_during_the_first_read_are_new() {
+        let at = |id: &str, time: &str| {
+            parse(
+                json!({"id": id, "progressState": "Achieved", "progression": {"timeUnlocked": time}}),
+            )
+        };
+        let list = List {
+            achievements: vec![
+                at("old", "2026-01-02T03:04:05.1234567Z"),
+                at("new", "2026-01-02T05:00:00.0000000Z"),
+                at("unknown", "0001-01-01T00:00:00.0000000Z"),
+            ],
+            scid: None,
+        };
+        let start = "2026-01-02T04:00:00Z".parse().unwrap();
+        let new = Known::before(&list, start).take_new(&list);
+        assert_eq!(
+            new.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["new"]
+        );
+    }
+
+    #[test]
     fn only_new_unlocks_are_reported() {
         let achievement = |id: &str, state: &str| parse(json!({"id": id, "progressState": state}));
         let before = List {
@@ -779,7 +833,7 @@ mod tests {
             achievements: vec![achievement("1", "Achieved"), achievement("2", "Achieved")],
             scid: None,
         };
-        let mut known = Known::new(&before);
+        let mut known = Known::before(&before, chrono::Utc::now());
         let new = known.take_new(&after);
         assert_eq!(new.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["2"]);
         assert!(known.take_new(&after).is_empty());

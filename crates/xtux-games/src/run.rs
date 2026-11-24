@@ -74,8 +74,10 @@ impl RunningGame {
         self.cleanup.await;
         match (self.saves.take(), &self.unlocks) {
             (Some(saves), _) => saves.push().await,
-            (None, Some(unlocks)) => wait_for_prefix(&unlocks.prefix).await,
-            (None, None) => {}
+            (None, Some(unlocks)) if self.started.elapsed().is_ok_and(|e| e < DETACHED_START) => {
+                unlocks.wait_for_game().await
+            }
+            (None, _) => {}
         }
         if let Some(unlocks) = self.unlocks.take() {
             unlocks.finish().await;
@@ -83,6 +85,9 @@ impl RunningGame {
         Ok(status)
     }
 }
+
+/// A game that goes on in the background lets go of the process xTux started soon.
+const DETACHED_START: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The process xTux started can exit while the game goes on in the background (Wine detaches it); the game is over
 /// only once nothing runs in the prefix any more, which is also when its wineserver ends.
@@ -116,7 +121,7 @@ impl UnlockWatch {
             stop.clone(),
             move |achievement| {
                 let name = name.clone();
-                tokio::spawn(async move { crate::achievements::notify(&name, &achievement).await });
+                async move { crate::achievements::notify(&name, &achievement).await }
             },
         ));
         Some(UnlockWatch {
@@ -126,10 +131,23 @@ impl UnlockWatch {
         })
     }
 
+    /// Waits for a game that goes on in the background, as long as there is something to watch.
+    async fn wait_for_game(&self) {
+        let ended = async {
+            while !self.task.is_finished() {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        };
+        tokio::select! {
+            _ = wait_for_prefix(&self.prefix) => {}
+            _ = ended => {}
+        }
+    }
+
     /// Looks once more for what was unlocked right before the end.
     async fn finish(mut self) {
         self.stop.cancel();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), &mut self.task).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), &mut self.task).await;
     }
 }
 

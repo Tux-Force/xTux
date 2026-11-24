@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -881,6 +882,8 @@ fn load_achievements(
 ) {
     ui.set_game_achievements(ModelRc::default());
     ui.set_game_achievements_summary("Loading…".into());
+    static LATEST: AtomicU64 = AtomicU64::new(0);
+    let request = LATEST.fetch_add(1, Ordering::Relaxed) + 1;
     let weak = ui.as_weak();
     let state = state.clone();
     handle.spawn(async move {
@@ -890,7 +893,8 @@ fn load_achievements(
                 .lock()
                 .ok()
                 .and_then(|s| Some(s.all.get(s.current?)?.info.path.clone()));
-            if current.as_ref() != Some(&path) {
+            // An earlier answer must not replace a newer one either.
+            if current.as_ref() != Some(&path) || LATEST.load(Ordering::Relaxed) != request {
                 return;
             }
             match answer {
