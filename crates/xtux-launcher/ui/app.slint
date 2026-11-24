@@ -116,6 +116,14 @@ export struct AchievementRow {
     unlocked: bool,
 }
 
+// A save that differs here and in the Xbox cloud; choice: 0 none yet, 1 this computer, 2 cloud.
+export struct SaveRow {
+    name: string,
+    local: string,
+    cloud: string,
+    choice: int,
+}
+
 export struct LogLine {
     text: string,
     level: int,
@@ -352,30 +360,33 @@ component ShinyButton inherits Rectangle {
 component GhostButton inherits Rectangle {
     in property <string> text;
     in property <bool> active;
+    in property <bool> enabled: true;
     callback clicked();
     height: 36px;
     min-width: 72px;
     border-radius: 18px;
-    background: active ? Theme.accent.transparentize(75%) : touch.has-hover ? Theme.glass-strong : Theme.glass;
+    background: active ? Theme.accent.transparentize(75%) : touch.has-hover && enabled ? Theme.glass-strong : Theme.glass;
     border-width: 1px;
-    border-color: active || touch.has-hover ? Theme.accent : Theme.glass-border;
+    border-color: active || (touch.has-hover && enabled) ? Theme.accent : Theme.glass-border;
     animate background, border-color { duration: 140ms; }
     HorizontalLayout {
         padding-left: 14px;
         padding-right: 14px;
         Text {
             text: root.text;
-            color: Theme.text;
+            color: root.enabled ? Theme.text : Theme.muted;
             font-weight: root.active ? 800 : 700;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
     }
     touch := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
     PadFocus {
+        enabled: root.enabled;
         radius: root.border-radius;
         activate => { root.clicked(); }
     }
@@ -1130,6 +1141,19 @@ export component AppWindow inherits Window {
     in property <[AchievementRow]> game-achievements;
     in property <string> game-achievements-summary;
     callback refresh-achievements();
+    // Saves in the Xbox cloud: how many wait for a choice, and the dialog to choose.
+    in property <int> game-save-conflicts;
+    in property <string> game-saves-message;
+    in-out property <bool> saves-open;
+    in property <bool> saves-busy;
+    in property <string> saves-game;
+    in property <string> saves-error;
+    in property <[SaveRow]> saves-rows;
+    in property <int> saves-chosen;
+    callback check-saves();
+    // Row (-1: all) and choice.
+    callback choose-save(int, int);
+    callback apply-saves();
     in property <[LogLine]> game-log;
     in property <string> game-log-path;
     // Logs page (page 3)
@@ -2026,6 +2050,29 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if root.game-save-conflicts > 0: Rectangle {
+                        border-radius: 14px;
+                        background: Theme.warning.transparentize(78%);
+                        border-width: 1px;
+                        border-color: Theme.warning;
+                        height: saves-box.preferred-height;
+                        saves-box := HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            Text {
+                                text: (root.game-save-conflicts == 1 ? "A save differs" : root.game-save-conflicts + " saves differ") + " on this computer and in the Xbox cloud. Choose which one to keep; until then it is not synced.";
+                                color: Theme.text;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            GhostButton {
+                                text: root.saves-busy ? "Loading…" : "Choose…";
+                                enabled: !root.saves-busy;
+                                clicked => { root.check-saves(); }
+                            }
+                        }
+                    }
                     if root.game-license-problem != "": Rectangle {
                         border-radius: 14px;
                         background: Theme.danger.transparentize(78%);
@@ -2125,6 +2172,26 @@ export component AppWindow inherits Window {
                                 }
                                 Label { text: root.game-path; overflow: elide; font-size: 11px; }
                                 ColoredLog { min-height: 220px; lines: root.game-log; }
+                            }
+                        }
+                    }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Heading { text: "Cloud saves"; vertical-alignment: center; }
+                                Rectangle { }
+                                GhostButton {
+                                    text: root.saves-busy ? "Loading…" : "Check for conflicts";
+                                    enabled: !root.saves-busy;
+                                    clicked => { root.check-saves(); }
+                                }
+                            }
+                            Label {
+                                text: root.game-saves-message != "" ? root.game-saves-message : "Saves are synced with the Xbox cloud before and after the game.";
+                                wrap: word-wrap;
                             }
                         }
                     }
@@ -3130,6 +3197,101 @@ export component AppWindow inherits Window {
                             root.confirm-delete = false;
                             root.delete-game();
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Save conflicts.
+    if root.saves-open: Rectangle {
+        background: #000000A0;
+        TouchArea { }
+        Glass {
+            strong: true;
+            width: min(720px, parent.width - 60px);
+            height: min(saves-dialog.preferred-height, parent.height - 40px);
+            saves-dialog := VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: "Which saves do you keep?";
+                    color: Theme.text;
+                    font-size: 22px;
+                    font-weight: 900;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.saves-game + ": these saves differ on this computer and in the Xbox cloud. Keeping this computer's replaces the one in the cloud, keeping the cloud's replaces the one here. xTux backs up the other one on this computer.";
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                if root.saves-rows.length > 1: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    GhostButton { text: "All: this computer"; enabled: !root.saves-busy; clicked => { root.choose-save(-1, 1); } }
+                    GhostButton { text: "All: cloud"; enabled: !root.saves-busy; clicked => { root.choose-save(-1, 2); } }
+                }
+                ScrollView {
+                    height: min(root.saves-rows.length * 118px, max(118px, root.height - 380px));
+                    VerticalLayout {
+                        padding-right: 14px;
+                        spacing: 8px;
+                        for row[i] in root.saves-rows: VerticalLayout {
+                            height: 110px;
+                            spacing: 4px;
+                            Text {
+                                text: row.name;
+                                color: Theme.text;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 4px;
+                                    Label { text: row.local; }
+                                    GhostButton {
+                                        text: "Keep this computer's";
+                                        active: row.choice == 1;
+                                        enabled: !root.saves-busy;
+                                        clicked => { root.choose-save(i, 1); }
+                                    }
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 4px;
+                                    Label { text: row.cloud; }
+                                    GhostButton {
+                                        text: "Keep the cloud's";
+                                        active: row.choice == 2;
+                                        enabled: !root.saves-busy;
+                                        clicked => { root.choose-save(i, 2); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.saves-error != "": Text {
+                    text: root.saves-error;
+                    color: Theme.danger;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    padding-top: 6px;
+                    GhostButton {
+                        text: "Not now";
+                        enabled: !root.saves-busy;
+                        clicked => { root.saves-open = false; }
+                    }
+                    ShinyButton {
+                        text: root.saves-busy ? "Please wait…" : "Keep the chosen";
+                        enabled: !root.saves-busy && root.saves-chosen > 0;
+                        clicked => { root.apply-saves(); }
                     }
                 }
             }

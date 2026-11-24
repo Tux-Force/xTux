@@ -103,6 +103,20 @@ pub enum Request {
     Achievements {
         path: PathBuf,
     },
+    /// Saves of a game that differ here and in the Xbox cloud and wait for the user's choice.
+    SaveConflicts {
+        path: PathBuf,
+        /// The Wine prefix the game runs in, the default one when not set.
+        #[serde(default)]
+        prefix: Option<PathBuf>,
+    },
+    /// Settles save conflicts; the side that is not kept is backed up. Answered with `SaveConflicts`, the ones left.
+    ResolveSaves {
+        path: PathBuf,
+        #[serde(default)]
+        prefix: Option<PathBuf>,
+        choices: Vec<SaveChoice>,
+    },
     /// Deletes a game folder of the library with everything in it.
     Uninstall {
         path: PathBuf,
@@ -140,6 +154,36 @@ pub struct GameInfo {
     /// What AreWeAntiCheatYet says about the game (when turned on in the settings).
     #[serde(default)]
     pub anticheat_report: Option<AntiCheatReport>,
+}
+
+/// A save that differs here and in the Xbox cloud.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SaveConflict {
+    pub scid: String,
+    pub name: String,
+    /// What the game calls it, when it says so.
+    pub display_name: Option<String>,
+    pub local: SaveSide,
+    pub cloud: SaveSide,
+    /// Goes back in a [`SaveChoice`].
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SaveSide {
+    /// Seconds since the Unix epoch, 0 when not known.
+    pub modified: u64,
+    /// Bytes.
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SaveChoice {
+    pub scid: String,
+    pub name: String,
+    pub version: String,
+    /// Keep the cloud's save; otherwise the one on this computer.
+    pub keep_cloud: bool,
 }
 
 /// What AreWeAntiCheatYet (areweanticheatyet.com) says about a game, found by its name.
@@ -345,6 +389,12 @@ pub enum Response {
     Achievements {
         /// Unlocked ones first, newest first; empty when the game has none.
         items: Vec<AchievementInfo>,
+    },
+    SaveConflicts {
+        items: Vec<SaveConflict>,
+        /// What settling did, for users.
+        #[serde(default)]
+        message: Option<String>,
     },
     Catalog {
         titles: Vec<CatalogTitle>,

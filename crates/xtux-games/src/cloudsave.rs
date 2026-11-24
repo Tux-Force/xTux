@@ -829,6 +829,140 @@ pub enum Prefer {
     Local,
 }
 
+/// One side of a [`Conflict`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Side {
+    pub modified: SystemTime,
+    pub size: u64,
+}
+
+/// A container that differs here and in the cloud and was never synced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub scid: String,
+    pub name: String,
+    /// What the game calls it, when it says so.
+    pub display_name: Option<String>,
+    pub local: Side,
+    pub cloud: Side,
+    /// Stands for the content of both sides; goes back in a [`Choice`].
+    pub version: String,
+}
+
+/// Which side of a [`Conflict`] the user keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub scid: String,
+    pub name: String,
+    pub version: String,
+    pub keep: Prefer,
+}
+
+struct Differing {
+    etag: String,
+    mine: LocalContainer,
+    theirs: LocalContainer,
+}
+
+impl Differing {
+    fn version(&self) -> String {
+        format!("{}:{}", self.mine.hash(), self.theirs.hash())
+    }
+
+    fn conflict(&self, scid: &str) -> Conflict {
+        let side = |c: &LocalContainer| Side {
+            modified: c.modified,
+            size: c.blobs.values().map(|b| b.len() as u64).sum(),
+        };
+        Conflict {
+            scid: scid.to_string(),
+            name: self.mine.name.clone(),
+            display_name: (self.mine.display_name.clone())
+                .or_else(|| self.theirs.display_name.clone()),
+            local: side(&self.mine),
+            cloud: side(&self.theirs),
+            version: self.version(),
+        }
+    }
+}
+
+/// How many saves of a game wait for the user's choice, remembered across runs so clients can show it without a
+/// sign-in: `$XDG_STATE_HOME/xtux/save-conflicts.json`, game folder → number.
+pub mod pending {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn file() -> Option<PathBuf> {
+        Some(crate::logs::state_dir()?.join("save-conflicts.json"))
+    }
+
+    fn key(game_dir: &Path) -> String {
+        std::fs::canonicalize(game_dir)
+            .unwrap_or_else(|_| game_dir.to_path_buf())
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn read(file: &Path) -> BTreeMap<String, usize> {
+        std::fs::read(file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// All games with saves to choose, by canonical game folder.
+    pub fn all() -> BTreeMap<String, usize> {
+        file().map(|f| read(&f)).unwrap_or_default()
+    }
+
+    pub fn of(game_dir: &Path) -> usize {
+        all().get(&key(game_dir)).copied().unwrap_or(0)
+    }
+
+    pub fn record(game_dir: &Path, count: usize) {
+        if let Some(file) = file() {
+            record_in(&file, &key(game_dir), count);
+        }
+    }
+
+    pub(super) fn record_in(file: &Path, key: &str, count: usize) {
+        let _writing = WRITING.lock();
+        let mut map = read(file);
+        let before = map.get(key).copied().unwrap_or(0);
+        if before == count {
+            return;
+        }
+        match count {
+            0 => map.remove(key),
+            count => map.insert(key.to_string(), count),
+        };
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(text) = serde_json::to_vec_pretty(&map) {
+            let partial = file.with_extension("json.partial");
+            if std::fs::write(&partial, text).is_ok() {
+                let _ = std::fs::rename(&partial, file);
+            }
+        }
+    }
+}
+
+/// Syncs of one game wait for each other: a game started while its conflicts are settled must not sync meanwhile.
+async fn sync_turn(game: &Game) -> tokio::sync::OwnedMutexGuard<()> {
+    type Turns = std::sync::Mutex<BTreeMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>;
+    static TURNS: Turns = std::sync::Mutex::new(BTreeMap::new());
+    let turn = TURNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(game.family.clone())
+        .or_default()
+        .clone();
+    turn.lock_owned().await
+}
+
 /// What a sync did, for messages.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -871,7 +1005,7 @@ impl Report {
             ),
             (
                 self.unresolved.len(),
-                "differ here and in the cloud and were never synced: run `xtux-cli saves resolve <game> cloud|local`",
+                "differ here and in the cloud and were never synced: choose on the game's page in the launcher, or run `xtux-cli saves resolve <game> cloud|local`",
             ),
         ] {
             if count > 0 {
@@ -1039,66 +1173,109 @@ impl Space<'_> {
         result.map(|()| report)
     }
 
+    /// The containers [`Space::pull`] leaves as unresolved, with both sides. Nothing changes.
+    pub async fn conflicts(&self) -> Result<Vec<Conflict>> {
+        Ok(self
+            .differing()
+            .await?
+            .into_iter()
+            .map(|d| d.conflict(&self.scid))
+            .collect())
+    }
+
+    /// Containers on both sides that differ and were never synced.
+    async fn differing(&self) -> Result<Vec<Differing>> {
+        let state = load_state(&self.state_path()?);
+        let Some(cloud) = self.cloud.list(&self.scid).await? else {
+            return Ok(Vec::new());
+        };
+        let mut local =
+            read_local(&self.dir).map_err(|e| format!("reading {}: {e}", self.dir.display()))?;
+        let mut differing = Vec::new();
+        for remote in cloud {
+            let Some(name) = remote.name().map(str::to_string) else {
+                continue;
+            };
+            if state.containers.contains_key(&name) {
+                continue;
+            }
+            let Some(mine) = local.remove(&name) else {
+                continue;
+            };
+            let theirs = self.cloud.download(&self.scid, &remote).await?;
+            // Equal ones are taken as synced by the next pull.
+            if theirs.hash() != mine.hash() {
+                differing.push(Differing {
+                    etag: remote.etag.clone(),
+                    mine,
+                    theirs,
+                });
+            }
+        }
+        Ok(differing)
+    }
+
     /// Settles the containers [`Space::pull`] left as unresolved: `prefer` says which side is kept. The other side
     /// is backed up; a kept local container is uploaded by the next [`Space::push`].
     pub async fn resolve(&self, prefer: Prefer) -> Result<Report> {
-        let state_path = self.state_path()?;
-        let mut state = load_state(&state_path);
-        let Some(cloud) = self.cloud.list(&self.scid).await? else {
-            return Ok(Report::default());
-        };
-        let local =
-            read_local(&self.dir).map_err(|e| format!("reading {}: {e}", self.dir.display()))?;
-        let run = run_name();
-        let mut report = Report::default();
-        for remote in &cloud {
-            let Some(name) = remote.name() else { continue };
-            let Some(mine) = local.get(name) else {
-                continue;
-            };
-            if state.containers.contains_key(name) {
-                continue;
-            }
-            let theirs = self.cloud.download(&self.scid, remote).await?;
-            if theirs.hash() == mine.hash() {
-                state.containers.insert(
-                    name.to_string(),
-                    Synced {
-                        etag: remote.etag.clone(),
-                        hash: mine.hash(),
-                    },
-                );
-                continue;
-            }
-            match prefer {
-                Prefer::Cloud => {
-                    backup(&self.state, self.game, &run, "local", mine)?;
-                    write_container(&self.dir, &theirs)
-                        .map_err(|e| format!("writing the save {name}: {e}"))?;
-                    state.containers.insert(
-                        name.to_string(),
-                        Synced {
-                            etag: remote.etag.clone(),
-                            hash: theirs.hash(),
-                        },
-                    );
-                    report.downloaded.push(name.to_string());
-                }
-                Prefer::Local => {
-                    backup(&self.state, self.game, &run, "cloud", &theirs)?;
-                    // Synced with the cloud as it is now, but with a hash that differs: push uploads ours.
-                    state.containers.insert(
-                        name.to_string(),
-                        Synced {
-                            etag: remote.etag.clone(),
-                            hash: String::new(),
-                        },
-                    );
-                    report.uploaded.push(name.to_string());
-                }
+        self.settle(self.differing().await?, |_| Some(prefer)).await
+    }
+
+    /// Settles what the user chose from [`Space::conflicts`]. Fails before it changes anything when a save is no
+    /// longer the one the user saw.
+    pub async fn resolve_chosen(&self, choices: &[Choice]) -> Result<Report> {
+        let differing = self.differing().await?;
+        for choice in choices.iter().filter(|c| c.scid == self.scid) {
+            if !differing
+                .iter()
+                .any(|d| d.mine.name == choice.name && d.version() == choice.version)
+            {
+                return Err(format!(
+                    "the save {} has changed since it was shown; look at the conflicts again",
+                    choice.name
+                ));
             }
         }
-        save_state(&state_path, &state)?;
+        self.settle(differing, |d| {
+            choices
+                .iter()
+                .find(|c| c.scid == self.scid && c.name == d.mine.name)
+                .map(|c| c.keep)
+        })
+        .await
+    }
+
+    async fn settle(
+        &self,
+        differing: Vec<Differing>,
+        choose: impl Fn(&Differing) -> Option<Prefer>,
+    ) -> Result<Report> {
+        let state_path = self.state_path()?;
+        let mut state = load_state(&state_path);
+        let run = run_name();
+        let mut report = Report::default();
+        for d in differing {
+            let Some(prefer) = choose(&d) else { continue };
+            let name = d.mine.name.clone();
+            let hash = match prefer {
+                Prefer::Cloud => {
+                    backup(&self.state, self.game, &run, "local", &d.mine)?;
+                    write_container(&self.dir, &d.theirs)
+                        .map_err(|e| format!("writing the save {name}: {e}"))?;
+                    report.downloaded.push(name.clone());
+                    d.theirs.hash()
+                }
+                Prefer::Local => {
+                    backup(&self.state, self.game, &run, "cloud", &d.theirs)?;
+                    report.uploaded.push(name.clone());
+                    // Synced with the cloud as it is now, but with a hash that differs: push uploads ours.
+                    String::new()
+                }
+            };
+            state.containers.insert(name, Synced { etag: d.etag, hash });
+            // After each one: a later failure must not undo what is settled.
+            save_state(&state_path, &state)?;
+        }
         prune_backups(&self.state, self.game);
         Ok(report)
     }
@@ -1200,6 +1377,7 @@ pub struct Saves {
     pub game: Game,
     pub cloud: Cloud,
     prefix: PathBuf,
+    game_dir: PathBuf,
 }
 
 impl Saves {
@@ -1224,6 +1402,7 @@ impl Saves {
             game,
             cloud,
             prefix: prefix.to_path_buf(),
+            game_dir: game_dir.to_path_buf(),
         }))
     }
 
@@ -1264,33 +1443,83 @@ impl Saves {
     }
 
     pub async fn pull(&self) -> Result<Report> {
+        let _turn = sync_turn(&self.game).await;
         let mut report = Report::default();
         for space in self.spaces() {
             report.merge(space.pull().await?);
         }
+        // Each unresolved save shows up in every pull.
+        pending::record(&self.game_dir, report.unresolved.len());
         Ok(report)
     }
 
     pub async fn push(&self) -> Result<Report> {
+        let _turn = sync_turn(&self.game).await;
+        self.push_all().await
+    }
+
+    async fn push_all(&self) -> Result<Report> {
         let mut report = Report::default();
         for space in self.spaces() {
             report.merge(space.push().await?);
         }
+        if !report.unresolved.is_empty() {
+            pending::record(&self.game_dir, report.unresolved.len());
+        }
         Ok(report)
+    }
+
+    /// Saves that differ here and in the cloud and were never synced.
+    pub async fn conflicts(&self) -> Result<Vec<Conflict>> {
+        let _turn = sync_turn(&self.game).await;
+        self.find_conflicts().await
+    }
+
+    async fn find_conflicts(&self) -> Result<Vec<Conflict>> {
+        let mut conflicts = Vec::new();
+        for space in self.spaces() {
+            conflicts.extend(space.conflicts().await?);
+        }
+        pending::record(&self.game_dir, conflicts.len());
+        Ok(conflicts)
     }
 
     /// Settles never-synced containers that differ, then pushes a kept local side.
     pub async fn resolve(&self, prefer: Prefer) -> Result<Report> {
+        let _turn = sync_turn(&self.game).await;
         let mut report = Report::default();
         for space in self.spaces() {
             report.merge(space.resolve(prefer).await?);
         }
-        if prefer == Prefer::Local {
-            let pushed = self.push().await?;
+        self.push_kept(prefer == Prefer::Local, &mut report).await?;
+        pending::record(&self.game_dir, report.unresolved.len());
+        Ok(report)
+    }
+
+    /// Settles what the user chose and sends kept local saves. Answers the conflicts that are left.
+    pub async fn resolve_chosen(&self, choices: &[Choice]) -> Result<(Report, Vec<Conflict>)> {
+        let _turn = sync_turn(&self.game).await;
+        let mut report = Report::default();
+        for space in self.spaces() {
+            if choices.iter().any(|c| c.scid == space.scid) {
+                report.merge(space.resolve_chosen(choices).await?);
+            }
+        }
+        let keeps_local = choices.iter().any(|c| c.keep == Prefer::Local);
+        self.push_kept(keeps_local, &mut report).await?;
+        let left = self.find_conflicts().await?;
+        Ok((report, left))
+    }
+
+    async fn push_kept(&self, push: bool, report: &mut Report) -> Result<()> {
+        if push {
+            let pushed = self.push_all().await.map_err(|err| {
+                format!("the choice is kept, but the saves could not be sent yet; the next sync tries again: {err}")
+            })?;
             report.conflicts.extend(pushed.conflicts);
             report.unresolved.extend(pushed.unresolved);
         }
-        Ok(report)
+        Ok(())
     }
 }
 
@@ -1697,12 +1926,87 @@ mod sync_tests {
             remote_data(&service, "slot1").as_deref(),
             Some("played here")
         );
+        // One chosen by the user: only the save that was shown is settled.
+        let conflicts = unsynced.conflicts().await.unwrap();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].name, "slot1");
+        assert_eq!(conflicts[0].local.size, 14);
+        assert_eq!(conflicts[0].cloud.size, 11);
+        let choice = |keep| Choice {
+            scid: conflicts[0].scid.clone(),
+            name: "slot1".into(),
+            version: conflicts[0].version.clone(),
+            keep,
+        };
+        write_local(third.path(), "slot1", "saved meanwhile", 1_950_000_100);
+        assert!(
+            unsynced
+                .resolve_chosen(&[choice(Prefer::Cloud)])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            local_data(third.path(), "slot1").as_deref(),
+            Some("saved meanwhile")
+        );
+        write_local(third.path(), "slot1", "old linux save", 1_950_000_000);
+        assert!(unsynced.resolve_chosen(&[]).await.unwrap().is_empty());
+        assert_eq!(unsynced.conflicts().await.unwrap(), conflicts);
+
+        // The local one kept, in a folder of its own.
+        let fourth = tempfile::tempdir().unwrap();
+        write_local(fourth.path(), "slot1", "played here", 1_950_000_000);
+        let same = Space {
+            cloud: &cloud,
+            game: &game,
+            scid: game.default_scid(),
+            dir: fourth.path().to_path_buf(),
+            state: state.path().to_path_buf(),
+        };
+        // Equal on both sides is no conflict.
+        assert!(same.conflicts().await.unwrap().is_empty());
+        let report = unsynced
+            .resolve_chosen(&[choice(Prefer::Local)])
+            .await
+            .unwrap();
+        assert_eq!(report.uploaded, vec!["slot1"]);
+        unsynced.push().await.unwrap();
+        assert_eq!(
+            remote_data(&service, "slot1").as_deref(),
+            Some("old linux save")
+        );
+        assert!(unsynced.conflicts().await.unwrap().is_empty());
+
+        // All at once, the cloud's.
+        let fifth = tempfile::tempdir().unwrap();
+        write_local(fifth.path(), "slot1", "another save", 1_950_000_000);
+        let unsynced = Space {
+            cloud: &cloud,
+            game: &game,
+            scid: game.default_scid(),
+            dir: fifth.path().to_path_buf(),
+            state: state.path().to_path_buf(),
+        };
+        assert_eq!(unsynced.pull().await.unwrap().unresolved, vec!["slot1"]);
         let report = unsynced.resolve(Prefer::Cloud).await.unwrap();
         assert_eq!(report.downloaded, vec!["slot1"]);
         assert_eq!(
-            local_data(third.path(), "slot1").as_deref(),
-            Some("played here")
+            local_data(fifth.path(), "slot1").as_deref(),
+            Some("old linux save")
         );
         assert!(unsynced.pull().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn remembers_how_many_saves_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("state/save-conflicts.json");
+        pending::record_in(&file, "/games/a", 0);
+        assert!(!file.exists());
+        pending::record_in(&file, "/games/a", 2);
+        pending::record_in(&file, "/games/b", 1);
+        pending::record_in(&file, "/games/a", 0);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("/games/b") && !text.contains("/games/a"));
     }
 }
