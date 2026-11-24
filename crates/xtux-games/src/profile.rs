@@ -129,7 +129,14 @@ fn picture_url(raw: &str, pixels: u32) -> Option<reqwest::Url> {
         url.set_scheme("https").ok()?;
     }
     let pixels = pixels.to_string();
+    let others: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(k, _)| !matches!(k.as_ref(), "w" | "h" | "format"))
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
     url.query_pairs_mut()
+        .clear()
+        .extend_pairs(others)
         .append_pair("w", &pixels)
         .append_pair("h", &pixels)
         .append_pair("format", "png");
@@ -161,10 +168,22 @@ pub async fn picture(client: &Client, profile: &Profile, pixels: u32) -> Result<
             return Err("the picture is too large".to_string());
         }
     }
-    if !data.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Err("the picture is not a PNG".to_string());
-    }
-    Ok(data)
+    tokio::task::spawn_blocking(move || to_png(&data, pixels))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// What games expect: a square PNG of the size they asked for. The service also sends other formats.
+fn to_png(data: &[u8], pixels: u32) -> Result<Vec<u8>, String> {
+    let picture = crate::art::decode_bytes(data)
+        .map_err(|e| format!("the picture cannot be read: {e}"))?
+        .resize_exact(pixels, pixels, image::imageops::FilterType::CatmullRom)
+        .into_rgba8();
+    let mut png = std::io::Cursor::new(Vec::new());
+    picture
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(png.into_inner())
 }
 
 #[cfg(test)]
@@ -190,14 +209,30 @@ mod tests {
     #[test]
     fn picture_hosts() {
         assert_eq!(
-            picture_url("http://images-eds.xboxlive.com/image?url=a%2Fb", 208)
-                .unwrap()
-                .as_str(),
-            "https://images-eds.xboxlive.com/image?url=a%2Fb&w=208&h=208&format=png"
+            picture_url(
+                "http://images-eds.xboxlive.com/image?url=a%2Fb&format=jpg&mode=Padding",
+                208
+            )
+            .unwrap()
+            .as_str(),
+            "https://images-eds.xboxlive.com/image?url=a%2Fb&mode=Padding&w=208&h=208&format=png"
         );
         assert!(picture_url("https://xboxlive.com.example.org/x", 64).is_none());
         assert!(picture_url("https://evilxboxlive.com/x", 64).is_none());
         assert!(picture_url("file:///etc/passwd", 64).is_none());
+    }
+
+    #[test]
+    fn pictures_become_png() {
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(10, 10, image::Rgb([200, 10, 10]))
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let png = to_png(jpeg.get_ref(), 64).unwrap();
+        assert_eq!(image::guess_format(&png).unwrap(), image::ImageFormat::Png);
+        let decoded = image::load_from_memory(&png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (64, 64));
+        assert!(to_png(b"<html>", 64).is_err());
     }
 
     #[tokio::test]
