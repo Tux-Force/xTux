@@ -216,13 +216,27 @@ impl Achievements {
         game: &Game,
     ) -> Result<Achievements> {
         let (authorization, xuid) = xbox_authorization(client, tokens, game).await?;
-        Ok(Achievements {
+        Ok(Achievements::new(
+            client,
+            authorization,
+            xuid,
+            game.title_id,
+        ))
+    }
+
+    pub(crate) fn new(
+        client: &Client,
+        authorization: String,
+        xuid: String,
+        title_id: u32,
+    ) -> Achievements {
+        Achievements {
             client: client.clone(),
             authorization,
             xuid,
-            title_id: game.title_id,
+            title_id,
             base: HOST.to_string(),
-        })
+        }
     }
 
     /// All achievements of the game with the user's progress.
@@ -289,6 +303,44 @@ impl Achievements {
         });
         Ok(List { achievements, scid })
     }
+}
+
+/// The list as text for a window of the game (`XGameUiShowAchievementsAsync`); the first line is its title.
+pub(crate) fn to_text(game: &str, list: &List) -> String {
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let game = one_line(game);
+    let mut text = if game.is_empty() {
+        "Achievements\n".to_string()
+    } else {
+        format!("{game} - Achievements\n")
+    };
+    if list.achievements.is_empty() {
+        text.push_str("There are no achievements.");
+        return text;
+    }
+    text.push_str(&format!(
+        "{} of {} unlocked, {} of {} Gamerscore\n",
+        list.unlocked(),
+        list.achievements.len(),
+        list.gamerscore(),
+        list.total_gamerscore()
+    ));
+    for a in &list.achievements {
+        let state = match (a.unlocked, a.percent) {
+            (true, _) => "[x]".to_string(),
+            (false, Some(percent)) => format!("[{percent} %]"),
+            (false, None) => "[ ]".to_string(),
+        };
+        text.push_str(&format!(
+            "\n{state} {} ({} G)\n",
+            one_line(&a.name),
+            a.gamerscore
+        ));
+        if !a.description.trim().is_empty() {
+            text.push_str(&format!("     {}\n", one_line(&a.description)));
+        }
+    }
+    text
 }
 
 /// Language of the names: the one of the desktop, then English.
@@ -689,6 +741,31 @@ mod tests {
             "progression": {"requirements": [{"current": 5, "target": "20"}]}
         }));
         assert_eq!(a.percent, Some(25));
+    }
+
+    #[test]
+    fn text_for_the_game() {
+        let list = List {
+            achievements: vec![
+                parse(
+                    json!({"id": "1", "name": "A\nB", "description": "d", "progressState": "Achieved",
+                             "rewards": [{"value": "5", "type": "Gamerscore"}]}),
+                ),
+                parse(
+                    json!({"id": "2", "name": "Spoiler", "isSecret": true, "progressState": "NotStarted"}),
+                ),
+            ],
+            scid: None,
+        };
+        assert_eq!(
+            to_text("Game", &list),
+            "Game - Achievements\n1 of 2 unlocked, 5 of 5 Gamerscore\n\n[x] A B (5 G)\n     d\n\n\
+             [ ] Secret achievement (0 G)\n"
+        );
+        assert_eq!(
+            to_text("", &List::default()),
+            "Achievements\nThere are no achievements."
+        );
     }
 
     #[test]

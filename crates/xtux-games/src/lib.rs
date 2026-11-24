@@ -23,6 +23,7 @@ pub mod license;
 pub mod logs;
 pub mod package;
 pub mod packages;
+pub mod profile;
 pub mod progress;
 pub mod queue;
 pub mod settings;
