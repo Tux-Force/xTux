@@ -859,7 +859,15 @@ pub async fn launch(
         .clone()
         .unwrap_or_else(|| "neutral".to_string());
     let mut license_failed = Arc::new(AtomicBool::new(false));
-    match crate::bridge::start(client.clone(), tokens.clone(), scope, market).await {
+    match crate::bridge::start(
+        client.clone(),
+        tokens.clone(),
+        scope,
+        market,
+        crate::cloudsave::Game::for_folder(&options.source),
+    )
+    .await
+    {
         Ok(bridge) => {
             license_failed = bridge.license_failed;
             env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));

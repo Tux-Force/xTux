@@ -32,6 +32,16 @@
 //! `POST /store/package-license`
 //!   body: the content id of an installed add-on of the game. Answers `1` when the user holds a
 //!   license for it (asked once per run from the licensing service), 403 otherwise.
+//!
+//! `POST /xbox/achievements`
+//!   body: title id (decimal, 0 for the game itself). Answers the achievements as text for the
+//!   player, the first line is the title of the window.
+//!
+//! `POST /xbox/profile`
+//!   body: XUID of a player. Answers the profile as text, the first line is the gamertag.
+//!
+//! `POST /xbox/gamer-picture`
+//!   body: line 1 XUID, line 2 the size in pixels (64, 208, 424 or 1080). Answers the PNG in base64.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -51,14 +61,18 @@ use xodus::models::xbox::TitleMgtResponse;
 use xodus::models::xgameruntime::xuser::UserIdentity;
 use xodus::tokens::TokenManager;
 
+use crate::cloudsave::Game;
 use crate::license::get_store_tokens;
 use crate::packages;
+use crate::profile;
 
 const MAX_REQUEST: usize = 1024 * 1024;
 /// Requests handled at the same time; more wait to be accepted.
 const MAX_CONNECTIONS: usize = 32;
 /// XSTS tokens are valid for many hours; refresh well before that.
 const XSTS_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// A sign-in for the system UI; xgameruntime itself gives up after 30 seconds.
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(25);
 
 struct State {
     client: reqwest::Client,
@@ -80,6 +94,10 @@ struct State {
     market: String,
     /// Add-on license checks by content id.
     package_licenses: Mutex<HashMap<String, bool>>,
+    /// The game, for what its system UI shows; `None` without an Xbox title id.
+    game: Option<Game>,
+    /// Signed in for the system UI: Authorization header, the user's XUID and since when.
+    sign_in: Mutex<Option<(String, String, Instant)>>,
 }
 
 pub struct Bridge {
@@ -90,12 +108,13 @@ pub struct Bridge {
 }
 
 /// Starts the bridge on 127.0.0.1 with a random port. It runs until the process exits. `scope` tells which add-ons
-/// belong to the game, `market` is the Store market for their licenses.
+/// belong to the game, `market` is the Store market for their licenses, `game` is what the system UI is about.
 pub async fn start(
     client: reqwest::Client,
     tokens: TokenManager,
     scope: packages::Scope,
     market: String,
+    game: Option<Game>,
 ) -> std::io::Result<Bridge> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
@@ -114,6 +133,8 @@ pub async fn start(
         packages: packages::Watcher::new(scope),
         market,
         package_licenses: Mutex::new(HashMap::new()),
+        game,
+        sign_in: Mutex::new(None),
     });
     // A game cannot tie up the process with countless open requests (long polls stay open for a while).
     let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
@@ -288,6 +309,16 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
                 }
             }
         }
+        ("POST", path @ ("/xbox/achievements" | "/xbox/profile" | "/xbox/gamer-picture")) => {
+            let answer = system_ui(state, path, &request.body).await;
+            match answer {
+                Ok(text) => respond(&mut stream, "200 OK", &text).await,
+                Err(err) => {
+                    tracing::warn!("{path} failed: {err}");
+                    respond(&mut stream, "502 Bad Gateway", &err).await
+                }
+            }
+        }
         _ => respond(&mut stream, "404 Not Found", "unknown endpoint").await,
     }
 }
@@ -376,6 +407,82 @@ async fn package_license(state: &State, content_id: &str) -> Result<bool, String
         .await
         .insert(content_id, valid);
     Ok(valid)
+}
+
+/// What the game's system UI shows.
+async fn system_ui(state: &State, path: &str, body: &str) -> Result<String, String> {
+    let ask = || async {
+        match path {
+            "/xbox/achievements" => show_achievements(state, body.trim()).await,
+            "/xbox/profile" => show_profile(state, body.trim()).await,
+            _ => gamer_picture(state, body).await,
+        }
+    };
+    match ask().await {
+        // The sign-in is no longer accepted: once more with a new one.
+        Err(err) if err.contains(&reqwest::StatusCode::UNAUTHORIZED.to_string()) => {
+            *state.sign_in.lock().await = None;
+            ask().await
+        }
+        answer => answer,
+    }
+}
+
+/// Authorization header and XUID for the system UI.
+async fn sign_in(state: &State) -> Result<(String, String), String> {
+    let game = state.game.as_ref().ok_or("not an Xbox title")?;
+    let mut sign_in = state.sign_in.lock().await;
+    if let Some((authorization, xuid, since)) = &*sign_in
+        && since.elapsed() < XSTS_LIFETIME
+    {
+        return Ok((authorization.clone(), xuid.clone()));
+    }
+    // Others wait for this one.
+    let (authorization, xuid) = tokio::time::timeout(
+        SIGN_IN_TIMEOUT,
+        crate::cloudsave::xbox_authorization(&state.client, &state.tokens, game),
+    )
+    .await
+    .map_err(|_| "the sign-in did not answer in time")??;
+    *sign_in = Some((authorization.clone(), xuid.clone(), Instant::now()));
+    Ok((authorization, xuid))
+}
+
+async fn show_achievements(state: &State, title_id: &str) -> Result<String, String> {
+    let title_id: u32 = title_id.parse().map_err(|_| "invalid title id")?;
+    let (authorization, xuid) = sign_in(state).await?;
+    let game = state.game.as_ref().ok_or("not an Xbox title")?;
+    let (title_id, name) = if title_id == 0 || title_id == game.title_id {
+        (game.title_id, game.name.as_str())
+    } else {
+        (title_id, "")
+    };
+    let list = crate::achievements::Achievements::new(&state.client, authorization, xuid, title_id)
+        .list()
+        .await?;
+    Ok(crate::achievements::to_text(name, &list))
+}
+
+async fn profile(state: &State, xuid: &str) -> Result<profile::Profile, String> {
+    let (authorization, _) = sign_in(state).await?;
+    profile::fetch(&state.client, &authorization, xuid).await
+}
+
+async fn show_profile(state: &State, xuid: &str) -> Result<String, String> {
+    Ok(profile(state, xuid).await?.to_text())
+}
+
+async fn gamer_picture(state: &State, body: &str) -> Result<String, String> {
+    let mut lines = body.lines();
+    let xuid = lines.next().unwrap_or_default().trim();
+    let pixels = lines
+        .next()
+        .and_then(|l| l.trim().parse().ok())
+        .filter(|p| matches!(p, 64 | 208 | 424 | 1080))
+        .ok_or("invalid picture size")?;
+    let profile = profile(state, xuid).await?;
+    let picture = profile::picture(&profile, pixels).await?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(picture))
 }
 
 async fn fetch_endpoints(
