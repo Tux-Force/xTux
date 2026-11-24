@@ -250,8 +250,10 @@ async fn main() -> ExitCode {
     clap_complete::CompleteEnv::with_factory(CliArgs::command).complete();
 
     // Show library progress (game bridge, links) unless XODUS_LOG chooses something else.
+    // Finer levels of the WebSocket library log requests with their Authorization header.
     let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,xtux_games=info"))
+        .add_directive("tungstenite=info".parse().expect("a valid directive"));
     let registry =
         tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_filter(filter));
 
