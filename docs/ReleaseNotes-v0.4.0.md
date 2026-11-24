@@ -24,7 +24,7 @@ This release brings Xbox achievements, the system dialogs of games, in-game even
 - Achievement lists of Planet Coaster 2, Minecraft, DayZ, ASTRONEER and Flight Simulator 2024 from the real service; product list against the public Store.
 - xgameruntime tests against a fake bridge: Store and events, add-ons, game UI, tokens.
 - The save conflict dialog was checked in snapshots with made-up data.
-- macOS is not a release target; its CI check has had no result since the game UI change because the runners cancelled it.
+- macOS is not a release target; its CI check (clippy and tests) passed on the release branch.
 
 ## Automated publication
 
