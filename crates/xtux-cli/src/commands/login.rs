@@ -261,7 +261,7 @@ pub async fn run_game(client: &reqwest::Client, tokens: &TokenManager, source: &
 }
 
 /// The game by name or folder, or by its title id as the bridge reports it (8 hex digits).
-fn find_game(source: &str) -> Result<xtux_games::cloudsave::Game, String> {
+pub(crate) fn find_game(source: &str) -> Result<xtux_games::cloudsave::Game, String> {
     let title = source.strip_prefix("title ").unwrap_or(source);
     if title.len() == 8
         && let Ok(title_id) = u32::from_str_radix(title, 16)

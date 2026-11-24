@@ -136,6 +136,13 @@ enum SubCommand {
         side: Option<String>,
     },
     #[cfg(unix)]
+    #[command(about = "Show the Xbox achievements of a game and what is unlocked")]
+    Achievements {
+        /// Game name (see `xtux-cli list`) or game folder
+        #[arg(add = clap_complete::ArgValueCompleter::new(commands::list::complete_game))]
+        source: String,
+    },
+    #[cfg(unix)]
     #[command(about = "List the installed games of the library folders")]
     List {
         /// Print only the game folders
@@ -381,6 +388,10 @@ async fn main() -> ExitCode {
         SubCommand::Link { game_dir, dest } => commands::link::run(game_dir, dest),
         #[cfg(unix)]
         SubCommand::List { paths } => commands::list::run(paths),
+        #[cfg(unix)]
+        SubCommand::Achievements { source } => {
+            commands::achievements::run(&client, &tokens, &source).await
+        }
         #[cfg(unix)]
         SubCommand::Saves {
             action,

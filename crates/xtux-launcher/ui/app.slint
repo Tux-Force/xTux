@@ -108,6 +108,14 @@ export struct ShotRow {
 }
 
 // One line of a log; level: 0 plain, 1 quiet (debug, trace, fixme), 2 info, 3 warning, 4 error.
+export struct AchievementRow {
+    name: string,
+    description: string,
+    // Gamerscore and, when locked, the progress.
+    detail: string,
+    unlocked: bool,
+}
+
 export struct LogLine {
     text: string,
     level: int,
@@ -1118,6 +1126,10 @@ export component AppWindow inherits Window {
     // 0..1, or below 0 while the size is not known.
     in property <float> setup-progress: -1;
     in property <bool> setup-complete;
+    // Xbox achievements of the game page's game; the summary also says when they are loading or not available.
+    in property <[AchievementRow]> game-achievements;
+    in property <string> game-achievements-summary;
+    callback refresh-achievements();
     in property <[LogLine]> game-log;
     in property <string> game-log-path;
     // Logs page (page 3)
@@ -1134,6 +1146,7 @@ export component AppWindow inherits Window {
     in-out property <bool> store-hide-windows-only;
     in-out property <bool> anticheat-guess;
     in-out property <bool> cloud-saves: true;
+    in-out property <bool> achievement-notifications: true;
     // Scroll positions kept while a game or title page is open.
     in-out property <length> library-scroll;
     in-out property <length> store-scroll;
@@ -2115,6 +2128,59 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    Glass {
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Heading { text: "Achievements"; vertical-alignment: center; }
+                                Rectangle { }
+                                GhostButton {
+                                    text: "↻ Reload";
+                                    clicked => { root.refresh-achievements(); }
+                                }
+                            }
+                            Label { text: root.game-achievements-summary; wrap: word-wrap; }
+                            if root.game-achievements.length > 0: ListView {
+                                height: 340px;
+                                for row in root.game-achievements: HorizontalLayout {
+                                    height: 52px;
+                                    padding-right: 16px;
+                                    spacing: 12px;
+                                    Text {
+                                        width: 22px;
+                                        text: row.unlocked ? "✔" : "○";
+                                        color: row.unlocked ? Theme.accent-text : Theme.muted;
+                                        font-size: 18px;
+                                        vertical-alignment: center;
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        horizontal-stretch: 1;
+                                        Text {
+                                            text: row.name;
+                                            color: row.unlocked ? Theme.text : Theme.muted;
+                                            font-weight: 700;
+                                            overflow: elide;
+                                        }
+                                        if row.description != "": Text {
+                                            text: row.description;
+                                            color: Theme.muted;
+                                            font-size: 12px;
+                                            overflow: elide;
+                                        }
+                                    }
+                                    Text {
+                                        text: row.detail;
+                                        color: Theme.muted;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: right;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2232,6 +2298,18 @@ export component AppWindow inherits Window {
                             }
                             Label {
                                 text: "Before a game starts, saves made on Windows or an Xbox are brought in; after it ends, saves made here are sent. When both sides changed, the newer one is kept and the other one is backed up. Saves are never deleted by a sync.";
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
+                            Label { text: "Achievement notifications"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                GhostButton { text: "Off"; active: !root.achievement-notifications; clicked => { root.achievement-notifications = false; root.ui-changed(); } }
+                                GhostButton { text: "Desktop"; active: root.achievement-notifications; clicked => { root.achievement-notifications = true; root.ui-changed(); } }
+                            }
+                            Label {
+                                text: "While a game runs, xTux stays connected to Xbox Live and shows achievements it unlocks as a desktop notification.";
                                 wrap: word-wrap;
                                 font-size: 12px;
                             }

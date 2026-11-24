@@ -3,6 +3,7 @@
 //! Nothing here prints or prompts: functions return [`Error`] and report progress through [`Progress`].
 
 mod access;
+pub mod achievements;
 pub mod anticheat;
 pub mod art;
 pub mod awacy;

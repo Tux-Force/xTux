@@ -164,7 +164,7 @@ fn is_xuid(xuid: &str) -> bool {
     !xuid.is_empty() && xuid.len() <= 20 && xuid.bytes().all(|b| b.is_ascii_digit())
 }
 
-fn is_scid(scid: &str) -> bool {
+pub(crate) fn is_scid(scid: &str) -> bool {
     scid.len() == 36
         && scid.bytes().enumerate().all(|(i, b)| {
             if [8, 13, 18, 23].contains(&i) {
@@ -501,6 +501,38 @@ struct AtomCommit {
     size: i64,
 }
 
+/// Signs in to Xbox Live for the game (title-bound, like the game itself on Windows): the `Authorization` header for
+/// Xbox services and the user's XUID.
+pub(crate) async fn xbox_authorization(
+    client: &Client,
+    tokens: &TokenManager,
+    game: &Game,
+) -> Result<(String, String)> {
+    let mut session =
+        TitleSession::establish(client, tokens, &game.msa_app_id, i64::from(game.title_id))
+            .await
+            .map_err(|e| sign_in_error(&game.name, &*e))?;
+    // Signed in through the game (sisu with its MSA app id), but the storage service refuses tokens that carry
+    // the title claim: device and user token only.
+    let token = session
+        .authenticator
+        .get_xsts_token(
+            Some(&session.device_token),
+            None,
+            Some(&session.user_token),
+            RELYING_PARTY,
+        )
+        .await
+        .map_err(|e| format!("Xbox Live token for {} failed: {e}", game.name))?;
+    let identity = UserIdentity::from_xsts(&token).ok_or("Xbox Live token without a user")?;
+    let uhs = identity.uhs.ok_or("Xbox Live token without a user hash")?;
+    let xuid = identity
+        .xuid
+        .filter(|x| is_xuid(x))
+        .ok_or("Xbox Live token without a XUID")?;
+    Ok((format!("XBL3.0 x={uhs};{}", token.token), xuid))
+}
+
 /// A signed in connection to one game's cloud saves.
 pub struct Cloud {
     client: Client,
@@ -514,31 +546,10 @@ pub struct Cloud {
 impl Cloud {
     /// Signs in for the game (title-bound, like the game itself on Windows).
     pub async fn connect(client: &Client, tokens: &TokenManager, game: &Game) -> Result<Cloud> {
-        let mut session =
-            TitleSession::establish(client, tokens, &game.msa_app_id, i64::from(game.title_id))
-                .await
-                .map_err(|e| sign_in_error(&game.name, &*e))?;
-        // Signed in through the game (sisu with its MSA app id), but the storage service refuses tokens that carry
-        // the title claim: device and user token only.
-        let token = session
-            .authenticator
-            .get_xsts_token(
-                Some(&session.device_token),
-                None,
-                Some(&session.user_token),
-                RELYING_PARTY,
-            )
-            .await
-            .map_err(|e| format!("Xbox Live token for {} failed: {e}", game.name))?;
-        let identity = UserIdentity::from_xsts(&token).ok_or("Xbox Live token without a user")?;
-        let uhs = identity.uhs.ok_or("Xbox Live token without a user hash")?;
-        let xuid = identity
-            .xuid
-            .filter(|x| is_xuid(x))
-            .ok_or("Xbox Live token without a XUID")?;
+        let (authorization, xuid) = xbox_authorization(client, tokens, game).await?;
         Ok(Cloud {
             client: client.clone(),
-            authorization: format!("XBL3.0 x={uhs};{}", token.token),
+            authorization,
             xuid,
             pfn: game.family.clone(),
             base: HOST.to_string(),
