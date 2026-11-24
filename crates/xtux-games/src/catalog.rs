@@ -106,7 +106,7 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-fn valid_market(market: Option<&str>) -> String {
+pub(crate) fn valid_market(market: Option<&str>) -> String {
     market
         .filter(|m| m.len() == 2 && m.chars().all(|c| c.is_ascii_alphabetic()))
         .unwrap_or("US")
@@ -182,60 +182,14 @@ pub async fn owned_ids(
     tokens: &TokenManager,
     market: &str,
 ) -> Result<Owned> {
-    let store = crate::license::get_store_tokens(client, tokens).await?;
-    // The user token travels in the body: never follow a redirect with it.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    let mut request = serde_json::json!({
-        "maxPageSize": 100,
-        "market": market,
-        "validityType": "Valid",
-        "productSkuIds": [],
-        "beneficiaries": [{
-            "identityType": "Msa",
-            "identityValue": store.user,
-            "localTicketReference": store.ticket_reference,
-        }],
-        "expandSatisfyingItems": false,
-        "excludeDuplicates": true,
-    });
     let mut games = BTreeSet::new();
     let mut durables = BTreeSet::new();
-    // A safety limit: 100 pages of 100 items.
-    for _ in 0..100 {
-        let answer: serde_json::Value = serde_json::from_slice(
-            &body(
-                client
-                    .post("https://collections.mp.microsoft.com/v7.0/collections/query")
-                    .header("Authorization", &store.device)
-                    .json(&request)
-                    .send()
-                    .await?,
-            )
-            .await?,
-        )
-        .map_err(|e| Error::msg(format!("unexpected collections answer: {e}")))?;
-        for item in answer["items"].as_array().into_iter().flatten() {
-            let id = item["productId"].as_str().unwrap_or_default();
-            if !crate::art::is_store_id(id) {
-                continue;
-            }
-            match item["productKind"].as_str() {
-                Some("Game") => {
-                    games.insert(id.to_string());
-                }
-                Some("Durable") => {
-                    durables.insert(id.to_string());
-                }
-                _ => {}
-            }
-        }
-        match answer["continuationToken"].as_str() {
-            Some(token) => request["continuationToken"] = token.into(),
-            None => break,
-        }
+    for item in crate::store::collection(client, tokens, market).await? {
+        match item.kind.as_str() {
+            "Game" => games.insert(item.product_id),
+            "Durable" => durables.insert(item.product_id),
+            _ => false,
+        };
     }
     Ok(Owned {
         games: games.into_iter().collect(),

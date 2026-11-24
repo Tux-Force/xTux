@@ -63,6 +63,8 @@ pub struct RunningGame {
     /// Sends the saves to the Xbox cloud once the game exited.
     saves: Option<SaveSync>,
     unlocks: Option<UnlockWatch>,
+    /// Events of the game that wait for their upload.
+    events: Option<crate::bridge::PendingEvents>,
     _access: crate::access::Guard,
     _addon_access: Vec<crate::access::Guard>,
 }
@@ -78,6 +80,10 @@ impl RunningGame {
                 unlocks.wait_for_game().await
             }
             (None, _) => {}
+        }
+        // Before the last look at the achievements: the events can unlock some.
+        if let Some(events) = self.events.take() {
+            events.finish().await;
         }
         if let Some(unlocks) = self.unlocks.take() {
             unlocks.finish().await;
@@ -859,6 +865,7 @@ pub async fn launch(
         .clone()
         .unwrap_or_else(|| "neutral".to_string());
     let mut license_failed = Arc::new(AtomicBool::new(false));
+    let mut events = None;
     match crate::bridge::start(
         client.clone(),
         tokens.clone(),
@@ -870,6 +877,7 @@ pub async fn launch(
     {
         Ok(bridge) => {
             license_failed = bridge.license_failed;
+            events = Some(bridge.events);
             env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
             env.push(("XODUS_BRIDGE_SECRET", bridge.secret));
         }
@@ -933,6 +941,7 @@ pub async fn launch(
         cleanup,
         saves,
         unlocks,
+        events,
         _access: access,
         _addon_access: addon_access,
     })

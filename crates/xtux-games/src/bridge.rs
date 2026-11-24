@@ -33,6 +33,26 @@
 //!   body: the content id of an installed add-on of the game. Answers `1` when the user holds a
 //!   license for it (asked once per run from the licensing service), 403 otherwise.
 //!
+//! `POST /store/products`
+//!   body: line 1 `associated` (line 2: the Store ID whose add-ons are wanted) or `products` (the Store IDs on the
+//!   following lines). Answers one product per line with the tab separated fields Store ID, kind, SKU, how many
+//!   the user owns, whether it has a download, base price, price, currency, end of the offer, availability ID,
+//!   in-app offer token, image, its width and height, title and description.
+//!
+//! `POST /store/consumable`
+//!   body: the Store ID of a consumable of the game. Answers how many the user has.
+//!
+//! `POST /store/consume`
+//!   body: line 1 Store ID, line 2 quantity, line 3 tracking id. Answers how many are left.
+//!
+//! `POST /store/user-key`
+//!   body: line 1 `collections` or `purchase`, line 2 the service ticket, line 3 the publisher's user id. Answers
+//!   the Store ID key.
+//!
+//! `POST /xbox/event`
+//!   body: service config id, play session id, event name, dimensions and measurements (JSON), a line each.
+//!   Answers 204 once the event waits for its upload, 400 for an invalid one.
+//!
 //! `POST /xbox/achievements`
 //!   body: title id (decimal, 0 for the game itself). Answers the achievements as text for the
 //!   player, the first line is the title of the window.
@@ -62,15 +82,23 @@ use xodus::models::xgameruntime::xuser::UserIdentity;
 use xodus::tokens::TokenManager;
 
 use crate::cloudsave::Game;
+use crate::events;
 use crate::license::get_store_tokens;
 use crate::packages;
 use crate::profile;
+use crate::store;
 
 const MAX_REQUEST: usize = 1024 * 1024;
 /// Requests handled at the same time; more wait to be accepted.
 const MAX_CONNECTIONS: usize = 32;
 /// XSTS tokens are valid for many hours; refresh well before that.
 const XSTS_LIFETIME: Duration = Duration::from_secs(60 * 60);
+const EVENT_PAUSE: Duration = Duration::from_secs(1);
+const EVENT_MAX_PAUSE: Duration = Duration::from_secs(300);
+/// How long a list of what the user owns is used.
+const COLLECTION_AGE: Duration = Duration::from_secs(60);
+/// A Store question; xgameruntime itself gives up after 30 seconds.
+const STORE_TIMEOUT: Duration = Duration::from_secs(25);
 /// A sign-in for the system UI; xgameruntime itself gives up after 30 seconds.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(25);
 
@@ -98,6 +126,12 @@ struct State {
     game: Option<Game>,
     /// Signed in for the system UI: Authorization header, the user's XUID and since when.
     sign_in: Mutex<Option<(String, String, Instant)>>,
+    /// Events the game wrote.
+    events: events::Queue,
+    /// The user's collection, how many of each product, and since when.
+    collection: Mutex<Option<(HashMap<String, u64>, Instant)>>,
+    /// Add-ons of products by Store ID.
+    addons: Mutex<HashMap<String, Vec<String>>>,
 }
 
 pub struct Bridge {
@@ -105,6 +139,22 @@ pub struct Bridge {
     pub secret: String,
     /// A license token request of the game failed.
     pub license_failed: Arc<AtomicBool>,
+    pub events: PendingEvents,
+}
+
+/// The events of a game that still wait for their upload.
+pub struct PendingEvents(Arc<State>);
+
+impl PendingEvents {
+    /// Uploads what the game wrote right before its end.
+    pub async fn finish(self) {
+        if tokio::time::timeout(Duration::from_secs(10), upload_events(&self.0))
+            .await
+            .is_err()
+        {
+            tracing::warn!("the last events of the game could not be uploaded in time");
+        }
+    }
 }
 
 /// Starts the bridge on 127.0.0.1 with a random port. It runs until the process exits. `scope` tells which add-ons
@@ -135,6 +185,26 @@ pub async fn start(
         package_licenses: Mutex::new(HashMap::new()),
         game,
         sign_in: Mutex::new(None),
+        events: events::Queue::default(),
+        collection: Mutex::new(None),
+        addons: Mutex::new(HashMap::new()),
+    });
+    let uploader = state.clone();
+    let pending = PendingEvents(state.clone());
+    tokio::spawn(async move {
+        let mut pause = EVENT_PAUSE;
+        loop {
+            uploader.events.wait().await;
+            // Events come in bursts, and a failed upload is tried again.
+            loop {
+                tokio::time::sleep(pause).await;
+                if upload_events(&uploader).await {
+                    pause = EVENT_PAUSE;
+                    break;
+                }
+                pause = (pause * 2).min(EVENT_MAX_PAUSE);
+            }
+        }
     });
     // A game cannot tie up the process with countless open requests (long polls stay open for a while).
     let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
@@ -160,6 +230,7 @@ pub async fn start(
         port,
         secret,
         license_failed,
+        events: pending,
     })
 }
 
@@ -309,6 +380,33 @@ async fn handle(mut stream: TcpStream, state: &Arc<State>) -> std::io::Result<()
                 }
             }
         }
+        ("POST", "/xbox/event") => match events::Event::parse(&request.body) {
+            Ok(event) if state.game.is_some() => {
+                state.events.push(event).await;
+                respond(&mut stream, "204 No Content", "").await
+            }
+            Ok(_) => respond(&mut stream, "400 Bad Request", "not an Xbox title").await,
+            Err(err) => {
+                tracing::warn!("event of the game refused: {err}");
+                respond(&mut stream, "400 Bad Request", &err).await
+            }
+        },
+        (
+            "POST",
+            path @ ("/store/products" | "/store/consumable" | "/store/consume" | "/store/user-key"),
+        ) => {
+            let answer =
+                tokio::time::timeout(STORE_TIMEOUT, store_request(state, path, &request.body))
+                    .await
+                    .unwrap_or_else(|_| Err("the Store did not answer in time".into()));
+            match answer {
+                Ok(text) => respond(&mut stream, "200 OK", &text).await,
+                Err(err) => {
+                    tracing::warn!("{path} failed: {err}");
+                    respond(&mut stream, "502 Bad Gateway", &err).await
+                }
+            }
+        }
         ("POST", path @ ("/xbox/achievements" | "/xbox/profile" | "/xbox/gamer-picture")) => {
             let answer = system_ui(state, path, &request.body).await;
             match answer {
@@ -407,6 +505,186 @@ async fn package_license(state: &State, content_id: &str) -> Result<bool, String
         .await
         .insert(content_id, valid);
     Ok(valid)
+}
+
+/// Uploads the waiting events; false when some are left for another try.
+async fn upload_events(state: &State) -> bool {
+    let send = |list: Vec<events::Event>| async move {
+        let tickets = event_tickets(state, false)
+            .await
+            .map_err(events::UploadError::Retry)?;
+        match events::upload(&state.client, events::collector(), &tickets, &list).await {
+            Err(events::UploadError::SignIn(_)) => {
+                let tickets = event_tickets(state, true)
+                    .await
+                    .map_err(events::UploadError::Retry)?;
+                events::upload(&state.client, events::collector(), &tickets, &list).await
+            }
+            result => result,
+        }
+    };
+    match state.events.flush(send).await {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::warn!("events of the game not uploaded: {err:?}");
+            false
+        }
+    }
+}
+
+async fn event_tickets(state: &State, force_refresh: bool) -> Result<events::Tickets, String> {
+    let game = state.game.as_ref().ok_or("not an Xbox title")?;
+    let key = ensure_session(state, &game.msa_app_id, game.title_id).await?;
+    let (device, _) = title_token(state, &key, events::DEVICE_RELYING_PARTY, force_refresh).await?;
+    let (user, _) = title_token(state, &key, events::USER_RELYING_PARTY, force_refresh).await?;
+    let xuid = match UserIdentity::from_xsts(&user).and_then(|i| i.xuid) {
+        Some(xuid) => xuid,
+        // Not every relying party gets the XUID.
+        None => sign_in(state).await?.1,
+    };
+    Ok(events::Tickets {
+        title_id: game.title_id,
+        xuid,
+        device: authorization(&device)?,
+        user: authorization(&user)?,
+    })
+}
+
+async fn store_request(state: &State, path: &str, body: &str) -> Result<String, String> {
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
+    let line = |i: usize| lines.get(i).copied().unwrap_or_default();
+    match path {
+        "/store/products" => {
+            let products = match line(0) {
+                "associated" => associated_products(state, line(1)).await?,
+                "products" => {
+                    let ids: Vec<String> = lines[1..]
+                        .iter()
+                        .filter(|id| crate::art::is_store_id(id))
+                        .map(|id| id.to_uppercase())
+                        .take(500)
+                        .collect();
+                    store_products(state, &ids).await?
+                }
+                _ => return Err("unknown kind of list".into()),
+            };
+            Ok(store::encode(&products))
+        }
+        "/store/consumable" => {
+            let product = own_consumable(state, line(0)).await?;
+            let owned = collection(state, true).await?;
+            Ok(owned.get(&product).copied().unwrap_or(0).to_string())
+        }
+        "/store/consume" => {
+            let product = own_consumable(state, line(0)).await?;
+            let quantity: u32 = line(1).parse().map_err(|_| "invalid quantity")?;
+            let tracking = uuid::Uuid::parse_str(line(2)).map_err(|_| "invalid tracking id")?;
+            if quantity == 0 {
+                return Err("invalid quantity".into());
+            }
+            let left =
+                store::consume(&state.client, &state.tokens, &product, quantity, tracking).await;
+            *state.collection.lock().await = None;
+            Ok(left.map_err(|e| e.to_string())?.to_string())
+        }
+        _ => {
+            let key = match line(0) {
+                "collections" => store::Key::Collections,
+                "purchase" => store::Key::Purchase,
+                _ => return Err("unknown kind of key".into()),
+            };
+            store::user_key(&state.client, &state.tokens, key, line(1), line(2))
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+fn store_market(state: &State) -> String {
+    crate::catalog::valid_market(Some(&state.market))
+}
+
+/// Whether `product` is the game or belongs to it.
+fn is_own_product(state: &State, product: &store::Product) -> bool {
+    let own = &state.packages.scope().store_ids;
+    own.contains(&product.store_id) || product.parents.iter().any(|p| own.contains(p))
+}
+
+/// How many of each product the user has.
+async fn collection(state: &State, fresh: bool) -> Result<HashMap<String, u64>, String> {
+    let mut cached = state.collection.lock().await;
+    if let Some((owned, since)) = &*cached
+        && !fresh
+        && since.elapsed() < COLLECTION_AGE
+    {
+        return Ok(owned.clone());
+    }
+    let mut owned = HashMap::new();
+    for item in store::collection(&state.client, &state.tokens, &store_market(state))
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        *owned.entry(item.product_id).or_insert(0) += item.quantity;
+    }
+    *cached = Some((owned.clone(), Instant::now()));
+    Ok(owned)
+}
+
+/// Products with what the user owns of them; of other games' products that stays unknown.
+async fn store_products(state: &State, ids: &[String]) -> Result<Vec<store::Product>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let market = store_market(state);
+    let (products, owned) = tokio::join!(
+        store::products(&state.client, ids, &market),
+        collection(state, false)
+    );
+    let mut products = products.map_err(|e| e.to_string())?;
+    // Without an answer about ownership a game would offer to buy what the user has.
+    let owned = owned?;
+    for product in &mut products {
+        if is_own_product(state, product) {
+            product.quantity = owned.get(&product.store_id).copied().unwrap_or(0);
+        }
+    }
+    Ok(products)
+}
+
+async fn associated_products(state: &State, store_id: &str) -> Result<Vec<store::Product>, String> {
+    let store_id = store_id.to_uppercase();
+    let known = state.addons.lock().await.get(&store_id).cloned();
+    let ids = match known {
+        Some(ids) => ids,
+        None => {
+            let ids = store::addon_ids(&state.client, &store_id, &store_market(state))
+                .await
+                .map_err(|e| e.to_string())?;
+            state.addons.lock().await.insert(store_id, ids.clone());
+            ids
+        }
+    };
+    store_products(state, &ids).await
+}
+
+/// The Store ID of a consumable of the game.
+async fn own_consumable(state: &State, store_id: &str) -> Result<String, String> {
+    if !crate::art::is_store_id(store_id) {
+        return Err("not a Store ID".into());
+    }
+    let ids = [store_id.to_uppercase()];
+    let product = store::products(&state.client, &ids, &store_market(state))
+        .await
+        .map_err(|e| e.to_string())?
+        .pop()
+        .ok_or("the Store does not know this product")?;
+    if !is_own_product(state, &product) {
+        return Err("not a product of this game".into());
+    }
+    if !matches!(product.kind.as_str(), "Consumable" | "UnmanagedConsumable") {
+        return Err("not a consumable".into());
+    }
+    Ok(product.store_id)
 }
 
 /// What the game's system UI shows.
