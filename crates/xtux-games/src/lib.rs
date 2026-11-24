@@ -13,6 +13,7 @@ pub mod cloudsave;
 pub mod crash;
 pub mod download;
 pub mod error;
+pub mod events;
 #[cfg(unix)]
 pub mod gameinput;
 pub mod gpu;
@@ -29,6 +30,7 @@ pub mod queue;
 pub mod settings;
 #[cfg(unix)]
 pub mod setup;
+pub mod store;
 pub mod uninstall;
 pub mod updates;
 #[cfg(unix)]
