@@ -103,13 +103,15 @@ ends abnormally, the launcher names the cause and a hint, with a button to open 
 Windows: saves from a Windows PC or an Xbox are brought in before the game starts, and saves made here are sent
 once it has ended. When both sides changed, the newer one wins and the other one is backed up in
 `~/.local/state/xtux/save-backups/`; a sync never deletes saves. Saves that differ on both sides and were never
-synced are left alone until you pick a side with `xtux-cli saves resolve <game> cloud|local`. `xtux-cli saves
+synced are left alone until you pick a side, on the game page (**Cloud saves**) or with `xtux-cli saves resolve <game>
+cloud|local`. `xtux-cli saves
 list|pull|push <game>` works by hand, and **Settings → Cloud saves** (`cloud_saves = false`) turns syncing off.
 
 **Achievements:** games unlock Xbox achievements themselves; xTux shows them on the game page and with
 `xtux-cli achievements <game>`, and as a desktop notification when one is unlocked while a game runs
-(**Settings → Achievement notifications**, `achievement_notifications = false` turns it off). Games that unlock through
-`XGameEventWrite` and the in-game achievement page (`XGameUiShowAchievementsAsync`) are not supported yet.
+(**Settings → Achievement notifications**, `achievement_notifications = false` turns it off). In-game
+events (`XGameEventWrite`) are uploaded and the in-game achievement page (`XGameUiShowAchievementsAsync`) is answered;
+whether events unlock achievements has not been confirmed with a real game yet.
 
 **Delete game…** removes the entire game folder after confirmation, including Windows Xbox app installs and any
 saves inside that folder.
