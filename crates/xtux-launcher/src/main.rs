@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -848,6 +849,9 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
     // The blurred backdrop is the hero's soft first look.
     ui.set_game_hero_soft(to_image(&entry.backdrop).0);
     show_logs(ui, Some(&game.path));
+    load_achievements(ui, state, handle, game.path.clone());
+    ui.set_game_saves_message("".into());
+    show_save_conflicts(ui, &game.path);
     show_backdrop(ui, state, index, BackdropCause::Game);
     ui.set_page(2);
 
@@ -868,6 +872,252 @@ fn open_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, in
             }
         });
     });
+}
+
+/// Loads the achievements of the game page's game (UI thread); the answer is dropped when another game is open by
+/// then.
+fn load_achievements(
+    ui: &AppWindow,
+    state: &Shared,
+    handle: &tokio::runtime::Handle,
+    path: PathBuf,
+) {
+    ui.set_game_achievements(ModelRc::default());
+    ui.set_game_achievements_summary("Loading…".into());
+    static LATEST: AtomicU64 = AtomicU64::new(0);
+    let request = LATEST.fetch_add(1, Ordering::Relaxed) + 1;
+    let weak = ui.as_weak();
+    let state = state.clone();
+    handle.spawn(async move {
+        let answer = ask(Request::Achievements { path: path.clone() }, |_| {}).await;
+        with_ui(&weak, move |ui| {
+            let current = state
+                .lock()
+                .ok()
+                .and_then(|s| Some(s.all.get(s.current?)?.info.path.clone()));
+            // An earlier answer must not replace a newer one either.
+            if current.as_ref() != Some(&path) || LATEST.load(Ordering::Relaxed) != request {
+                return;
+            }
+            match answer {
+                Ok(Response::Achievements { items }) => {
+                    ui.set_game_achievements_summary(achievement_summary(&items).into());
+                    let rows: Vec<AchievementRow> = items.iter().map(achievement_row).collect();
+                    ui.set_game_achievements(ModelRc::new(VecModel::from(rows)));
+                }
+                Ok(other) => {
+                    ui.set_game_achievements_summary(format!("Unexpected answer: {other:?}").into())
+                }
+                Err(ClientError::Remote(body)) => {
+                    ui.set_game_achievements_summary(body.message.into())
+                }
+                Err(err) => ui.set_game_achievements_summary(err.to_string().into()),
+            }
+        });
+    });
+}
+
+fn achievement_summary(items: &[xtux_protocol::AchievementInfo]) -> String {
+    if items.is_empty() {
+        return "This game has no Xbox achievements.".into();
+    }
+    let unlocked = || items.iter().filter(|a| a.unlocked);
+    format!(
+        "{} of {} unlocked, {} of {} G",
+        unlocked().count(),
+        items.len(),
+        unlocked().map(|a| a.gamerscore).sum::<u32>(),
+        items.iter().map(|a| a.gamerscore).sum::<u32>()
+    )
+}
+
+fn achievement_row(item: &xtux_protocol::AchievementInfo) -> AchievementRow {
+    let mut detail = format!("{} G", item.gamerscore);
+    if let Some(percent) = item.percent {
+        detail = format!("{percent} %   {detail}");
+    } else if let Some(day) = item.unlocked_at.as_deref().and_then(|t| t.get(..10)) {
+        detail = format!("{day}   {detail}");
+    }
+    AchievementRow {
+        name: item.name.clone().into(),
+        description: item.description.clone().into(),
+        detail: detail.into(),
+        unlocked: item.unlocked,
+    }
+}
+
+/// How many saves of the game wait for a choice, as of the last sync (UI thread).
+fn show_save_conflicts(ui: &AppWindow, path: &Path) {
+    let count = xtux_games::cloudsave::pending::of(path);
+    ui.set_game_save_conflicts(i32::try_from(count).unwrap_or(i32::MAX));
+}
+
+/// The prefix a launch of the game uses; `None` is the daemon's default.
+fn game_prefix(path: &Path) -> Option<PathBuf> {
+    let settings = Settings::load().unwrap_or_default().effective(path);
+    // Like a launch: the game's own environment wins.
+    settings
+        .env
+        .iter()
+        .find(|(k, _)| *k == "WINEPREFIX")
+        .map(|(_, v)| PathBuf::from(v))
+        .or(settings.prefix)
+        .or_else(|| std::env::var_os("WINEPREFIX").map(Into::into))
+}
+
+/// Asks for the save conflicts of the open game, or settles some, and shows the ones left in the dialog (UI thread).
+fn ask_saves(
+    ui: &AppWindow,
+    state: &Shared,
+    saves: &SaveDialog,
+    handle: &tokio::runtime::Handle,
+    choices: Option<Vec<xtux_protocol::SaveChoice>>,
+) {
+    if ui.get_saves_busy() {
+        return;
+    }
+    let path = match &choices {
+        // The dialog's game, whatever page is open.
+        Some(_) => saves.lock().ok().and_then(|s| Some(s.as_ref()?.0.clone())),
+        None => state
+            .lock()
+            .ok()
+            .and_then(|s| Some(s.all.get(s.current?)?.info.path.clone())),
+    };
+    let Some(path) = path else { return };
+    let prefix = game_prefix(&path);
+    let settling = choices.is_some();
+    let request = match choices {
+        Some(choices) => Request::ResolveSaves {
+            path: path.clone(),
+            prefix,
+            choices,
+        },
+        None => Request::SaveConflicts {
+            path: path.clone(),
+            prefix,
+        },
+    };
+    ui.set_saves_busy(true);
+    ui.set_saves_error("".into());
+    ui.set_game_saves_message("Asking the Xbox cloud…".into());
+    let weak = ui.as_weak();
+    let state = state.clone();
+    let saves = saves.clone();
+    handle.spawn(async move {
+        let answer = ask(request, |_| {}).await;
+        with_ui(&weak, move |ui| {
+            ui.set_saves_busy(false);
+            let current = state
+                .lock()
+                .ok()
+                .and_then(|s| Some(s.all.get(s.current?)?.info.path.clone()));
+            let here = current.as_ref() == Some(&path);
+            if here {
+                show_save_conflicts(&ui, &path);
+            }
+            let error = match answer {
+                Ok(Response::SaveConflicts { items, message }) => {
+                    if here {
+                        let text = match (&message, items.is_empty()) {
+                            (Some(message), _) => message.clone(),
+                            (None, true) => {
+                                "No conflicts: the saves here and in the cloud fit together.".into()
+                            }
+                            (None, false) => String::new(),
+                        };
+                        ui.set_game_saves_message(text.into());
+                    }
+                    if items.is_empty() || !(here || settling) {
+                        ui.set_saves_open(false);
+                    } else {
+                        let rows: Vec<SaveRow> = items.iter().map(save_row).collect();
+                        ui.set_saves_rows(ModelRc::new(VecModel::from(rows)));
+                        ui.set_saves_chosen(0);
+                        if !settling {
+                            ui.set_saves_game(ui.get_game_name());
+                        }
+                        ui.set_saves_open(true);
+                        if let Ok(mut s) = saves.lock() {
+                            *s = Some((path, items));
+                        }
+                    }
+                    return;
+                }
+                Ok(other) => format!("Unexpected answer: {other:?}"),
+                Err(ClientError::Remote(body)) => body.message,
+                Err(err) => err.to_string(),
+            };
+            if here {
+                ui.set_game_saves_message(error.clone().into());
+            }
+            ui.set_saves_error(error.into());
+        });
+    });
+}
+
+/// The game and the conflicts the save dialog shows.
+type SaveDialog = Arc<Mutex<Option<(PathBuf, Vec<xtux_protocol::SaveConflict>)>>>;
+
+fn save_row(item: &xtux_protocol::SaveConflict) -> SaveRow {
+    let newer = |mine: u64, other: u64| if mine > other { ", newer" } else { "" };
+    let side = |side: &xtux_protocol::SaveSide, other: &xtux_protocol::SaveSide| {
+        format!(
+            "{}{}\n{}",
+            save_time(side.modified),
+            newer(side.modified, other.modified),
+            save_size(side.size)
+        )
+    };
+    SaveRow {
+        name: item
+            .display_name
+            .clone()
+            .unwrap_or_else(|| item.name.clone())
+            .into(),
+        local: side(&item.local, &item.cloud).into(),
+        cloud: side(&item.cloud, &item.local).into(),
+        choice: 0,
+    }
+}
+
+fn save_time(seconds: u64) -> String {
+    i64::try_from(seconds)
+        .ok()
+        .filter(|s| *s > 0)
+        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "Time not known".into())
+}
+
+fn save_size(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
+        b if b >= 1 << 10 => format!("{} KB", b >> 10),
+        b => format!("{b} bytes"),
+    }
+}
+
+/// What the rows say is to be kept; rows without a choice (0) stay as they are.
+fn save_choices(
+    items: &[xtux_protocol::SaveConflict],
+    rows: impl Iterator<Item = i32>,
+) -> Vec<xtux_protocol::SaveChoice> {
+    items
+        .iter()
+        .zip(rows)
+        .filter(|(_, choice)| *choice == 1 || *choice == 2)
+        .map(|(item, choice)| xtux_protocol::SaveChoice {
+            scid: item.scid.clone(),
+            name: item.name.clone(),
+            version: item.version.clone(),
+            keep_cloud: choice == 2,
+        })
+        .collect()
 }
 
 /// The launch request for a game: its own settings, then the general ones.
@@ -1015,9 +1265,19 @@ fn start_game(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle, g
             s.running.remove(&game.path);
         }
         let path = game.path.clone();
+        let handle = tokio::runtime::Handle::current();
         with_ui(&weak, move |ui| {
             show_running(&ui, &state);
             show_logs(&ui, Some(&path));
+            // Only for the open game page: what the game unlocked shows up there.
+            let open = state
+                .lock()
+                .ok()
+                .and_then(|s| Some(s.all.get(s.current?)?.info.path == path));
+            if open == Some(true) {
+                show_save_conflicts(&ui, &path);
+                load_achievements(&ui, &state, &handle, path);
+            }
         });
     });
 }
@@ -2147,7 +2407,8 @@ fn settings_for_saving(ui: &AppWindow) -> Option<Settings> {
     }
 }
 
-/// `XTUX_SNAPSHOT=<file.png>` renders one page (`XTUX_SNAPSHOT_PAGE`: library, list, game, settings, setup, logs) to a
+/// `XTUX_SNAPSHOT=<file.png>` renders one page (`XTUX_SNAPSHOT_PAGE`: library, list, game, saves, settings, setup, logs)
+/// to a
 /// PNG and quits; used to check the look without a person at the screen.
 fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Handle) {
     let Some(file) = std::env::var_os("XTUX_SNAPSHOT").map(PathBuf::from) else {
@@ -2220,6 +2481,24 @@ fn schedule_snapshot(ui: &AppWindow, state: &Shared, handle: &tokio::runtime::Ha
             "delete" => {
                 open_game(&ui, &state, &handle, 0);
                 ui.set_confirm_delete(true);
+            }
+            // Made-up conflicts (display only) to check the dialog and the notice on the game page.
+            "saves" | "save-notice" => {
+                ui.set_game_name("Example Game".into());
+                ui.set_game_save_conflicts(2);
+                let rows: Vec<SaveRow> = (1..=2)
+                    .map(|i| SaveRow {
+                        name: format!("profile_0{i}").into(),
+                        local: "2026-11-20 21:14, newer\n3.4 MB".into(),
+                        cloud: "2026-11-02 08:05\n3.1 MB".into(),
+                        choice: i - 1,
+                    })
+                    .collect();
+                ui.set_saves_rows(ModelRc::new(VecModel::from(rows)));
+                ui.set_saves_game("Example Game".into());
+                ui.set_saves_chosen(1);
+                ui.set_saves_open(page == "saves");
+                ui.set_page(2);
             }
             // Shows the first game as running (display only) to check the running look.
             "running" => {
@@ -2302,6 +2581,7 @@ fn main() {
         ui.set_icon_colour(settings.ui.icon_colour.clone().into());
         ui.set_anticheat_guess(settings.ui.anticheat_list);
         ui.set_cloud_saves(settings.cloud_saves != Some(false));
+        ui.set_achievement_notifications(settings.achievement_notifications != Some(false));
         ui.set_controller_mode(settings.controller.as_str().into());
         // A new user starts on the setup page.
         if !refresh_setup(&ui).complete() {
@@ -2547,6 +2827,8 @@ fn main() {
             settings.ui.anticheat_list = ui.get_anticheat_guess();
             // Unset means on; only "off" is written.
             settings.cloud_saves = (!ui.get_cloud_saves()).then_some(false);
+            settings.achievement_notifications =
+                (!ui.get_achievement_notifications()).then_some(false);
             settings.controller =
                 ControllerMode::parse(&ui.get_controller_mode()).unwrap_or_default();
             apply_theme(&ui);
@@ -2666,6 +2948,73 @@ fn main() {
                     .and_then(|i| s.all.get(i).map(|e| e.info.path.clone()))
             });
             show_logs(&ui, game.as_deref());
+        }
+    });
+
+    let save_dialog = SaveDialog::default();
+    ui.on_check_saves({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let saves = save_dialog.clone();
+        let handle = handle.clone();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                ask_saves(&ui, &state, &saves, &handle, None);
+            }
+        }
+    });
+    ui.on_choose_save({
+        let weak = ui.as_weak();
+        move |index, choice| {
+            use slint::Model;
+            let Some(ui) = weak.upgrade() else { return };
+            let rows = ui.get_saves_rows();
+            // -1: every row.
+            for i in 0..rows.row_count() {
+                if (index < 0 || index as usize == i)
+                    && let Some(mut row) = rows.row_data(i)
+                {
+                    row.choice = choice;
+                    rows.set_row_data(i, row);
+                }
+            }
+            let chosen = rows.iter().filter(|r| r.choice != 0).count();
+            ui.set_saves_chosen(chosen as i32);
+        }
+    });
+    ui.on_apply_saves({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let saves = save_dialog.clone();
+        let handle = handle.clone();
+        move || {
+            use slint::Model;
+            let Some(ui) = weak.upgrade() else { return };
+            let choices = match saves.lock().ok().as_deref() {
+                Some(Some((_, items))) => {
+                    save_choices(items, ui.get_saves_rows().iter().map(|r| r.choice))
+                }
+                _ => return,
+            };
+            if !choices.is_empty() {
+                ask_saves(&ui, &state, &saves, &handle, Some(choices));
+            }
+        }
+    });
+
+    ui.on_refresh_achievements({
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let handle = handle.clone();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let game = state.lock().ok().and_then(|s| {
+                s.current
+                    .and_then(|i| s.all.get(i).map(|e| e.info.path.clone()))
+            });
+            if let Some(path) = game {
+                load_achievements(&ui, &state, &handle, path);
+            }
         }
     });
 
@@ -3151,6 +3500,66 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn save_conflicts_are_shown_and_chosen() {
+        let item = |name: &str, local, cloud| xtux_protocol::SaveConflict {
+            scid: "s".into(),
+            name: name.into(),
+            display_name: None,
+            local: xtux_protocol::SaveSide {
+                modified: local,
+                size: 3 << 20,
+            },
+            cloud: xtux_protocol::SaveSide {
+                modified: cloud,
+                size: 2048,
+            },
+            version: format!("v-{name}"),
+        };
+        let row = super::save_row(&item("a", 1_700_000_000, 1_600_000_000));
+        assert!(row.local.contains(", newer") && row.local.ends_with("3.0 MB"));
+        assert!(!row.cloud.contains("newer") && row.cloud.ends_with("2 KB"));
+        assert_eq!(row.choice, 0);
+        let unknown = super::save_row(&item("a", 0, 0));
+        assert!(unknown.local.starts_with("Time not known\n"));
+
+        let items = [item("a", 1, 2), item("b", 1, 2), item("c", 1, 2)];
+        let choices = super::save_choices(&items, [1, 0, 2].into_iter());
+        assert_eq!(choices.len(), 2);
+        assert_eq!(
+            (choices[0].name.as_str(), choices[0].keep_cloud),
+            ("a", false)
+        );
+        assert_eq!(
+            (choices[1].version.as_str(), choices[1].keep_cloud),
+            ("v-c", true)
+        );
+    }
+
+    #[test]
+    fn achievements_are_summed_up() {
+        let item = |unlocked, percent| xtux_protocol::AchievementInfo {
+            name: "A".into(),
+            description: String::new(),
+            unlocked,
+            unlocked_at: unlocked.then(|| "2026-01-02T03:04:05Z".into()),
+            gamerscore: 10,
+            percent,
+        };
+        assert_eq!(
+            super::achievement_summary(&[item(true, None), item(false, Some(5))]),
+            "1 of 2 unlocked, 10 of 20 G"
+        );
+        assert_eq!(
+            super::achievement_row(&item(true, None)).detail,
+            "2026-01-02   10 G"
+        );
+        assert_eq!(
+            super::achievement_row(&item(false, Some(5))).detail,
+            "5 %   10 G"
+        );
+    }
+
     #[test]
     fn log_lines_get_their_level() {
         use super::log_level;

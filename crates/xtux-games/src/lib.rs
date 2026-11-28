@@ -3,6 +3,7 @@
 //! Nothing here prints or prompts: functions return [`Error`] and report progress through [`Progress`].
 
 mod access;
+pub mod achievements;
 pub mod anticheat;
 pub mod art;
 pub mod awacy;
@@ -12,6 +13,7 @@ pub mod cloudsave;
 pub mod crash;
 pub mod download;
 pub mod error;
+pub mod events;
 #[cfg(unix)]
 pub mod gameinput;
 pub mod gpu;
@@ -22,11 +24,13 @@ pub mod license;
 pub mod logs;
 pub mod package;
 pub mod packages;
+pub mod profile;
 pub mod progress;
 pub mod queue;
 pub mod settings;
 #[cfg(unix)]
 pub mod setup;
+pub mod store;
 pub mod uninstall;
 pub mod updates;
 #[cfg(unix)]

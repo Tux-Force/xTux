@@ -19,9 +19,12 @@ const PROTO_MAGIC: u32 = 0x58445350;
 
 #[tokio::main]
 async fn main() {
-    let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG").unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new("warn,xtux_games=info,xtux_service=info")
-    });
+    // Finer levels of the WebSocket library log requests with their Authorization header.
+    let filter = tracing_subscriber::EnvFilter::try_from_env("XODUS_LOG")
+        .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new("warn,xtux_games=info,xtux_service=info")
+        })
+        .add_directive("tungstenite=info".parse().expect("a valid directive"));
     let registry = tracing_subscriber::registry().with(
         tracing_subscriber::fmt::layer()
             .with_writer(std::io::stderr)

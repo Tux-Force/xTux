@@ -49,7 +49,7 @@ fn limits() -> image::Limits {
     limits
 }
 
-fn decode_bytes(bytes: &[u8]) -> Result<image::DynamicImage> {
+pub(crate) fn decode_bytes(bytes: &[u8]) -> Result<image::DynamicImage> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| Error::msg(format!("not an image: {e}")))?;

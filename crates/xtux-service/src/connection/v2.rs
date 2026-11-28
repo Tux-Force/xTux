@@ -42,6 +42,38 @@ impl Drop for InUse {
     }
 }
 
+/// The prefix of a game's saves: the client's, else the default.
+fn save_prefix(prefix: Option<PathBuf>) -> Option<PathBuf> {
+    prefix.or_else(|| xtux_games::prefix::resolve_prefix(None))
+}
+
+fn save_conflicts(
+    items: Vec<xtux_games::cloudsave::Conflict>,
+    message: Option<String>,
+) -> Response {
+    let side = |side: xtux_games::cloudsave::Side| xtux_protocol::SaveSide {
+        modified: side
+            .modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        size: side.size,
+    };
+    Response::SaveConflicts {
+        items: items
+            .into_iter()
+            .map(|c| xtux_protocol::SaveConflict {
+                scid: c.scid,
+                name: c.name,
+                display_name: c.display_name,
+                local: side(c.local),
+                cloud: side(c.cloud),
+                version: c.version,
+            })
+            .collect(),
+        message,
+    }
+}
+
 type Outbox = mpsc::UnboundedSender<ServerMessage>;
 
 /// Forwards library progress of one request as events.
@@ -269,6 +301,20 @@ struct Job {
 }
 
 impl Job {
+    /// Signs in for the saves of the game in `path`.
+    async fn open_saves(
+        &self,
+        path: &Path,
+        prefix: Option<PathBuf>,
+    ) -> Result<xtux_games::cloudsave::Saves, ErrorBody> {
+        let failed = |err: &str| error_body(xtux_games::Error::msg(err));
+        let prefix = save_prefix(prefix).ok_or_else(|| failed("there is no Wine prefix yet"))?;
+        xtux_games::cloudsave::Saves::open(&self.client, &self.tokens, path, &prefix)
+            .await
+            .map_err(|e| failed(&e))?
+            .ok_or_else(|| failed("this game has no saves in the Xbox cloud"))
+    }
+
     async fn run(self, request: Request) {
         // Launches and installs handle cancellation themselves (quit the game, remove partial files); other
         // requests just stop.
@@ -375,6 +421,77 @@ impl Job {
                     .await;
                 items.sort_by_key(|i| i.name.to_lowercase());
                 Ok(Response::Updates { items })
+            }
+            Request::Achievements { path } => {
+                let failed = |err: String| error_body(xtux_games::Error::msg(err));
+                let Some(game) = xtux_games::cloudsave::Game::for_folder(&path) else {
+                    return Ok(Response::Achievements { items: Vec::new() });
+                };
+                let list = xtux_games::achievements::Achievements::connect(
+                    &self.client,
+                    &self.tokens,
+                    &game,
+                )
+                .await
+                .map_err(failed)?
+                .list()
+                .await
+                .map_err(failed)?;
+                Ok(Response::Achievements {
+                    items: list
+                        .achievements
+                        .into_iter()
+                        .map(|a| xtux_protocol::AchievementInfo {
+                            name: a.name,
+                            description: a.description,
+                            unlocked: a.unlocked,
+                            unlocked_at: a.unlocked_at,
+                            gamerscore: a.gamerscore,
+                            percent: a.percent,
+                        })
+                        .collect(),
+                })
+            }
+            Request::SaveConflicts { path, prefix } => {
+                let saves = self.open_saves(&path, prefix).await?;
+                let items = saves
+                    .conflicts()
+                    .await
+                    .map_err(|e| error_body(xtux_games::Error::msg(e)))?;
+                Ok(save_conflicts(items, None))
+            }
+            Request::ResolveSaves {
+                path,
+                prefix,
+                choices,
+            } => {
+                let failed = |err: String| error_body(xtux_games::Error::msg(err));
+                let running = "close the game first, it may still write its saves";
+                if InUse::contains(&path) {
+                    return Err(failed(running.into()));
+                }
+                let saves = self.open_saves(&path, prefix.clone()).await?;
+                // Games not started by xTux, or still running in the background.
+                if save_prefix(prefix).is_some_and(|p| xtux_games::prefix::server_running(&p)) {
+                    return Err(failed(
+                        "something still runs in the game's Wine prefix; close it first".into(),
+                    ));
+                }
+                let choices: Vec<xtux_games::cloudsave::Choice> = choices
+                    .into_iter()
+                    .map(|c| xtux_games::cloudsave::Choice {
+                        scid: c.scid,
+                        name: c.name,
+                        version: c.version,
+                        keep: if c.keep_cloud {
+                            xtux_games::cloudsave::Prefer::Cloud
+                        } else {
+                            xtux_games::cloudsave::Prefer::Local
+                        },
+                    })
+                    .collect();
+                let (report, left) = saves.resolve_chosen(&choices).await.map_err(failed)?;
+                Ok(save_conflicts(left, Some(report.summary())))
             }
             Request::Uninstall { path } => {
                 if InUse::contains(&path) {

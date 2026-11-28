@@ -1,3 +1,5 @@
+#[cfg(unix)]
+pub mod achievements;
 pub mod clep;
 pub mod download;
 #[cfg(unix)]

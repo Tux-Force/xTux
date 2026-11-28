@@ -62,6 +62,9 @@ pub struct RunningGame {
     cleanup: Cleanup,
     /// Sends the saves to the Xbox cloud once the game exited.
     saves: Option<SaveSync>,
+    unlocks: Option<UnlockWatch>,
+    /// Events of the game that wait for their upload.
+    events: Option<crate::bridge::PendingEvents>,
     _access: crate::access::Guard,
     _addon_access: Vec<crate::access::Guard>,
 }
@@ -71,10 +74,92 @@ impl RunningGame {
     pub async fn wait(mut self) -> Result<ExitStatus> {
         let status = self.child.wait().await?;
         self.cleanup.await;
-        if let Some(saves) = self.saves.take() {
-            saves.push().await;
+        match (self.saves.take(), &self.unlocks) {
+            (Some(saves), _) => saves.push().await,
+            (None, Some(unlocks)) if self.started.elapsed().is_ok_and(|e| e < DETACHED_START) => {
+                unlocks.wait_for_game().await
+            }
+            (None, _) => {}
+        }
+        // Before the last look at the achievements: the events can unlock some.
+        if let Some(events) = self.events.take() {
+            events.finish().await;
+        }
+        if let Some(unlocks) = self.unlocks.take() {
+            unlocks.finish().await;
         }
         Ok(status)
+    }
+}
+
+/// A game that goes on in the background lets go of the process xTux started soon.
+const DETACHED_START: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The process xTux started can exit while the game goes on in the background (Wine detaches it); the game is over
+/// only once nothing runs in the prefix any more, which is also when its wineserver ends.
+async fn wait_for_prefix(prefix: &Path) {
+    while crate::prefix::server_running(prefix) {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Shows achievements unlocked while the game runs. Dropping it stops watching.
+struct UnlockWatch {
+    prefix: PathBuf,
+    stop: tokio_util::sync::CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl UnlockWatch {
+    fn start(
+        client: &reqwest::Client,
+        tokens: &TokenManager,
+        source: &Path,
+        prefix: &Path,
+    ) -> Option<UnlockWatch> {
+        let game = crate::cloudsave::Game::for_folder(source)?;
+        let stop = tokio_util::sync::CancellationToken::new();
+        let name = game.name.clone();
+        let task = tokio::spawn(crate::achievements::watch(
+            client.clone(),
+            tokens.clone(),
+            game,
+            stop.clone(),
+            move |achievement| {
+                let name = name.clone();
+                async move { crate::achievements::notify(&name, &achievement).await }
+            },
+        ));
+        Some(UnlockWatch {
+            prefix: prefix.to_owned(),
+            stop,
+            task,
+        })
+    }
+
+    /// Waits for a game that goes on in the background, as long as there is something to watch.
+    async fn wait_for_game(&self) {
+        let ended = async {
+            while !self.task.is_finished() {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        };
+        tokio::select! {
+            _ = wait_for_prefix(&self.prefix) => {}
+            _ = ended => {}
+        }
+    }
+
+    /// Looks once more for what was unlocked right before the end.
+    async fn finish(mut self) {
+        self.stop.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), &mut self.task).await;
+    }
+}
+
+impl Drop for UnlockWatch {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
@@ -127,11 +212,8 @@ impl SaveSync {
 
     /// Sends the saves that changed while playing.
     async fn push(&self) {
-        // The process xTux started can exit while the game goes on in the background (Wine detaches it); the
-        // saves are final only once nothing runs in the prefix any more, which is also when its wineserver ends.
-        while crate::prefix::server_running(&self.prefix) {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        }
+        // The saves are final only then.
+        wait_for_prefix(&self.prefix).await;
         let result = tokio::time::timeout(SAVE_SYNC_TIMEOUT * 4, async {
             match crate::cloudsave::Saves::open(
                 &self.client,
@@ -783,9 +865,19 @@ pub async fn launch(
         .clone()
         .unwrap_or_else(|| "neutral".to_string());
     let mut license_failed = Arc::new(AtomicBool::new(false));
-    match crate::bridge::start(client.clone(), tokens.clone(), scope, market).await {
+    let mut events = None;
+    match crate::bridge::start(
+        client.clone(),
+        tokens.clone(),
+        scope,
+        market,
+        crate::cloudsave::Game::for_folder(&options.source),
+    )
+    .await
+    {
         Ok(bridge) => {
             license_failed = bridge.license_failed;
+            events = Some(bridge.events);
             env.push(("XODUS_BRIDGE_PORT", bridge.port.to_string()));
             env.push(("XODUS_BRIDGE_SECRET", bridge.secret));
         }
@@ -831,6 +923,16 @@ pub async fn launch(
         .map_err(|e| Error::msg(format!("could not start {}: {e}", options.wine)))?;
     let pid = child.id().ok_or("the game exited immediately")?;
 
+    let unlocks = prefix
+        .as_ref()
+        .filter(|_| {
+            crate::settings::Settings::load()
+                .unwrap_or_default()
+                .achievement_notifications
+                != Some(false)
+        })
+        .and_then(|prefix| UnlockWatch::start(client, tokens, &options.source, prefix));
+
     Ok(RunningGame {
         pid,
         started,
@@ -838,6 +940,8 @@ pub async fn launch(
         child,
         cleanup,
         saves,
+        unlocks,
+        events,
         _access: access,
         _addon_access: addon_access,
     })
